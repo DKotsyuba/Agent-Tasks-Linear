@@ -9,7 +9,7 @@ The service tracks trusted reports and execution/artifact references. It does no
 - Local workflows cover minimal create/assign/begin/checkpoint/complete, restored activity, optional review, handoff scope, notes and repeat-safe writes.
 - Transport checks use the official MCP client over authenticated HTTP and an executable stdio bridge.
 - GraphQL operations are validated against the pinned official public SDL. Prior authenticated pilot reads and mutations established the used Linear primitives in a disposable workspace.
-- The opt-in live_activity_cycle checks the short cycle on Linear, including a fresh process and stdio read. Its bindings are synthetic test clients.
+- The isolated live_activity_cycle passed on 2026-09-24: create, assign, begin, checkpoint, direct completion, context and a fresh gateway/stdio read retained the agent, checkout and artifact links. Its bindings are synthetic test clients.
 - Historical live module/epic pilots describe the previous workflow; they do not substitute for a new activity pilot.
 
 ## Intentional limits
