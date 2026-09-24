@@ -1,4 +1,4 @@
-# Target architecture
+# Architecture
 
 Agent-Tasks-Linear is a Rust workflow MCP gateway over Linear. Linear is the only durable store for work, plans, assignments, decisions, reviews, and operation receipts. Humans use the Linear interface. The gateway exposes bounded workflow actions to agents and checks each action against current Linear facts and authenticated scope.
 
@@ -18,4 +18,4 @@ Agent-Tasks-Linear is a Rust workflow MCP gateway over Linear. Linear is the onl
 
 ## Feasibility gate
 
-Before implementing the write path, test the authorized Linear schema and permissions in an isolated workspace. Verify attachment addressing, document snapshot round trips, parent depth, runtime identity separation, and recovery after ambiguous writes. These behaviors have not been verified in a live Linear workspace for this repository.
+The write path is implemented and exercised against an HTTP fixture. Before using it for real work, test the authorized Linear schema and permissions in an isolated workspace. Verify attachment addressing, document snapshot round trips, parent depth, runtime identity separation, and recovery after ambiguous writes. These behaviors have not been verified in a live Linear workspace for this repository. [Current evidence and limits](FEASIBILITY.md) separate local checks from live acceptance.

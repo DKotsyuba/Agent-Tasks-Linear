@@ -1,0 +1,2856 @@
+{
+  "definitions": {
+    "WorkRef": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "PinnedSource": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "linear_publication",
+            "repository_artifact"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "repository_id": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "Artifact": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "git_commit",
+            "file",
+            "document",
+            "url"
+          ]
+        },
+        "locator": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "repository_id": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "locator"
+      ],
+      "additionalProperties": false
+    },
+    "Criterion": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "verification": {
+          "type": "string",
+          "enum": [
+            "test",
+            "review",
+            "owner_decision",
+            "document",
+            "integration"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "maxLength": 64000
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "required",
+        "verification"
+      ],
+      "additionalProperties": false
+    },
+    "Dependency": {
+      "type": "object",
+      "properties": {
+        "work_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "gate": {
+          "type": "string",
+          "enum": [
+            "start",
+            "submission",
+            "acceptance",
+            "integration"
+          ]
+        },
+        "required_result": {
+          "type": "string",
+          "enum": [
+            "task_local",
+            "submission",
+            "accepted",
+            "candidate"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 64000
+        }
+      },
+      "required": [
+        "work_id",
+        "gate",
+        "required_result",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "ContractBinding": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/PinnedSource"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "provides",
+            "consumes"
+          ]
+        },
+        "parties": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 1
+        },
+        "preparation_required": {
+          "type": "boolean"
+        },
+        "real_integration_required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "direction",
+        "parties",
+        "preparation_required",
+        "real_integration_required"
+      ],
+      "additionalProperties": false
+    },
+    "KnowledgeOutput": {
+      "type": "object",
+      "properties": {
+        "criterion_id": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "basis_required": {
+          "type": "string",
+          "enum": [
+            "reported",
+            "verified",
+            "owner_confirmed"
+          ]
+        }
+      },
+      "required": [
+        "criterion_id",
+        "required",
+        "description",
+        "basis_required"
+      ],
+      "additionalProperties": false
+    },
+    "Evidence": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "criterion_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "test",
+            "inspection",
+            "reproduction",
+            "integration",
+            "owner_decision"
+          ]
+        },
+        "subject_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "source_artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Artifact"
+          },
+          "minItems": 1
+        },
+        "command_or_scenario": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "environment": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "skipped",
+            "unknown"
+          ]
+        },
+        "primary_output": {
+          "$ref": "#/$defs/Artifact"
+        },
+        "producer_principal": {
+          "type": "string"
+        },
+        "runtime_run_id": {
+          "type": "string"
+        },
+        "applicability_reason": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "supersedes_evidence_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "id",
+        "criterion_ids",
+        "kind",
+        "subject_hash",
+        "source_artifacts",
+        "command_or_scenario",
+        "environment",
+        "observed_at",
+        "result",
+        "primary_output"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceUse": {
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "target_subject_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "reuse_reason": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "changed_materials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Artifact"
+          }
+        }
+      },
+      "required": [
+        "evidence_id",
+        "target_subject_hash"
+      ],
+      "additionalProperties": false
+    },
+    "KnowledgeResult": {
+      "type": "object",
+      "properties": {
+        "criterion_id": {
+          "type": "string"
+        },
+        "publication_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "criterion_id",
+        "publication_id",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "Observation": {
+      "type": "object",
+      "properties": {
+        "runtime": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "running",
+            "suspended",
+            "succeeded",
+            "failed",
+            "stopped",
+            "unknown"
+          ]
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "$ref": "#/$defs/Artifact"
+        },
+        "writer_state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "stopped",
+            "unknown"
+          ]
+        },
+        "workspace_ref": {
+          "type": "string"
+        },
+        "head_commit": {
+          "type": "string"
+        },
+        "preserved_materials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Artifact"
+          }
+        }
+      },
+      "required": [
+        "runtime",
+        "run_id",
+        "state",
+        "observed_at",
+        "source",
+        "writer_state"
+      ],
+      "additionalProperties": false
+    },
+    "Finding": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "blocker",
+            "major",
+            "minor",
+            "suggestion"
+          ]
+        },
+        "criterion_id": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "reproduction": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "expected": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "actual": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "source_artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Artifact"
+          }
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "verified_fixed",
+            "verified_invalid",
+            "accepted_risk"
+          ]
+        },
+        "verification_evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "owner_decision_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "criterion_id",
+        "description",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "Coverage": {
+      "type": "object",
+      "properties": {
+        "criterion_id": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "covered",
+            "partially_covered",
+            "not_checked"
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "limitations": {
+          "type": "string",
+          "maxLength": 64000
+        }
+      },
+      "required": [
+        "criterion_id",
+        "state",
+        "evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "Option": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]{1,40}$"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 64000
+        }
+      },
+      "required": [
+        "key",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "Association": {
+      "type": "object",
+      "properties": {
+        "work_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "relation": {
+          "type": "string",
+          "enum": [
+            "context",
+            "decision",
+            "contract",
+            "output"
+          ]
+        }
+      },
+      "required": [
+        "work_id",
+        "relation"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "tools": [
+    {
+      "name": "at_resume",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "helper",
+        "decomposer",
+        "reviewer",
+        "integrator",
+        "observer"
+      ],
+      "mode": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 10
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "product_id"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_context",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "helper",
+        "decomposer",
+        "reviewer",
+        "integrator",
+        "observer"
+      ],
+      "mode": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "record_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "publication_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "section": {
+            "type": "string",
+            "enum": [
+              "work",
+              "plan",
+              "inputs",
+              "history",
+              "review",
+              "record",
+              "publication"
+            ]
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 32000,
+            "default": 16000
+          }
+        },
+        "required": [
+          "product_id",
+          "section"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "section": {
+                  "const": "publication"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "publication_id"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "section": {
+                  "const": "record"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "record_id"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "section": {
+                  "enum": [
+                    "work",
+                    "plan",
+                    "inputs",
+                    "history",
+                    "review"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "work_id"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "at_search",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "helper",
+        "decomposer",
+        "reviewer",
+        "integrator",
+        "observer"
+      ],
+      "mode": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "work",
+              "knowledge",
+              "both"
+            ]
+          },
+          "include_history": {
+            "type": "boolean",
+            "default": false
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "default": 10
+          }
+        },
+        "required": [
+          "product_id",
+          "query",
+          "kind"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_work_create",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "epic",
+              "module",
+              "task",
+              "atomic"
+            ]
+          },
+          "parent_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "mandatory": {
+            "type": "boolean",
+            "default": true
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "feature",
+              "bug",
+              "research",
+              "refactor",
+              "documentation",
+              "infrastructure"
+            ]
+          },
+          "replacement_for": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "kind",
+          "parent_id",
+          "title",
+          "description"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_plan_publish",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "goal": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "scope": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "constraints": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "criteria": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Criterion"
+            },
+            "minItems": 1
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PinnedSource"
+            }
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Dependency"
+            }
+          },
+          "contracts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ContractBinding"
+            }
+          },
+          "knowledge_outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/KnowledgeOutput"
+            }
+          },
+          "mandatory_children": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "change_proposal_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "owner_decision_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "goal",
+          "scope",
+          "criteria",
+          "inputs",
+          "dependencies",
+          "contracts",
+          "knowledge_outputs",
+          "mandatory_children"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_contract_confirm",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "contract_source": {
+            "$ref": "#/$defs/PinnedSource"
+          },
+          "agreement": {
+            "type": "string",
+            "enum": [
+              "agree",
+              "disagree",
+              "unchanged"
+            ]
+          },
+          "preparation": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "not_ready",
+              "unknown",
+              "not_reported"
+            ]
+          },
+          "statement": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "observation": {
+            "$ref": "#/$defs/Artifact"
+          },
+          "attributed_principal": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "contract_source",
+          "agreement",
+          "preparation",
+          "statement"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_assign",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "principal_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "lead",
+              "helper",
+              "decomposer",
+              "integrator"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "workspace_ref": {
+            "type": "string"
+          },
+          "human_assignee_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "delegate_app_user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "constraints": {
+            "type": "string",
+            "maxLength": 64000
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "principal_id",
+          "role",
+          "scope"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_execution_observe",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "helper",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "observation": {
+            "$ref": "#/$defs/Observation"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "assignment_id",
+          "observation"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_begin",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "helper",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "attempt_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "workspace_ref": {
+            "type": "string"
+          },
+          "prepared_source": {
+            "$ref": "#/$defs/Artifact"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "assignment_id",
+          "attempt_id"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_checkpoint",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "helper",
+        "decomposer",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "remaining": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Artifact"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            }
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "finding_responses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "finding_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "response": {
+                  "type": "string",
+                  "maxLength": 64000
+                },
+                "evidence_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              },
+              "required": [
+                "finding_id",
+                "response",
+                "evidence_ids"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "summary",
+          "remaining",
+          "artifacts"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_task_complete",
+      "roles": [
+        "lead",
+        "root",
+        "owner"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "result_summary": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Artifact"
+            },
+            "minItems": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            }
+          },
+          "reuse_evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/EvidenceUse"
+            }
+          },
+          "knowledge_results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/KnowledgeResult"
+            }
+          },
+          "bugs_reproduced": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "result_summary",
+          "artifacts",
+          "evidence",
+          "reuse_evidence",
+          "knowledge_results"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_submit",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Artifact"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            }
+          },
+          "reuse_evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/EvidenceUse"
+            }
+          },
+          "knowledge_results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/KnowledgeResult"
+            }
+          },
+          "candidate_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "supersedes_submission_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "summary",
+          "artifacts",
+          "evidence",
+          "reuse_evidence",
+          "knowledge_results"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_review_open",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "submission_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reviewer_principal": {
+            "type": "string"
+          },
+          "review_kind": {
+            "type": "string",
+            "enum": [
+              "module",
+              "atomic",
+              "composition"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "required_criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "submission_id",
+          "reviewer_principal",
+          "review_kind",
+          "scope",
+          "required_criteria"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_review_report",
+      "roles": [
+        "reviewer",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "case_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "submission_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "coverage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Coverage"
+            },
+            "minItems": 1
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Finding"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            }
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "reviewed_delta": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "limitations": {
+            "type": "string",
+            "maxLength": 64000
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "case_id",
+          "submission_id",
+          "coverage",
+          "findings",
+          "evidence",
+          "summary"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_accept",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "submission_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "case_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "owner_decision_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "submission_id",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_knowledge_save",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "note_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "expected_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "associations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Association"
+            }
+          },
+          "knowledge_state": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "confirmed",
+              "needs_review",
+              "superseded",
+              "archived"
+            ]
+          },
+          "basis": {
+            "type": "string",
+            "enum": [
+              "unclassified",
+              "reported",
+              "verified",
+              "confirmed"
+            ]
+          },
+          "basis_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "title",
+          "content",
+          "associations",
+          "knowledge_state",
+          "basis",
+          "basis_refs"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "note_id"
+              ]
+            },
+            "then": {
+              "required": [
+                "expected_content_hash"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "at_knowledge_publish",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "note_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected_content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "outgoing_publications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/PinnedSource"
+            }
+          },
+          "basis_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "note_id",
+          "expected_content_hash",
+          "reason",
+          "outgoing_publications",
+          "basis_refs"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_question_ask",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "decomposer",
+        "reviewer",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "question": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Option"
+            },
+            "minItems": 2
+          },
+          "recommended_key": {
+            "type": "string"
+          },
+          "blocked_work_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 64000
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "question",
+          "options",
+          "blocked_work_ids",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_owner_decide",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "record_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "decision_key": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "source_kind": {
+            "type": "string",
+            "enum": [
+              "owner_authenticated",
+              "linear_comment",
+              "root_attributed"
+            ]
+          },
+          "source_comment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "source_reference": {
+            "$ref": "#/$defs/Artifact"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "record_id",
+          "decision_key",
+          "rationale",
+          "source_kind"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "source_kind": {
+                  "const": "linear_comment"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "source_comment_id"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "source_kind": {
+                  "const": "root_attributed"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "source_reference"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "at_change_propose",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "decomposer",
+        "reviewer",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "base_plan_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "proposed_change": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "affected_work_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 1
+          },
+          "risk": {
+            "type": "string",
+            "maxLength": 64000
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "base_plan_hash",
+          "reason",
+          "proposed_change",
+          "affected_work_ids",
+          "risk"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_candidate_register",
+      "roles": [
+        "owner",
+        "root",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "epic_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "preliminary",
+              "final"
+            ]
+          },
+          "included_submissions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "minItems": 1
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Artifact"
+            },
+            "minItems": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            }
+          },
+          "environment": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "observation_source": {
+            "$ref": "#/$defs/Artifact"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "epic_id",
+          "kind",
+          "included_submissions",
+          "artifacts",
+          "evidence",
+          "environment",
+          "observation_source"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_integration_record",
+      "roles": [
+        "owner",
+        "root",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "acceptance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "target": {
+            "$ref": "#/$defs/Artifact"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "ancestry",
+              "equivalent_content",
+              "artifact_identity"
+            ]
+          },
+          "evidence": {
+            "$ref": "#/$defs/Evidence"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "acceptance_id",
+          "target",
+          "method",
+          "evidence"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_transfer",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "new_principal_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "stop_observation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "preserved_artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Artifact"
+            }
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "assignment_id",
+          "new_principal_id",
+          "reason",
+          "stop_observation_id",
+          "preserved_artifacts"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_recovery_report",
+      "roles": [
+        "lead",
+        "helper",
+        "reviewer",
+        "integrator",
+        "decomposer"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "understood_plan_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "examined_artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Artifact"
+            }
+          },
+          "outstanding": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "risks": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "proposed_next_step": {
+            "type": "string",
+            "maxLength": 64000
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "assignment_id",
+          "understood_plan_hash",
+          "examined_artifacts",
+          "outstanding",
+          "risks",
+          "proposed_next_step"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_recovery_confirm",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "recovery_report_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 64000
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "assignment_id",
+          "recovery_report_id",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_work_retire",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "cancelled",
+              "skipped"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "decision_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "replacement_work_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "work_id",
+          "disposition",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_reconcile",
+      "roles": [
+        "owner",
+        "root"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "inspect",
+              "resume_pending",
+              "restore_projection"
+            ]
+          },
+          "operation_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "decision_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "expected",
+          "mode"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    }
+  ]
+}

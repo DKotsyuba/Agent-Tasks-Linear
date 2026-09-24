@@ -1,1 +1,5 @@
 /target/
+/.local/
+*.local.toml
+.env
+.env.*
