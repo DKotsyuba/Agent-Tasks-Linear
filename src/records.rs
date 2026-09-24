@@ -440,7 +440,7 @@ impl Store {
             records,
         })
     }
-    /// Verify a pinned document and product membership against its signed snapshot hash.
+    /// Read a referenced native document within the product; its contents are reported material, not proof.
     pub async fn document(&self, snapshot: &Snapshot, record: &Record) -> Result<Value> {
         let doc = self
             .linear
@@ -455,13 +455,6 @@ impl Store {
             "OUT_OF_SCOPE",
             "Document is outside the product knowledge project",
         )?;
-        if let Some(expected) = record.payload["content_hash"].as_str() {
-            require(
-                content_hash(doc["content"].as_str().unwrap_or("")) == expected,
-                "SNAPSHOT_TAMPERED",
-                "Published document content changed",
-            )?;
-        }
         Ok(doc)
     }
 }

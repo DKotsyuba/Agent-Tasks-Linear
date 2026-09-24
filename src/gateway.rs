@@ -75,8 +75,6 @@ pub enum Effect {
         title: String,
         /// Product knowledge Project UUID.
         project_id: String,
-        /// Exact draft hash approved for publication.
-        content_hash: String,
     },
     /// Create readable human-facing progress or questions.
     CreateComment {
@@ -112,7 +110,7 @@ pub struct Plan {
     pub target_work_id: String,
     /// Fixed finite adapter operations, with all new IDs already reserved.
     pub effects: Vec<Effect>,
-    /// Referenced canonical Documents that must be verified before prepare.
+    /// Document references retained for compatibility with earlier pending recipes.
     pub documents: Vec<Record>,
     /// Exact result issued only after every effect is verified.
     pub result: Outcome,
@@ -276,7 +274,6 @@ impl Gateway {
                     id,
                     title,
                     project_id,
-                    content_hash: expected,
                 } => {
                     let source = self
                         .store
@@ -284,8 +281,7 @@ impl Gateway {
                         .object("QDocument", "document", &source_id)
                         .await?;
                     require(
-                        source["project"]["id"] == project_id
-                            && content_hash(source["content"].as_str().unwrap_or("")) == expected,
+                        source["project"]["id"] == project_id,
                         "DOCUMENT_EDIT_CONFLICT",
                         "Draft changed before publication",
                     )?;
@@ -307,10 +303,15 @@ impl Gateway {
                         "Draft is outside the product",
                     )?;
                     require(
-                        content_hash(source["content"].as_str().unwrap_or("")) == previous_hash,
+                        previous_hash.is_empty()
+                            || content_hash(source["content"].as_str().unwrap_or(""))
+                                == previous_hash,
                         "DOCUMENT_EDIT_CONFLICT",
                         "Draft changed since it was read",
                     )?;
+                    if let Effect::UpdateDocument { previous_hash, .. } = effect {
+                        *previous_hash = content_hash(source["content"].as_str().unwrap_or(""));
+                    }
                 }
                 Effect::VerifyOwnerComment { .. } => {
                     self.verify(effect).await?;
@@ -342,7 +343,18 @@ impl Gateway {
                 continue;
             }
             if state == "started" {
-                self.verify(effect).await.map_err(Fault::uncertain)?;
+                match self.verify(effect).await {
+                    Ok(()) => {}
+                    // One writer owns this pending intent. A recorded upsert repeats the same
+                    // reserved ID and content; resource creates remain unresolved when absent.
+                    Err(error)
+                        if error.code == "OPERATION_IN_DOUBT"
+                            && matches!(effect, Effect::Record { .. }) =>
+                    {
+                        self.apply(effect).await.map_err(Fault::uncertain)?;
+                    }
+                    Err(error) => return Err(error.uncertain()),
+                }
             } else {
                 require(
                     state == "planned",
@@ -634,11 +646,14 @@ impl Gateway {
                 json!({"operation_key":key,"state":receipt.payload["state"],"tool":receipt.payload["tool"],"steps":receipt.payload["steps"],"principal_id":receipt.payload["principal_id"],"result":receipt.payload["result"]}),
             ));
         }
-        require(
-            args["expected"]["work_revision"].as_u64() == Some(s.work(&s.product)?.head.revision),
-            "STALE_CONTEXT",
-            "Reconciliation requires the current product revision",
-        )?;
+        text(args, "idempotency_key")?;
+        if let Some(revision) = args["expected"]["work_revision"].as_u64() {
+            require(
+                revision == s.work(&s.product)?.head.revision,
+                "STALE_CONTEXT",
+                "Product changed; refresh context",
+            )?;
+        }
         let mut config = s.config.clone();
         if config.payload["pending_operation_key"].is_null()
             && receipt.payload["state"] == "prepared"
@@ -681,7 +696,7 @@ impl Gateway {
         }
         self.execute(s, config, receipt).await
     }
-    /// Restore only a signed committed status, with explicit owner decision attribution.
+    /// Restore the recorded issue status at an authenticated controller's explicit request.
     async fn restore_projection(
         &self,
         p: &Principal,
@@ -714,17 +729,13 @@ impl Gateway {
         }
         let id = text(args, "work_id")?;
         let work = s.work(id)?;
-        require(
-            args["expected"]["work_revision"].as_u64() == Some(work.head.revision),
-            "STALE_CONTEXT",
-            "Projection repair requires the current work revision",
-        )?;
-        let decision = s.record(text(args, "decision_id")?, Some("decision"))?;
-        require(
-            decision.payload["decision_key"] == "restore_projection" && decision.work_id == id,
-            "OWNER_DECISION_REQUIRED",
-            "Projection repair requires an exact owner decision",
-        )?;
+        if let Some(revision) = args["expected"]["work_revision"].as_u64() {
+            require(
+                revision == work.head.revision,
+                "STALE_CONTEXT",
+                "Work changed; refresh context",
+            )?;
+        }
         require(
             s.config.payload["pending_operation_key"].is_null(),
             "OPERATION_IN_DOUBT",
@@ -774,7 +785,7 @@ impl Gateway {
                         continue;
                     }
                     let drift = rules::no_drift(s, id).err();
-                    items.push(json!({"work_id":id,"title":work.native["title"],"url":work.native["url"],"kind":work.identity.payload["kind"],"state":work.head.payload["state"],"version":{"work_revision":work.head.revision,"plan_hash":work.head.payload["plan_hash"]},"assignments":array(&work.head.payload,"assignment_ids").iter().filter_map(|id|s.records.get(id.as_str()?)).map(|r|json!({"id":r.record_id,"principal_id":r.payload["principal_id"],"generation":r.payload["generation"],"status":r.payload["status"],"runtime_state":r.payload["latest_attempt_id"].as_str().and_then(|id|s.records.get(id)).map(|r|r.payload["observation"].clone()).unwrap_or(json!({"state":"unknown","writer_state":"unknown"}))})).collect::<Vec<_>>(),"drift":drift.map(|e|e.code)}));
+                    items.push(json!({"work_id":id,"title":work.native["title"],"url":work.native["url"],"kind":work.identity.payload["kind"],"state":work.head.payload["state"],"activity":rules::activity(s,id),"native_status":work.native["state"],"version":{"work_revision":work.head.revision,"plan_hash":work.head.payload["plan_hash"]},"assignments":array(&work.head.payload,"assignment_ids").iter().filter_map(|id|s.records.get(id.as_str()?)).map(|r|json!({"id":r.record_id,"principal_id":r.payload["principal_id"],"generation":r.payload["generation"],"status":r.payload["status"],"runtime_state":r.payload["latest_attempt_id"].as_str().and_then(|id|s.records.get(id)).map(|r|r.payload["observation"].clone()).unwrap_or(json!({"state":"unknown","writer_state":"unknown"}))})).collect::<Vec<_>>(),"drift":drift.map(|e|e.code)}));
                 }
                 let mut out = self.page(
                     p,
@@ -819,7 +830,7 @@ impl Gateway {
                     let work = s.work(id)?;
                     match section {
                         "work" => {
-                            json!({"native":work.native,"identity":work.identity.payload,"head":work.head.payload,"revision":work.head.revision})
+                            json!({"native":work.native,"identity":work.identity.payload,"head":work.head.payload,"revision":work.head.revision,"activity":rules::activity(s,id)})
                         }
                         "plan" | "inputs" => {
                             let id = work.head.payload["plan_record_id"]

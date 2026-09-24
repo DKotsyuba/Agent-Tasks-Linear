@@ -18,8 +18,7 @@
           "type": "string"
         },
         "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "type": "string"
         },
         "repository_id": {
           "type": "string"
@@ -33,8 +32,7 @@
       },
       "required": [
         "kind",
-        "id",
-        "sha256"
+        "id"
       ],
       "additionalProperties": false
     },
@@ -47,15 +45,17 @@
             "git_commit",
             "file",
             "document",
-            "url"
+            "url",
+            "pull_request",
+            "branch",
+            "worktree"
           ]
         },
         "locator": {
           "type": "string"
         },
         "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "type": "string"
         },
         "repository_id": {
           "type": "string"
@@ -239,8 +239,7 @@
           ]
         },
         "subject_hash": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "type": "string"
         },
         "source_artifacts": {
           "type": "array",
@@ -290,15 +289,7 @@
       },
       "required": [
         "id",
-        "criterion_ids",
-        "kind",
-        "subject_hash",
-        "source_artifacts",
-        "command_or_scenario",
-        "environment",
-        "observed_at",
-        "result",
-        "primary_output"
+        "kind"
       ],
       "additionalProperties": false
     },
@@ -310,8 +301,7 @@
           "format": "uuid"
         },
         "target_subject_hash": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "type": "string"
         },
         "reuse_reason": {
           "type": "string",
@@ -325,8 +315,7 @@
         }
       },
       "required": [
-        "evidence_id",
-        "target_subject_hash"
+        "evidence_id"
       ],
       "additionalProperties": false
     },
@@ -341,14 +330,11 @@
           "format": "uuid"
         },
         "sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "type": "string"
         }
       },
       "required": [
-        "criterion_id",
-        "publication_id",
-        "sha256"
+        "publication_id"
       ],
       "additionalProperties": false
     },
@@ -403,10 +389,7 @@
       "required": [
         "runtime",
         "run_id",
-        "state",
-        "observed_at",
-        "source",
-        "writer_state"
+        "state"
       ],
       "additionalProperties": false
     },
@@ -553,6 +536,41 @@
         "work_id",
         "relation"
       ],
+      "additionalProperties": false
+    },
+    "ExecutionContext": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "branch": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "worktree": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "agent": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "runtime": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "run_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "run_url": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [],
       "additionalProperties": false
     }
   },
@@ -792,8 +810,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -848,11 +865,9 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "kind",
           "parent_id",
-          "title",
-          "description"
+          "title"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -884,8 +899,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -961,16 +975,8 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "goal",
-          "scope",
-          "criteria",
-          "inputs",
-          "dependencies",
-          "contracts",
-          "knowledge_outputs",
-          "mandatory_children"
+          "goal"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -1004,8 +1010,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1053,11 +1058,7 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "contract_source",
-          "agreement",
-          "preparation",
           "statement"
         ],
         "additionalProperties": false,
@@ -1090,8 +1091,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1135,16 +1135,16 @@
           "constraints": {
             "type": "string",
             "maxLength": 64000
+          },
+          "execution": {
+            "$ref": "#/$defs/ExecutionContext"
           }
         },
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "principal_id",
-          "role",
-          "scope"
+          "principal_id"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -1179,8 +1179,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1200,14 +1199,15 @@
           },
           "observation": {
             "$ref": "#/$defs/Observation"
+          },
+          "execution": {
+            "$ref": "#/$defs/ExecutionContext"
           }
         },
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "assignment_id",
           "observation"
         ],
         "additionalProperties": false,
@@ -1243,8 +1243,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1271,15 +1270,15 @@
           },
           "prepared_source": {
             "$ref": "#/$defs/Artifact"
+          },
+          "execution": {
+            "$ref": "#/$defs/ExecutionContext"
           }
         },
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
-          "work_id",
-          "assignment_id",
-          "attempt_id"
+          "work_id"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -1315,8 +1314,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1384,16 +1382,16 @@
               ],
               "additionalProperties": false
             }
+          },
+          "execution": {
+            "$ref": "#/$defs/ExecutionContext"
           }
         },
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "summary",
-          "remaining",
-          "artifacts"
+          "summary"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -1426,8 +1424,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1475,18 +1472,86 @@
             "items": {
               "type": "string"
             }
+          },
+          "execution": {
+            "$ref": "#/$defs/ExecutionContext"
           }
         },
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
           "result_summary",
-          "artifacts",
-          "evidence",
-          "reuse_evidence",
-          "knowledge_results"
+          "artifacts"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    {
+      "name": "at_complete",
+      "roles": [
+        "owner",
+        "root",
+        "lead",
+        "helper",
+        "integrator"
+      ],
+      "mode": "write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "work_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Artifact"
+            },
+            "minItems": 0
+          },
+          "execution": {
+            "$ref": "#/$defs/ExecutionContext"
+          },
+          "expected": {
+            "type": "object",
+            "properties": {
+              "work_revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "plan_hash": {
+                "type": "string"
+              },
+              "assignment_generation": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "product_id",
+          "idempotency_key",
+          "work_id",
+          "summary",
+          "artifacts"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -1520,8 +1585,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1570,18 +1634,17 @@
           "supersedes_submission_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "execution": {
+            "$ref": "#/$defs/ExecutionContext"
           }
         },
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
           "summary",
-          "artifacts",
-          "evidence",
-          "reuse_evidence",
-          "knowledge_results"
+          "artifacts"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -1613,8 +1676,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1658,13 +1720,8 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "submission_id",
-          "reviewer_principal",
-          "review_kind",
-          "scope",
-          "required_criteria"
+          "reviewer_principal"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -1696,8 +1753,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1754,13 +1810,8 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
           "case_id",
-          "submission_id",
-          "coverage",
-          "findings",
-          "evidence",
           "summary"
         ],
         "additionalProperties": false,
@@ -1793,8 +1844,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1831,9 +1881,7 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "submission_id",
           "reason"
         ],
         "additionalProperties": false,
@@ -1866,8 +1914,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1891,8 +1938,7 @@
             "maxLength": 64000
           },
           "expected_content_hash": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
+            "type": "string"
           },
           "associations": {
             "type": "array",
@@ -1930,30 +1976,11 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "title",
-          "content",
-          "associations",
-          "knowledge_state",
-          "basis",
-          "basis_refs"
+          "content"
         ],
         "additionalProperties": false,
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "allOf": [
-          {
-            "if": {
-              "required": [
-                "note_id"
-              ]
-            },
-            "then": {
-              "required": [
-                "expected_content_hash"
-              ]
-            }
-          }
-        ]
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
       }
     },
     {
@@ -1982,8 +2009,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -1998,8 +2024,7 @@
             "format": "uuid"
           },
           "expected_content_hash": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
+            "type": "string"
           },
           "reason": {
             "type": "string",
@@ -2022,12 +2047,7 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
-          "note_id",
-          "expected_content_hash",
-          "reason",
-          "outgoing_publications",
-          "basis_refs"
+          "note_id"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -2063,8 +2083,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -2107,12 +2126,8 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "question",
-          "options",
-          "blocked_work_ids",
-          "reason"
+          "question"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -2144,8 +2159,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -2185,11 +2199,9 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "record_id",
           "decision_key",
-          "rationale",
-          "source_kind"
+          "rationale"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2255,8 +2267,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -2271,8 +2282,7 @@
             "format": "uuid"
           },
           "base_plan_hash": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
+            "type": "string"
           },
           "reason": {
             "type": "string",
@@ -2298,13 +2308,9 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "base_plan_hash",
           "reason",
-          "proposed_change",
-          "affected_work_ids",
-          "risk"
+          "proposed_change"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -2337,8 +2343,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -2391,14 +2396,7 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
-          "epic_id",
-          "kind",
-          "included_submissions",
-          "artifacts",
-          "evidence",
-          "environment",
-          "observation_source"
+          "epic_id"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -2431,8 +2429,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -2468,12 +2465,8 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "acceptance_id",
-          "target",
-          "method",
-          "evidence"
+          "target"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -2505,8 +2498,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -2545,13 +2537,9 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
-          "assignment_id",
           "new_principal_id",
-          "reason",
-          "stop_observation_id",
-          "preserved_artifacts"
+          "reason"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -2586,8 +2574,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -2606,8 +2593,7 @@
             "format": "uuid"
           },
           "understood_plan_hash": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{64}$"
+            "type": "string"
           },
           "examined_artifacts": {
             "type": "array",
@@ -2631,14 +2617,7 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
-          "work_id",
-          "assignment_id",
-          "understood_plan_hash",
-          "examined_artifacts",
-          "outstanding",
-          "risks",
-          "proposed_next_step"
+          "work_id"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -2670,8 +2649,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -2701,11 +2679,7 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
-          "work_id",
-          "assignment_id",
-          "recovery_report_id",
-          "reason"
+          "work_id"
         ],
         "additionalProperties": false,
         "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -2737,8 +2711,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -2775,7 +2748,6 @@
         "required": [
           "product_id",
           "idempotency_key",
-          "expected",
           "work_id",
           "disposition",
           "reason"
@@ -2810,8 +2782,7 @@
                 "minimum": 0
               },
               "plan_hash": {
-                "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "type": "string"
               },
               "assignment_generation": {
                 "type": "integer",
@@ -2844,12 +2815,29 @@
         },
         "required": [
           "product_id",
-          "idempotency_key",
-          "expected",
           "mode"
         ],
         "additionalProperties": false,
-        "$schema": "https://json-schema.org/draft/2020-12/schema"
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "mode": {
+                  "const": "inspect"
+                }
+              },
+              "required": [
+                "mode"
+              ]
+            },
+            "else": {
+              "required": [
+                "idempotency_key"
+              ]
+            }
+          }
+        ]
       }
     }
   ]

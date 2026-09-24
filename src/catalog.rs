@@ -116,72 +116,59 @@ fn description(name: &str) -> &'static str {
             "Read one scoped work section or exact signed record/publication with bounded continuation."
         }
         "at_search" => "Search permitted work and published knowledge in Linear.",
-        "at_work_create" => {
-            "Create an epic, module, task or atomic work under a valid immutable parent."
-        }
+        "at_work_create" => "Record an epic, module, task or atomic work item under a parent.",
         "at_plan_publish" => {
-            "Publish immutable obligations and pinned inputs; plan changes require an approved proposal."
+            "Record a work goal and any available scope, criteria, inputs and dependencies."
         }
         "at_contract_confirm" => {
-            "Record an attributed contract agreement and observed preparation for an exact version."
+            "Record an attributed contract statement and any available preparation details."
         }
         "at_assign" => {
-            "Assign persistent responsibility without replacing an existing healthy assignee."
+            "Record the principal responsible for the work and optional role, scope and execution context."
         }
-        "at_execution_observe" => {
-            "Record an external runtime observation; success does not accept work."
-        }
-        "at_begin" => {
-            "Begin work only after plan, scope, assignment, preparation and writer gates pass."
-        }
+        "at_execution_observe" => "Record a runtime observation and reported execution state.",
+        "at_begin" => "Record that work has begun, with optional assignment and execution context.",
         "at_checkpoint" => {
-            "Save progress, immutable evidence and author responses without closing review findings."
+            "Record a progress summary and any available artifacts or execution context."
         }
-        "at_task_complete" => {
-            "Complete a task locally with required evidence and published knowledge; does not accept its module."
+        "at_task_complete" => "Record a task result summary and its reported artifacts.",
+        "at_complete" => {
+            "Complete non-product work with a reported summary, artifacts and optional execution context."
         }
-        "at_submit" => "Freeze a module, atomic or epic result for independent review.",
-        "at_review_open" => {
-            "Assign an independent reviewer while preserving the existing review case and findings."
+        "at_submit" => {
+            "Record a work result for optional review, with its summary and reported artifacts."
         }
+        "at_review_open" => "Open an optional review case and identify its reviewer.",
         "at_review_report" => {
-            "Record reviewer coverage, evidence and verified finding outcomes for the current submission."
+            "Record a review summary and any available coverage, findings or supporting records."
         }
-        "at_accept" => {
-            "Accept the exact current reviewed result after all required children and evidence pass."
-        }
-        "at_knowledge_save" => "Create or update a native draft using its expected content hash.",
+        "at_accept" => "Record acceptance of a reported work result with a reason.",
+        "at_knowledge_save" => "Create or update a knowledge draft with its title and content.",
         "at_knowledge_publish" => {
-            "Publish a separate immutable knowledge snapshot while preserving older pinned versions."
+            "Record publication of a knowledge note with optional references."
         }
         "at_question_ask" => {
-            "Save an explicit owner question and blocked work; elapsed time is not approval."
+            "Record a question about work with optional choices and blocked work references."
         }
         "at_owner_decide" => {
-            "Record an authenticated or policy-attributed owner decision with an exact source."
+            "Record an owner decision with its rationale and available source details."
         }
-        "at_change_propose" => {
-            "Propose changes to current obligations without applying or approving them."
-        }
+        "at_change_propose" => "Record a proposed work change and its reason.",
         "at_candidate_register" => {
-            "Record actual epic composition and compute completeness from exact component results."
+            "Record a candidate for an epic with any available composition and artifacts."
         }
         "at_integration_record" => {
-            "Record evidence of accepted output in its actual target without executing Git."
+            "Record an integration target and any available method or acceptance details."
         }
         "at_transfer" => {
-            "Transfer responsibility only after verified writer stop; require recovery under a new generation."
+            "Record a change in the principal responsible for the work and its reason."
         }
         "at_recovery_report" => {
-            "Report understanding of the current plan and preserved materials as the new assignee."
+            "Record a recovery report for work with any available status or preserved materials."
         }
-        "at_recovery_confirm" => {
-            "Confirm a new assignee's recovery; beginning work remains a separate guarded action."
-        }
-        "at_work_retire" => "Retire unaccepted work with an explicit reason and stopped writers.",
-        "at_reconcile" => {
-            "Inspect saved operations without writing, or safely reconcile recorded effects with exact IDs."
-        }
+        "at_recovery_confirm" => "Record confirmation that work recovery was reviewed.",
+        "at_work_retire" => "Record a work disposition and reason.",
+        "at_reconcile" => "Inspect or reconcile recorded workflow operations.",
         _ => "Unknown workflow intent.",
     }
 }

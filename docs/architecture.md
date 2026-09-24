@@ -1,22 +1,33 @@
 # Architecture
 
-Agent-Tasks-Linear is a Rust workflow MCP gateway over Linear. Linear is the only durable store for work, plans, assignments, decisions, reviews, and operation receipts. Humans use the Linear interface. The gateway exposes bounded workflow actions to agents and checks each action against current Linear facts and authenticated scope.
+Agent-Tasks-Linear tracks trusted agent activity. Independent proof of a reported result's correctness is outside this MCP service.
 
-## Work and acceptance
+## Stored facts
 
-- A product is a Linear Initiative with a permanent general Project. An epic is a Project; a module is an Issue; a task is its sub-issue. Standalone modules and atomic work live in the general Project. Service records for entities without Issue attachments use dedicated control or companion Issues.
-- A module lead keeps responsibility across its tasks. Assignment, a runtime attempt, and permission to write in a worktree are distinct facts. Transfer requires a known writer stop and explicit recovery.
-- Published plans and knowledge snapshots bind exact versions. Native edits to a draft do not silently replace active obligations.
-- Task completion, module acceptance, epic composition acceptance, and integration are separate steps. Review findings persist until an independent reviewer verifies a fix. Native status changes without the corresponding record are drift.
+- Product: Initiative, general Project, control Issue.
+- Epic: Project and companion Issue.
+- Module/task/atomic: Issue with an explicit parent and agent assignment.
+- Activity: attributed begin, checkpoint, result, transfer and optional review events.
+- Execution: repository, branch, worktree, agent, runtime, run ID and URL when reported.
+- Artifacts: navigable commit, pull request, file, document or other result references.
+- Knowledge: editable native Documents and optional separate publication copies.
 
-## Gateway boundary
+The work head contains a compact activity summary. Earlier events remain available through history. Human-readable comments show execution location and artifacts directly in Linear. Starting another run resets current run-specific facts without deleting earlier results.
 
-- Each request authenticates its principal, reads authoritative facts from Linear, checks workflow rules, and performs only the operation allowed for that role and scope.
-- Authorization and work-head revisions are checked against committed receipts. A provisional plan cannot grant knowledge access, and a late older signed assignment cannot restore a revoked generation.
-- One active gateway serializes short writes for a product. Mutations record an exact intent and effects in Linear so restart can reconcile uncertain outcomes. Partial GraphQL or network results remain unknown until verified; a repeated request cannot create a second logical result.
-- Reads return bounded context with explicit continuation or incompleteness. Search results are filtered by product scope before titles or excerpts are exposed.
-- Agent execution, Git operations, language intelligence, and model selection remain outside this gateway. There is no local domain database, persistent queue, custom UI, or general GraphQL escape tool.
+## Boundaries
 
-## Feasibility gate
+The authenticated principal determines authority. A reported external agent name is attribution, not a credential. Workers stay within their assignment subtree. Explicit handoff changes the generation; old bindings become stale. Handoff does not claim to stop an external process.
 
-The write path is implemented and exercised both against HTTP fixtures and an isolated real Linear workspace. A live module/epic pilot, configured test-role bindings and a new-process restart have passed. [Current evidence and limits](FEASIBILITY.md) distinguish these results from the remaining full acceptance matrix and real agent-runtime provisioning.
+Completion requires neither a plan nor passed evidence, content hashes, independent review or acceptance of every child. Closing a parent does not silently close children. Optional plans and review record context and discussion.
+
+The old "accepted" state and legacy tool names remain readable for compatibility. New completion records have basis=agent_report and mean reported done. Legacy hash/evidence fields are descriptive metadata.
+
+## Reliable writes
+
+One active gateway serializes intents. Each mutation saves its request key, reserved IDs and finite effects in Linear before applying them. Same-key retries return the recorded outcome; using that key for different input is rejected. Internal hashes and record MACs protect stored receipts and credentials, not the truth of agent work.
+
+An uncertain native create is looked up by reserved ID, never replaced blindly. A pending metadata upsert can resume with its identical ID and contents under the single-writer rule. There is no distributed transaction or multiwriter fencing.
+
+Native project/parent moves remain explicit conflicts to avoid writing into a moved work. Native statuses are shown separately from activity; manual UI status cannot fabricate an agent result.
+
+There is no domain database, execution runtime, arbitrary shell tool, URL fetcher or custom UI. The original proof-oriented design package is historical reference; this document describes the current trusted activity contract.
