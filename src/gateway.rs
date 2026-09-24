@@ -140,7 +140,12 @@ impl Gateway {
     }
     /// Execute a tool and convert all domain failures into structured MCP outcomes.
     pub async fn call(&self, p: &Principal, name: &str, args: Value) -> Outcome {
-        let key = args["idempotency_key"].as_str().map(str::to_owned);
+        let key = if name == "at_reconcile" && args["mode"] != "restore_projection" {
+            args["operation_key"].as_str()
+        } else {
+            args["idempotency_key"].as_str()
+        }
+        .map(str::to_owned);
         match self.run(p, name, &args).await {
             Ok(result) => result,
             Err(error) => Outcome::failure(error, key),
@@ -372,7 +377,9 @@ impl Gateway {
                     .map_err(Fault::uncertain)?;
                 }
                 self.apply(effect).await.map_err(Fault::uncertain)?;
-                self.verify(effect).await.map_err(Fault::uncertain)?;
+                if !matches!(effect, Effect::Record { .. } | Effect::NewWork { .. }) {
+                    self.verify(effect).await.map_err(Fault::uncertain)?;
+                }
             }
             receipt.payload["steps"][i] = json!("done");
             receipt.revision += 1;
@@ -464,16 +471,7 @@ impl Gateway {
     async fn verify(&self, effect: &Effect) -> Result<()> {
         let api = &self.store.linear;
         match effect {
-            Effect::Record { record, .. } => {
-                let native = api
-                    .object("QAttachmentById", "attachment", &record.record_id)
-                    .await?;
-                require(
-                    self.store.parse(&native, &record.product_id)?.as_ref() == Some(record),
-                    "SNAPSHOT_TAMPERED",
-                    "Written record changed or is missing",
-                )
-            }
+            Effect::Record { record, .. } => self.store.verify(record).await,
             Effect::CreateIssue { input } => {
                 let native = api.object("QIssue", "issue", text(input, "id")?).await?;
                 for (field, path) in [
@@ -690,6 +688,30 @@ impl Gateway {
         s: &Snapshot,
         args: &Value,
     ) -> Result<Outcome> {
+        let key = text(args, "idempotency_key")?;
+        if let Some(receipt) = s
+            .records
+            .values()
+            .find(|r| r.record_kind == "operation_receipt" && r.payload["idempotency_key"] == key)
+        {
+            require(
+                receipt.payload["tool"] == "at_reconcile"
+                    && receipt.payload["principal_id"] == p.id
+                    && receipt.payload["command_sha256"] == hash(args)?,
+                "PAYLOAD_MISMATCH",
+                "Projection repair key is bound to another intent",
+            )?;
+            if receipt.payload["state"] == "committed" {
+                return serde_json::from_value(receipt.payload["result"].clone()).map_err(|_| {
+                    Fault::new("SNAPSHOT_TAMPERED", "Saved repair result is invalid")
+                });
+            }
+            return Err(Fault::new(
+                "OPERATION_IN_DOUBT",
+                "Inspect the saved projection repair before resuming",
+            )
+            .uncertain());
+        }
         let id = text(args, "work_id")?;
         let work = s.work(id)?;
         require(
@@ -721,14 +743,6 @@ impl Gateway {
         let mut result = Outcome::ok(json!({"work_id":id,"restored":true}));
         result.status = "committed".into();
         result.operation_key = Some(text(args, "idempotency_key")?.into());
-        let key = text(args, "idempotency_key")?;
-        require(
-            !s.records.values().any(|r| {
-                r.record_kind == "operation_receipt" && r.payload["idempotency_key"] == key
-            }),
-            "PAYLOAD_MISMATCH",
-            "Projection repair key is already used; inspect its receipt",
-        )?;
         self.prepare_execute(
             s,
             p,
@@ -773,6 +787,19 @@ impl Gateway {
                 out.data["pending_operation_key"] =
                     s.config.payload["pending_operation_key"].clone();
                 out.data["product_revision"] = json!(s.work(&s.product)?.head.revision);
+                let pending = s
+                    .records
+                    .values()
+                    .filter(|r| {
+                        r.record_kind == "operation_receipt"
+                            && !matches!(r.payload["state"].as_str(), Some("committed" | "aborted"))
+                    })
+                    .map(|r| r.payload["idempotency_key"].clone())
+                    .collect::<Vec<_>>();
+                out.incomplete |= !pending.is_empty();
+                if p.role.controls() {
+                    out.data["pending_operations"] = json!(pending);
+                }
                 Ok(out)
             }
             "at_context" => {
@@ -788,6 +815,7 @@ impl Gateway {
                 )?;
                 let value = if let Some(id) = args["work_id"].as_str() {
                     rules::in_scope(s, p, id)?;
+                    rules::no_drift(s, id)?;
                     let work = s.work(id)?;
                     match section {
                         "work" => {
@@ -830,6 +858,11 @@ impl Gateway {
                     let record = s.record(id, None)?;
                     can_read_record(s, p, record)?;
                     if section == "publication" {
+                        require(
+                            s.is_committed(record),
+                            "KNOWLEDGE_UNPUBLISHED",
+                            "Publication has not committed",
+                        )?;
                         require(
                             record.record_kind == "publication",
                             "INVALID_INPUT",
@@ -914,7 +947,9 @@ impl Gateway {
                                 }
                             } else {
                                 for publication in s.records.values().filter(|r| {
-                                    r.record_kind == "publication" && r.payload["document_id"] == id
+                                    r.record_kind == "publication"
+                                        && s.is_committed(r)
+                                        && r.payload["document_id"] == id
                                 }) {
                                     if can_read_record(s, p, publication).is_ok() {
                                         let note = s.record(
@@ -1028,12 +1063,18 @@ impl Gateway {
     }
 }
 
-/// Permit knowledge only through scope, associations or an exact pinned input.
+/// Permit knowledge through scope, associations, or exact input/contract pins in authorized plan history.
 fn can_read_record(s: &Snapshot, p: &Principal, r: &Record) -> Result<()> {
     if rules::in_scope(s, p, &r.work_id).is_ok() {
         return Ok(());
     }
     if matches!(r.record_kind.as_str(), "publication" | "note") {
+        if !s.is_committed(r) {
+            return Err(Fault::new(
+                "OUT_OF_SCOPE",
+                "Knowledge is not committed for this binding",
+            ));
+        }
         if array(&r.payload, "associations")
             .iter()
             .filter_map(|a| a["work_id"].as_str())
@@ -1041,17 +1082,19 @@ fn can_read_record(s: &Snapshot, p: &Principal, r: &Record) -> Result<()> {
         {
             return Ok(());
         }
-        for work in s
-            .works
-            .values()
-            .filter(|w| rules::in_scope(s, p, &w.identity.work_id).is_ok())
-        {
-            if let Some(plan) = work.head.payload["plan_record_id"]
-                .as_str()
-                .and_then(|id| s.records.get(id))
-                && array(&plan.payload, "inputs")
-                    .iter()
-                    .any(|pin| pin["kind"] == "linear_publication" && pin["id"] == r.record_id)
+        for plan in s.records.values().filter(|r| {
+            r.record_kind == "plan"
+                && s.is_committed(r)
+                && rules::in_scope(s, p, &r.work_id).is_ok()
+        }) {
+            if array(&plan.payload, "inputs")
+                .iter()
+                .chain(
+                    array(&plan.payload, "contracts")
+                        .iter()
+                        .map(|contract| &contract["source"]),
+                )
+                .any(|pin| pin["kind"] == "linear_publication" && pin["id"] == r.record_id)
             {
                 return Ok(());
             }

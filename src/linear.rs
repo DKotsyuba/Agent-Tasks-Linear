@@ -97,11 +97,18 @@ impl Linear {
                     tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
                     continue;
                 }
-                Err(_) => {
+                Err(error) => {
+                    let reason = if error.is_timeout() {
+                        "timeout"
+                    } else if error.is_connect() {
+                        "connection failure"
+                    } else {
+                        "transport failure"
+                    };
                     return Err(if write {
                         Fault::new(
                             "LINEAR_UNAVAILABLE",
-                            "Linear write response was not received",
+                            format!("Linear {name} write response was not received ({reason})"),
                         )
                         .uncertain()
                     } else {
@@ -170,6 +177,11 @@ impl Linear {
                             e["extensions"]["code"].as_str(),
                             Some("NOT_FOUND" | "ENTITY_NOT_FOUND")
                         ) || e["extensions"]["type"] == "EntityNotFound"
+                            || (e["extensions"]["code"] == "INPUT_ERROR"
+                                && e["extensions"]["type"] == "invalid input"
+                                && e["message"].as_str().is_some_and(|message| {
+                                    message.starts_with("Entity not found: ")
+                                }))
                     })
                 });
                 let code = if missing && !write {

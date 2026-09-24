@@ -27,6 +27,8 @@ struct Fake {
     fail_after: Option<String>,
     /// Number of mutations observed, for read-only and duplicate assertions.
     writes: usize,
+    /// One earlier valid attachment version returned before the current replicated value.
+    stale_attachment: Option<Value>,
 }
 /// Fixture boundary: execute a known static GraphQL operation, never arbitrary GraphQL text.
 async fn graphql(State(state): State<Arc<Mutex<Fake>>>, Json(request): Json<Value>) -> Json<Value> {
@@ -37,7 +39,16 @@ async fn graphql(State(state): State<Arc<Mutex<Fake>>>, Json(request): Json<Valu
     let id = v["id"].as_str().unwrap_or("");
     let data = match op {
         "QIssue" => json!({"issue":s.issues.get(id)}),
-        "QAttachmentById" => json!({"attachment":s.attachments.get(id)}),
+        "QAttachmentById" => {
+            if s.stale_attachment
+                .as_ref()
+                .is_some_and(|value| value["id"] == id)
+            {
+                json!({"attachment":s.stale_attachment.take()})
+            } else {
+                json!({"attachment":s.attachments.get(id)})
+            }
+        }
         "QDocument" => json!({"document":s.documents.get(id)}),
         "QComment" => json!({"comment":s.comments.get(id)}),
         "QTeam" => {
@@ -277,6 +288,9 @@ async fn module_cycle_rejects_failed_review_and_preserves_scopes() {
     let lead = f.assign(&module).await;
     f.begin(&module, &lead).await;
     f.begin(&task, &lead).await;
+    let retire=f.args(&task,&f.owner,json!({"work_id":task,"disposition":"cancelled","reason":"Must reject an inherited active writer"})).await;
+    let denied = f.g.call(&f.owner, "at_work_retire", retire).await;
+    assert_eq!(denied.violations[0]["code"], "WRITER_ACTIVE");
     let artifacts = json!([{"kind":"document","locator":"fixture://result"}]);
     let task_result=f.write(&lead,"at_task_complete",&task,json!({"work_id":task,"result_summary":"Complete","artifacts":artifacts,"evidence":[evidence(&artifacts,"passed")],"reuse_evidence":[],"knowledge_results":[]})).await;
     assert_eq!(task_result.data["acceptance_level"], "task_local");
@@ -305,6 +319,16 @@ async fn module_cycle_rejects_failed_review_and_preserves_scopes() {
     f.write(&reviewer,"at_review_report",&module,json!({"work_id":module,"case_id":open.data["case_id"],"submission_id":sub.data["submission_id"],"coverage":[{"criterion_id":"C1","state":"covered","evidence_ids":[passed["id"]]}],"findings":[],"evidence":[passed],"summary":"Independent full review passed"})).await;
     let accepted=f.write(&f.owner,"at_accept",&module,json!({"work_id":module,"submission_id":sub.data["submission_id"],"case_id":open.data["case_id"],"reason":"Evidence checked"})).await;
     assert_eq!(accepted.data["acceptance_level"], "module");
+    f.write(&lead,"at_execution_observe",&module,json!({"work_id":module,"assignment_id":lead.assignment_id,"observation":{"runtime":"fixture","run_id":"fixture-run","state":"succeeded","observed_at":"2026-09-24T10:02:00Z","source":{"kind":"document","locator":"fixture://finished"},"writer_state":"stopped"}})).await;
+    let final_state = f.g.store.snapshot(&f.product).await.unwrap();
+    assert_eq!(
+        final_state.work(&module).unwrap().head.payload["state"],
+        "accepted"
+    );
+    assert_eq!(
+        final_state.work(&module).unwrap().head.payload["acceptance_id"],
+        accepted.data["acceptance_id"]
+    );
     let outside = f.create(&f.product, "module").await;
     let out =
         f.g.call(
@@ -387,6 +411,28 @@ async fn schema_roles_and_missing_token_are_enforced() {
     assert_eq!(result.violations[0]["code"], "INVALID_INPUT");
 }
 
+/// A successful write followed by one older signed read triggers no duplicate write.
+#[tokio::test]
+async fn record_readback_retries_only_the_stale_read() {
+    let f = Fixture::new().await;
+    let snapshot = f.g.store.snapshot(&f.product).await.unwrap();
+    let mut record = snapshot.config.clone();
+    let stale = f.state.lock().await.attachments[&record.record_id].clone();
+    f.state.lock().await.stale_attachment = Some(stale.clone());
+    record.revision += 1;
+    record.payload["policy_version"] = json!(2);
+    f.g.store.signer.seal(&mut record).unwrap();
+    let writes = f.state.lock().await.writes;
+    f.g.store
+        .put(&record, record.payload["record_base_url"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(f.state.lock().await.writes, writes + 1);
+    f.state.lock().await.stale_attachment = Some(stale);
+    f.g.store.verify(&record).await.unwrap();
+    assert_eq!(f.state.lock().await.writes, writes + 1);
+}
+
 /// Human draft edits publish separate snapshots; older pins remain valid until tampered with.
 #[tokio::test]
 async fn native_drafts_publish_immutable_snapshots() {
@@ -441,11 +487,21 @@ async fn transfer_requires_stop_and_new_generation_recovery() {
         .record(lead.assignment_id.as_deref().unwrap(), Some("assignment"))
         .unwrap();
     let active = assignment.payload["latest_attempt_id"].clone();
+    let original_assignment = assignment.clone();
     let mut args=f.args(&work,&f.owner,json!({"work_id":work,"assignment_id":lead.assignment_id,"new_principal_id":"next-lead","reason":"Transfer fixture","stop_observation_id":active,"preserved_artifacts":[]})).await;
     args["expected"]["assignment_generation"] = json!(1);
     let out = f.g.call(&f.owner, "at_transfer", args).await;
     assert_eq!(out.violations[0]["code"], "WRITER_ACTIVE");
     let stopped=f.write(&lead,"at_execution_observe",&work,json!({"work_id":work,"assignment_id":lead.assignment_id,"observation":{"runtime":"fixture","run_id":"fixture-run","state":"stopped","observed_at":"2026-09-24T10:01:00Z","source":{"kind":"document","locator":"fixture://stopped"},"writer_state":"stopped"}})).await;
+    let stale = f
+        .args(
+            &work,
+            &lead,
+            json!({"work_id":work,"assignment_id":lead.assignment_id,"attempt_id":active}),
+        )
+        .await;
+    let stale = f.g.call(&lead, "at_begin", stale).await;
+    assert_eq!(stale.violations[0]["code"], "PREPARATION_UNKNOWN");
     let mut args=f.args(&work,&f.owner,json!({"work_id":work,"assignment_id":lead.assignment_id,"new_principal_id":"next-lead","reason":"Transfer fixture","stop_observation_id":stopped.data["attempt_id"],"preserved_artifacts":[]})).await;
     args["expected"]["assignment_generation"] = json!(1);
     let transfer = f.g.call(&f.owner, "at_transfer", args).await;
@@ -470,6 +526,22 @@ async fn transfer_requires_stop_and_new_generation_recovery() {
     let out = f.g.call(&f.owner, "at_recovery_confirm", args).await;
     assert_eq!(out.status, "committed", "{out:?}");
     f.begin(&work, &next).await;
+    f.g.store
+        .put(
+            &original_assignment,
+            s.work(&work).unwrap().identity.payload["record_base_url"]
+                .as_str()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let revoked =
+        f.g.call(&lead, "at_resume", json!({"product_id":f.product}))
+            .await;
+    assert_eq!(
+        revoked.violations[0]["code"], "STALE_ASSIGNMENT",
+        "A late older write must not restore revoked permissions"
+    );
 }
 
 /// Frozen scope can grow only through an approved proposal followed by an exact new plan.
@@ -489,4 +561,139 @@ async fn approved_scope_change_can_add_a_mandatory_child() {
         s.work(&work).unwrap().head.payload["pending_scope_change"],
         false
     );
+}
+
+/// A lead can read its exact published contract source without receiving unrelated product knowledge.
+#[tokio::test]
+async fn contract_sources_are_part_of_assigned_context() {
+    let f = Fixture::new().await;
+    let note=f.write(&f.owner,"at_knowledge_save",&f.product,json!({"title":"Pinned contract","content":"Contract body","associations":[],"knowledge_state":"proposed","basis":"reported","basis_refs":[]})).await;
+    let publication=f.write(&f.owner,"at_knowledge_publish",&f.product,json!({"note_id":note.data["note_id"],"expected_content_hash":note.data["content_hash"],"reason":"Pin contract","outgoing_publications":[],"basis_refs":[]})).await;
+    let work = f.create(&f.product, "module").await;
+    f.write(&f.owner,"at_plan_publish",&work,json!({"work_id":work,"goal":"Use a published contract","scope":"One module","criteria":[{"id":"C1","text":"Contract is readable","required":true,"verification":"test"}],"inputs":[],"dependencies":[],"contracts":[{"source":{"kind":"linear_publication","id":publication.data["publication_id"],"sha256":publication.data["content_hash"]},"direction":"provides","parties":[work],"preparation_required":false,"real_integration_required":false}],"knowledge_outputs":[],"mandatory_children":[]})).await;
+    let lead = f.assign(&work).await;
+    let result=f.g.call(&lead,"at_context",json!({"product_id":f.product,"publication_id":publication.data["publication_id"],"section":"publication"})).await;
+    assert_eq!(result.status, "ok", "{result:?}");
+    let unrelated =
+        f.g.call(
+            &lead,
+            "at_context",
+            json!({"product_id":f.product,"record_id":note.data["note_id"],"section":"record"}),
+        )
+        .await;
+    assert_eq!(unrelated.violations[0]["code"], "OUT_OF_SCOPE");
+}
+
+/// A signed but uncommitted plan cannot grant a lead access to previously unrelated knowledge.
+#[tokio::test]
+async fn provisional_plan_does_not_grant_publication_access() {
+    let f = Fixture::new().await;
+    let note=f.write(&f.owner,"at_knowledge_save",&f.product,json!({"title":"Unrelated knowledge","content":"Private product draft","associations":[],"knowledge_state":"proposed","basis":"reported","basis_refs":[]})).await;
+    let publication=f.write(&f.owner,"at_knowledge_publish",&f.product,json!({"note_id":note.data["note_id"],"expected_content_hash":note.data["content_hash"],"reason":"Publish independently","outgoing_publications":[],"basis_refs":[]})).await;
+    let work = f.create(&f.product, "module").await;
+    f.plan(&work, &[]).await;
+    let lead = f.assign(&work).await;
+    let snapshot = f.g.store.snapshot(&f.product).await.unwrap();
+    let provisional=f.g.store.signer.record(&f.owner,&f.product,&work,"plan",json!({"inputs":[{"kind":"linear_publication","id":publication.data["publication_id"],"sha256":publication.data["content_hash"]}],"contracts":[]}),None).unwrap();
+    f.g.store
+        .put(
+            &provisional,
+            snapshot.work(&work).unwrap().identity.payload["record_base_url"]
+                .as_str()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let result=f.g.call(&lead,"at_context",json!({"product_id":f.product,"publication_id":publication.data["publication_id"],"section":"publication"})).await;
+    assert_eq!(result.violations[0]["code"], "OUT_OF_SCOPE", "{result:?}");
+}
+
+/// An old signed head cannot hide a committed assignment and authorize a second healthy lead.
+#[tokio::test]
+async fn rolled_back_head_cannot_allocate_duplicate_responsibility() {
+    let f = Fixture::new().await;
+    let work = f.create(&f.product, "module").await;
+    f.plan(&work, &[]).await;
+    let snapshot = f.g.store.snapshot(&f.product).await.unwrap();
+    let old = snapshot.work(&work).unwrap().head.clone();
+    f.assign(&work).await;
+    f.g.store
+        .put(
+            &old,
+            snapshot.work(&work).unwrap().identity.payload["record_base_url"]
+                .as_str()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let args=f.args(&work,&f.owner,json!({"work_id":work,"principal_id":"second-lead","role":"lead","scope":"Must reject rolled-back allocation"})).await;
+    let result = f.g.call(&f.owner, "at_assign", args).await;
+    assert_eq!(
+        result.violations[0]["code"], "STRUCTURE_DRIFT",
+        "{result:?}"
+    );
+}
+
+/// Epic creation returns the epic's native Project UUID rather than the general companion container.
+#[tokio::test]
+async fn epic_creation_identifies_the_native_project() {
+    let f = Fixture::new().await;
+    let facts = f.g.store.snapshot(&f.product).await.unwrap();
+    let args=f.args(&f.product,&f.owner,json!({"kind":"epic","parent_id":f.product,"title":"Epic","description":"Native project mapping"})).await;
+    let plan = agent_tasks_linear::rules::plan(
+        &facts,
+        &f.owner,
+        &f.g.store.signer,
+        "at_work_create",
+        &args,
+    )
+    .unwrap();
+    let identity = plan
+        .effects
+        .iter()
+        .find_map(|effect| match effect {
+            agent_tasks_linear::gateway::Effect::NewWork { identity, .. } => Some(identity),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        plan.result.data["native_project_id"],
+        identity.payload["epic_project_id"]
+    );
+}
+
+/// Projection repair obeys the same exact-payload replay contract as other writes.
+#[tokio::test]
+async fn projection_repair_replays_without_another_write() {
+    let f = Fixture::new().await;
+    let work = f.create(&f.product, "module").await;
+    let question=f.write(&f.owner,"at_question_ask",&work,json!({"work_id":work,"question":"Restore this work's managed status?","options":[{"key":"restore_projection","text":"Restore"},{"key":"hold","text":"Hold"}],"blocked_work_ids":[],"reason":"Test repair authorization"})).await;
+    let decision=f.write(&f.owner,"at_owner_decide",&work,json!({"record_id":question.data["question_id"],"decision_key":"restore_projection","rationale":"Restore the recorded state","source_kind":"owner_authenticated"})).await;
+    f.state.lock().await.issues.get_mut(&work).unwrap()["state"] =
+        json!({"id":Uuid::new_v4().to_string()});
+    let args=f.args(&work,&f.owner,json!({"work_id":work,"mode":"restore_projection","decision_id":decision.data["decision_id"]})).await;
+    let result = f.g.call(&f.owner, "at_reconcile", args.clone()).await;
+    assert_eq!(result.status, "committed", "{result:?}");
+    let writes = f.state.lock().await.writes;
+    let result = f.g.call(&f.owner, "at_reconcile", args).await;
+    assert_eq!(result.status, "committed", "{result:?}");
+    assert_eq!(f.state.lock().await.writes, writes);
+}
+
+/// Bug atomics use reproduction evidence without requiring a field absent from the submit schema.
+#[tokio::test]
+async fn bug_atomic_requires_and_accepts_passed_reproduction() {
+    let f = Fixture::new().await;
+    let work=f.write(&f.owner,"at_work_create",&f.product,json!({"kind":"atomic","parent_id":f.product,"title":"Fix an atomic bug","description":"Fixture reproduction","classification":"bug"})).await.data["created_work_id"].as_str().unwrap().to_owned();
+    f.plan(&work, &[]).await;
+    let lead = f.assign(&work).await;
+    let attempt=f.write(&lead,"at_execution_observe",&work,json!({"work_id":work,"assignment_id":lead.assignment_id,"observation":{"runtime":"fixture","run_id":"bug-fixture","state":"running","observed_at":"2026-09-24T10:00:00Z","source":{"kind":"file","locator":"fixture://prepared"},"writer_state":"active"}})).await;
+    f.write(&lead,"at_begin",&work,json!({"work_id":work,"assignment_id":lead.assignment_id,"attempt_id":attempt.data["attempt_id"],"workspace_ref":"fixture://workspace","prepared_source":{"kind":"file","locator":"fixture://prepared"}})).await;
+    let artifacts = json!([{"kind":"git_commit","locator":"fixture://repository","commit":"1111111111111111111111111111111111111111"}]);
+    let mut proof = evidence(&artifacts, "passed");
+    let args=f.args(&work,&lead,json!({"work_id":work,"summary":"A passed test alone is insufficient","artifacts":artifacts,"evidence":[proof],"reuse_evidence":[],"knowledge_results":[]})).await;
+    let result = f.g.call(&lead, "at_submit", args).await;
+    assert_eq!(result.violations[0]["code"], "REPRODUCTION_REQUIRED");
+    proof["kind"] = json!("reproduction");
+    f.write(&lead,"at_submit",&work,json!({"work_id":work,"summary":"Original reproduction passes","artifacts":artifacts,"evidence":[proof],"reuse_evidence":[],"knowledge_results":[]})).await;
 }

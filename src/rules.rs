@@ -37,6 +37,18 @@ pub fn authorize(s: &Snapshot, p: &Principal) -> Result<()> {
             })?,
             Some("assignment"),
         )?;
+        let committed = s
+            .latest_committed(&a.record_id)
+            .ok_or_else(|| Fault::new("STALE_ASSIGNMENT", "Assignment has not committed"))?;
+        require(
+            committed["payload"]["principal_id"] == p.id
+                && committed["payload"]["role"] == p.role.name()
+                && committed["payload"]["generation"].as_u64() == p.generation
+                && committed["payload"]["status"] != "revoked"
+                && committed["payload"]["scope_work_ids"] == a.payload["scope_work_ids"],
+            "STALE_ASSIGNMENT",
+            "Binding differs from the latest committed assignment",
+        )?;
         require(
             a.payload["principal_id"] == p.id
                 && a.payload["role"] == p.role.name()
@@ -69,6 +81,13 @@ pub fn in_scope(s: &Snapshot, p: &Principal, id: &str) -> Result<()> {
 /// Compare immutable native relationships and protected status with the signed work head.
 pub fn no_drift(s: &Snapshot, id: &str) -> Result<()> {
     let w = s.work(id)?;
+    if s.latest_committed(&w.head.record_id).is_some() {
+        require(
+            s.is_committed(&w.head),
+            "STRUCTURE_DRIFT",
+            "Work head differs from its latest committed version",
+        )?;
+    }
     let identity = &w.identity.payload;
     require(
         w.native["project"]["id"] == identity["native_project_id"]
@@ -111,6 +130,7 @@ impl<'a> Builder<'a> {
         signer: &'a Signer,
         args: &Value,
         work: &str,
+        allow_terminal: bool,
     ) -> Result<Self> {
         in_scope(s, p, work)?;
         no_drift(s, work)?;
@@ -137,10 +157,11 @@ impl<'a> Builder<'a> {
             )?;
         }
         require(
-            !matches!(
-                head.payload["state"].as_str(),
-                Some("accepted" | "skipped" | "cancelled")
-            ),
+            allow_terminal
+                || !matches!(
+                    head.payload["state"].as_str(),
+                    Some("accepted" | "skipped" | "cancelled")
+                ),
             "IMMUTABLE_ACCEPTANCE",
             "Terminal work requires a new corrective work item",
         )?;
@@ -393,6 +414,11 @@ impl<'a> Builder<'a> {
                         .record(text(pin, "id")?, Some("publication"))?
                         .clone();
                     require(
+                        self.s.is_committed(&r),
+                        "KNOWLEDGE_UNPUBLISHED",
+                        "Pinned publication has not committed",
+                    )?;
+                    require(
                         r.payload["content_hash"] == pin["sha256"],
                         "STALE_PLAN",
                         "Publication pin changed",
@@ -488,7 +514,8 @@ impl<'a> Builder<'a> {
         }
         if self.s.work(&self.work)?.identity.payload["classification"] == "bug" {
             require(
-                !array(args, "bugs_reproduced").is_empty()
+                (self.s.work(&self.work)?.identity.payload["kind"] != "task"
+                    || !array(args, "bugs_reproduced").is_empty())
                     && evidence.iter().any(|e| {
                         e["kind"] == "reproduction"
                             && e["result"] == "passed"
@@ -515,6 +542,11 @@ impl<'a> Builder<'a> {
                 .s
                 .record(text(result, "publication_id")?, Some("publication"))?
                 .clone();
+            require(
+                self.s.is_committed(&publication),
+                "KNOWLEDGE_UNPUBLISHED",
+                "Required knowledge publication has not committed",
+            )?;
             require(
                 publication.payload["content_hash"] == result["sha256"],
                 "SNAPSHOT_TAMPERED",
@@ -569,7 +601,7 @@ impl<'a> Builder<'a> {
     fn stopped(&self) -> Result<()> {
         for a in self.s.records.values().filter(|r| {
             r.record_kind == "assignment"
-                && self.s.within(&r.work_id, &self.work)
+                && (self.s.within(&r.work_id, &self.work) || self.s.within(&self.work, &r.work_id))
                 && r.payload["status"] != "revoked"
         }) {
             if let Some(id) = a.payload["latest_attempt_id"].as_str() {
@@ -635,22 +667,10 @@ pub fn plan(
 ) -> Result<Plan> {
     let work = target(s, args)?;
     let key = text(args, "idempotency_key")?;
-    // Integration evidence and review reports may legitimately reference an already accepted work.
-    let mut facts = s.clone();
-    if name == "at_integration_record" {
-        facts
-            .works
-            .get_mut(&work)
-            .ok_or_else(|| Fault::new("OUT_OF_SCOPE", "Work is missing"))?
-            .head
-            .payload["state"] = json!("review");
-    }
-    let source = if name == "at_integration_record" {
-        &facts
-    } else {
-        s
-    };
-    let mut b = Builder::new(source, p, signer, args, &work)?;
+    // Integration facts and final runtime observations append without rewriting an accepted result.
+    let append_to_terminal = matches!(name, "at_integration_record" | "at_execution_observe");
+    let source = s;
+    let mut b = Builder::new(source, p, signer, args, &work, append_to_terminal)?;
     match name {
         "at_work_create" => {
             let kind = text(args, "kind")?;
@@ -741,7 +761,7 @@ pub fn plan(
             let mut children = array(&b.head.payload, "children").to_vec();
             children.push(json!(id));
             b.head.payload["children"] = json!(children);
-            b.plan.result.data = json!({"work_id":id,"created_work_id":id,"kind":kind,"native_project_id":project,"state":"draft","revision":1});
+            b.plan.result.data = json!({"work_id":id,"created_work_id":id,"native_issue_id":id,"kind":kind,"native_project_id":epic_project.clone().map(Value::String).unwrap_or(project),"state":"draft","revision":1});
         }
         "at_plan_publish" => {
             let criteria = array(args, "criteria");
@@ -965,6 +985,11 @@ pub fn plan(
             )?;
             b.gates(&plan, "start")?;
             let attempt = source.record(text(args, "attempt_id")?, Some("attempt"))?;
+            require(
+                assignment.payload["latest_attempt_id"] == attempt.record_id,
+                "PREPARATION_UNKNOWN",
+                "Begin requires the latest runtime observation",
+            )?;
             require(
                 attempt.payload["assignment_id"] == assignment.record_id
                     && attempt.payload["generation"] == assignment.payload["generation"],
@@ -1293,6 +1318,9 @@ pub fn plan(
             ));
         }
     }
+    if append_to_terminal {
+        b.head.payload["state"] = s.work(&work)?.head.payload["state"].clone();
+    }
     b.finish(key)
 }
 
@@ -1614,6 +1642,11 @@ fn knowledge(b: &mut Builder<'_>, name: &str, args: &Value) -> Result<()> {
         }
     } else {
         let note = b.s.record(text(args, "note_id")?, Some("note"))?.clone();
+        require(
+            b.s.is_committed(&note),
+            "KNOWLEDGE_UNPUBLISHED",
+            "Draft save has not committed",
+        )?;
         b.pins(array(args, "outgoing_publications"))?;
         // Native content is filled from an exact checked read by the gateway before executing this plan.
         let document_id = Uuid::new_v4().to_string();

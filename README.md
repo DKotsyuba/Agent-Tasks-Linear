@@ -2,14 +2,14 @@
 
 A Rust workflow MCP gateway for agent work in Linear. Linear owns the durable work records and the human interface. The gateway checks roles, current facts, and workflow gates before it performs a bounded Linear operation. Agent execution stays in an external runtime.
 
-The Rust MCP server runs over authenticated Streamable HTTP on loopback. A stdio bridge connects clients to that same writer. All 27 workflow intents are implemented and role filtered. Local HTTP fixtures exercise the work/review cycle, recovery, scope isolation, knowledge snapshots and transfer. Live Linear behavior remains unverified until an API token and dedicated test team are provided.
+The Rust MCP server runs over authenticated Streamable HTTP on loopback. A stdio bridge connects clients to that same writer. All 27 workflow intents are implemented and role filtered. An isolated live Linear pilot has exercised module and epic acceptance, pinned contracts, owner decisions, transfer, replay and a fresh gateway process. See [feasibility and limits](docs/FEASIBILITY.md) for the exact verification boundary.
 
 ## Product boundary
 
 - Linear holds projects, issues, documents, assignments, plans, reviews, decisions, and operation receipts. The gateway has no persistent domain database, custom task UI, scheduler, or embedded agent runner.
 - One active gateway performs writes for a product. Short writes are serialized in process; this does not claim distributed transactions or compare-and-swap in Linear.
 - A task's local completion, module acceptance, and epic acceptance are separate decisions backed by saved evidence. A native Done status alone proves none of them.
-- The proposed gateway behavior is summarized in [the architecture](docs/architecture.md). Its Linear API assumptions require live feasibility checks before implementation.
+- The gateway behavior is summarized in [the architecture](docs/architecture.md). Production rollout still requires the remaining acceptance checks listed in the feasibility report.
 
 ## Source material and precedence
 
@@ -80,4 +80,14 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 ```
 
-Tests include a real MCP HTTP client and executable stdio bridge. HTTP fixtures simulate Linear persistence and a lost mutation response across a fresh gateway instance. They are not evidence of live Linear permissions or behavior.
+The default suite contains 17 local tests, including a real MCP HTTP client and executable stdio bridge. HTTP fixtures simulate Linear persistence and lost responses. Live tests are separately opted in and require a disposable managed product, API key and protected configuration:
+
+```sh
+export ATL_LIVE_CONFIG=/absolute/path/to/private-config.toml
+export ATL_LIVE_PRODUCT=PRODUCT_UUID
+cargo test --locked --test live live_workspace_workflow -- --ignored --exact --nocapture
+```
+
+Run one named live test at a time. Do not run the whole ignored suite concurrently: it includes mutations and explicit operator recovery helpers. `live_extended_gates` checks contracts, owner attribution and transfer; `live_epic_composition` checks exact component composition and native Project completion. `ATL_LIVE_REPORT=/absolute/path/to/previous-report.json` resumes a failed test using its original saved requests and idempotency keys; first reconcile any pending operation. Private binding copies are removed after the test, and evidence reports contain no authentication credentials.
+
+The live suite uses separate provisioned test identities. It does not claim independent human/agent review or provider-specific runtime credential delivery.

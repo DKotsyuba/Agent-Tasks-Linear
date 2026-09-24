@@ -182,6 +182,25 @@ pub struct Snapshot {
     pub records: BTreeMap<String, Record>,
 }
 impl Snapshot {
+    /// Latest exact record written by a committed recipe, including the initial head of newly created work.
+    pub fn latest_committed(&self, id: &str) -> Option<&Value> {
+        self.records
+            .values()
+            .filter(|r| r.record_kind == "operation_receipt" && r.payload["state"] == "committed")
+            .flat_map(|r| array(&r.payload["plan"], "effects"))
+            .filter_map(|effect| match effect["kind"].as_str() {
+                Some("record") => Some(&effect["record"]),
+                Some("new_work") => Some(&effect["head"]),
+                _ => None,
+            })
+            .filter(|record| record["record_id"] == id)
+            .max_by_key(|value| value["revision"].as_u64().unwrap_or(0))
+    }
+    /// Whether this exact record version belongs to the latest committed receipt for its identity.
+    pub fn is_committed(&self, record: &Record) -> bool {
+        self.latest_committed(&record.record_id)
+            .is_some_and(|value| *value == serde_json::to_value(record).unwrap())
+    }
     /// Require an existing committed work in this product.
     pub fn work(&self, id: &str) -> Result<&Work> {
         self.works
@@ -242,7 +261,7 @@ impl Store {
             json!({"id":record.record_id,"issueId":record.work_id,"title":format!("AT {} · r{}",record.record_kind,record.revision),"url":format!("{base_url}#agent-tasks-v1/{}/{}",record.record_kind,record.record_id),"metadata":{"at_schema":1,"at_kind":record.record_kind,"at_product_id":record.product_id,"at_work_id":record.work_id,"payload_json":body}}),
         )
     }
-    /// Upsert one exact envelope then verify its returned and reread content.
+    /// Upsert once, then verify bounded read-back; older replicated versions cause read-only retries.
     pub async fn put(&self, record: &Record, base_url: &str) -> Result<()> {
         let input = self.attachment_input(record, base_url)?;
         let reply = self
@@ -255,20 +274,60 @@ impl Store {
             "Attachment ID changed during upsert",
         )
         .map_err(Fault::uncertain)?;
-        let fetched = self
-            .linear
-            .object("QAttachmentById", "attachment", &record.record_id)
-            .await
-            .map_err(Fault::uncertain)?;
-        let saved = self
-            .parse(&fetched, &record.product_id)?
-            .ok_or_else(|| Fault::new("SNAPSHOT_TAMPERED", "Missing managed record").uncertain())?;
-        require(
-            saved == *record,
-            "SNAPSHOT_TAMPERED",
-            "Record read-back does not match",
+        self.verify(record).await
+    }
+    /// Verify an exact signed version with bounded read-only retries; never repeat an external write.
+    pub async fn verify(&self, record: &Record) -> Result<()> {
+        let mut observed = None;
+        for delay in [0, 50, 100, 200, 400] {
+            if delay > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+            let fetched = match self
+                .linear
+                .object("QAttachmentById", "attachment", &record.record_id)
+                .await
+            {
+                Ok(value) => value,
+                Err(error) if error.code == "RECORD_MISSING" => continue,
+                Err(error) => return Err(error.uncertain()),
+            };
+            let saved = self.parse(&fetched, &record.product_id)?.ok_or_else(|| {
+                Fault::new("SNAPSHOT_TAMPERED", "Missing managed record").uncertain()
+            })?;
+            if saved == *record {
+                return Ok(());
+            }
+            observed = Some(saved.revision);
+            if saved.revision >= record.revision {
+                let actual = serde_json::to_value(&saved).unwrap();
+                let expected = serde_json::to_value(record).unwrap();
+                let fields = expected
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .filter(|(key, value)| actual.get(*key) != Some(*value))
+                    .map(|(key, _)| key.as_str())
+                    .collect::<Vec<_>>();
+                return Err(Fault::new(
+                    "SNAPSHOT_TAMPERED",
+                    format!(
+                        "Record read-back differs at revision {} in {}",
+                        saved.revision,
+                        fields.join(", ")
+                    ),
+                )
+                .uncertain());
+            }
+        }
+        Err(Fault::new(
+            "OPERATION_IN_DOUBT",
+            format!(
+                "Record read-back remained stale: expected revision {}, observed {:?}",
+                record.revision, observed
+            ),
         )
-        .map_err(Fault::uncertain)
+        .uncertain())
     }
     /// Parse only this product's metadata and reject corruption before returning the record.
     pub fn parse(&self, attachment: &Value, product: &str) -> Result<Option<Record>> {

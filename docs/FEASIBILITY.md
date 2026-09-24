@@ -6,18 +6,28 @@
 |---|---|---|
 | Rust MCP server and stdio bridge | Real official MCP client against the local authenticated server and bridge executable | Locally verified |
 | Input schemas and roles | 27 embedded tool schemas; role-filtered discovery and invalid-input rejection | Locally verified |
-| Module workflow | Task-local completion, submission, separate reviewer and owner acceptance against an HTTP fixture | Locally verified |
-| Write recovery | Persisted receipt, injected lost create response, fresh gateway, exact-ID reconciliation and mismatched replay rejection | Locally verified |
-| Knowledge and transfer | Draft/snapshot isolation, snapshot tampering, stopped-writer transfer, revoked old generation and recovery confirmation | Locally verified |
+| Module workflow | Real Linear task-local completion, submission, separately provisioned reviewer identity and owner acceptance | Live synthetic pilot passed |
+| Epic workflow | Native Project plus companion, exact accepted component candidate, composition review, epic acceptance and integration record | Live synthetic pilot passed |
+| Write recovery | Local failure injection plus real uncertain outcomes; exact replay and mismatch rejection; new CLI gateway in an empty working directory through stdio | Verified with the operator limitation below |
+| Knowledge and transfer | Real snapshots, contract access/gates, owner-PAT attribution rejection, transfer, revoked generation and recovery confirmation; local tamper regressions | Pilot passed |
 | GraphQL operations | Automated field/argument/variable validation against the official public schema snapshot | Statically verified |
-| Linear workspace and permissions | No API token supplied | Unresolved |
-| Attachment UUID/upsert/addressing and limits | API documentation plus fixture behavior; no live mutation | Unresolved |
-| Canonical Markdown round-trip | Strict intended-content/read-back comparison; no live normalization sample | Unresolved |
-| Full 40-scenario specification matrix | Only the concrete scenarios listed above are exercised locally | Incomplete |
+| Linear workspace and permissions | Read-only doctor and live bootstrap of Initiative, Projects, Issues, states, labels, Documents and attachments | Verified in an authorized disposable workspace |
+| Attachment UUID/upsert/addressing and limits | Reserved UUIDs and namespaced fragments worked in the live pilot; four direct upsert/read probe revisions matched | Basic behavior verified; maximum size unmeasured |
+| Canonical Markdown round-trip | Plain notes and generated structured snapshot documents round-tripped exactly | Observed samples verified; broader normalization still open |
+| Independent agent runtime | Separate protected test bindings were provisioned with the production configuration code; one harness exercised the roles | Real independent-agent execution remains unverified |
+| Full 40-scenario specification matrix | Only the concrete scenarios listed above are exercised locally or against live Linear | Incomplete |
 
 The public schema was downloaded from [Linear's official repository](https://raw.githubusercontent.com/linear/linear/master/packages/sdk/src/schema.graphql) on 2026-09-24. Its SHA-256 is `bf6ccbb9143591af0a24d4f2f58f71a44a0f020d28ddca4e96c7c1e1b38dbb37`. Static compatibility does not establish the permissions or behavior of an authorized workspace.
 
 Primary API references: [authentication and errors](https://linear.app/developers/graphql), [attachment upsert and metadata](https://linear.app/developers/attachments). The implementation uses static public operations and rejects GraphQL partial errors, empty mutation data and unconfirmed success.
+
+Authenticated introspection captured a 1,214-type name map and all 19 input types referenced by the adapter operations. One unrestricted full-schema query exceeded Linear's complexity limit, so it was replaced with bounded reads. The pinned public SDL remains the complete static schema fixture. The live API also confirmed its `INPUT_ERROR` / `invalid input` / `Entity not found: …` read-error form, which is now distinguished from other invalid input.
+
+## Recovery observations
+
+Four live intents returned an uncertain outcome during the pilot. Three were completed through the normal inspect/resume tool using their original keys and IDs. One timed-out question update left the last-operation work-head marker unconfirmed while all workflow fields were unchanged; in the disposable workspace, an explicitly authorized operator completed that exact saved marker and then used normal reconciliation. This is not evidence that every interrupted write can recover automatically.
+
+Record read-back uses bounded read-only retries for an older valid revision; writes are not blindly retried. Immediate duplicate verification after an already verified record upsert was removed. Provisional knowledge/plan versions do not grant scope, work-head rollback cannot allocate another healthy lead, and a late older assignment record cannot reactivate revoked credentials. Dedicated local regressions cover these conditions.
 
 ## Deployment and scale
 
@@ -32,4 +42,4 @@ Primary API references: [authentication and errors](https://linear.app/developer
 
 ## First live acceptance
 
-With the token supplied, run read-only `doctor`, inspect a dedicated team's bootstrap plan, and apply it only within that test scope. Verify native URLs, attachment identity across rename/retry, metadata size limits, document round trips, pagination, auto-close configuration, separate lead/reviewer bindings, a full module workflow, and restart recovery. Do not migrate an existing product or call the integration accepted until these checks pass.
+The disposable pilot is complete for the scenarios listed above. Before production rollout, finish the remaining 40-scenario matrix and failure injection around every external step; verify attachment identity across native rename, actual metadata limits, deeper atomic hierarchy, broader Markdown normalization and real runtime credential isolation. Existing-product migration and multiwriter deployment are outside this build's acceptance.
