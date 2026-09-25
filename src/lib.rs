@@ -1,6 +1,5 @@
-//! Authenticated workflow MCP backed exclusively by Linear records.
+//! Basic MCP workflow over native Linear Projects, Issues and Documents.
 
-pub mod admin;
 pub mod catalog;
 pub mod config;
 pub mod gateway;

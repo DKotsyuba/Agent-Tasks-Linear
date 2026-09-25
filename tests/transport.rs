@@ -1,13 +1,6 @@
 //! Real MCP client checks across authenticated HTTP and the process-based stdio bridge.
 
-use agent_tasks_linear::{
-    config::{Binding, Config},
-    gateway::Gateway,
-    linear::Linear,
-    model::{Principal, Role},
-    records::{Signer, Store},
-    server,
-};
+use agent_tasks_linear::{config::Config, gateway::Gateway, linear::Linear, server};
 use rmcp::{
     ServiceExt,
     model::CallToolRequestParams,
@@ -29,29 +22,13 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
     let token = "test-gateway-token-01234567890123456789";
     let config = Config {
         listen: address,
-        signing_key: "test-signing-key-01234567890123456789".into(),
-        bindings: vec![Binding {
-            name: "owner".into(),
-            token: token.into(),
-            principal: Principal {
-                id: "owner".into(),
-                role: Role::Owner,
-                products: vec![],
-                assignment_id: None,
-                generation: None,
-                epoch: 1,
-            },
-        }],
+        token: token.into(),
     };
-    let gateway = Gateway::new(Store {
-        linear: Linear::new(None, false).unwrap(),
-        signer: Signer::new(&config.signing_key).unwrap(),
-    })
-    .unwrap();
+    let gateway = Gateway::new(Linear::new(None, false).unwrap()).unwrap();
     let cancellation = CancellationToken::new();
     let app = server::router(gateway, &config, cancellation.clone());
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let url = format!("http://{address}/mcp/owner");
+    let url = format!("http://{address}/mcp");
     let http = reqwest::Client::new();
     assert_eq!(
         http.post(&url)
@@ -62,7 +39,7 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
             .status(),
         401
     );
-    let rejected=http.post(&url).bearer_auth(token).header("origin","https://untrusted.example").header("accept","application/json, text/event-stream").json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}})).send().await.unwrap();
+    let rejected=http.post(&url).bearer_auth(token).header("origin","https://untrusted.example").header("accept","application/json, text/event-stream").json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-16","capabilities":{},"clientInfo":{"name":"test","version":"1"}}})).send().await.unwrap();
     assert!(!rejected.status().is_success());
     let transport = StreamableHttpClientTransport::with_client(
         http,
@@ -73,10 +50,10 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
         .unwrap()
         .unwrap();
     let list = client.peer().list_tools(None).await.unwrap();
-    assert_eq!(list.tools.len(), 26);
-    assert!(!list.tools.iter().any(|t| t.name == "at_review_report"));
-    let request = CallToolRequestParams::new("at_resume").with_arguments(
-        json!({"product_id":Uuid::new_v4().to_string()})
+    assert_eq!(list.tools.len(), 16);
+    assert!(list.tools.iter().any(|t| t.name == "record_review"));
+    let request = CallToolRequestParams::new("get_context").with_arguments(
+        json!({"type":"project","id":Uuid::new_v4().to_string()})
             .as_object()
             .unwrap()
             .clone(),
@@ -88,10 +65,7 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
     let path = std::env::temp_dir().join(format!("atl-transport-{}.toml", Uuid::new_v4()));
     config.write_new(&path).unwrap();
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-tasks-linear"));
-    command
-        .arg("--config")
-        .arg(&path)
-        .args(["stdio", "--binding", "owner"]);
+    command.arg("--config").arg(&path).arg("stdio");
     let child = TokioChildProcess::new(command).unwrap();
     let bridge = tokio::time::timeout(Duration::from_secs(10), ().serve(child))
         .await
@@ -99,7 +73,7 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
         .unwrap();
     assert_eq!(
         bridge.peer().list_tools(None).await.unwrap().tools.len(),
-        26
+        16
     );
     bridge.cancel().await.unwrap();
     std::fs::remove_file(path).unwrap();

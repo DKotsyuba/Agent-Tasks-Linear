@@ -1,180 +1,57 @@
+query QViewer { viewer { id name } }
 
-query QViewer {
-  viewer { id name }
-}
+query QTeams($first:Int!,$after:String) { teams(first:$first,after:$after) {nodes {id name} pageInfo { hasNextPage endCursor }} }
 
-query QProject($id: String!) { project(id: $id) { id name url content status { id } } }
-query QInitiative($id: String!) { initiative(id: $id) { id name } }
-query QInitiativeLink($id: String!) { initiativeToProject(id: $id) { id initiative { id } project { id } } }
-query QIssueLabel($id: String!) { issueLabel(id: $id) { id name } }
-query QProjectStatus($id: String!) { projectStatus(id: $id) { id name type } }
-query QWorkflowState($id: String!) { workflowState(id: $id) { id name type } }
+query QTeam($id:String!) { team(id:$id) { id name autoCloseParentIssues autoCloseChildIssues } }
 
-query QTeam($id: String!) {
-  team(id: $id) {
-    id name autoCloseParentIssues autoCloseChildIssues
-    states(first: 50) { nodes { id name type } pageInfo { hasNextPage endCursor } }
-  }
-}
+query QStates($filter:WorkflowStateFilter,$first:Int!,$after:String) { workflowStates(filter:$filter,first:$first,after:$after) { nodes {id name type} pageInfo { hasNextPage endCursor } } }
 
-query QTeams($first: Int!, $after: String) {
-  teams(first: $first, after: $after) {
-    nodes { id name }
-    pageInfo { hasNextPage endCursor }
-  }
-}
+query QLabels($first:Int!,$after:String) { issueLabels(first:$first,after:$after) {nodes {id name team {id}} pageInfo { hasNextPage endCursor }} }
 
-query QIssue($id: String!) {
-  issue(id: $id) {
-    id identifier title description url updatedAt archivedAt
-    team { id }
-    project { id name url }
-    parent { id }
-    state { id name type }
-    assignee { id name }
-    delegate { id name }
-  }
-}
+query QIssueLabel($id:String!) { issueLabel(id:$id) {id name} }
 
-query QIssues($filter: IssueFilter, $first: Int!, $after: String, $includeArchived: Boolean!) {
-  issues(filter: $filter, first: $first, after: $after, includeArchived: $includeArchived) {
-    nodes {
-      id identifier title url updatedAt archivedAt
-      parent { id }
-      project { id }
-      state { id type }
-    }
-    pageInfo { hasNextPage endCursor }
-  }
-}
+query QProject($id:String!) {project(id:$id) {id name description content url archivedAt teams {nodes {id} pageInfo {hasNextPage endCursor}}}}
 
-query QWorkAttachments($id: String!, $first: Int!, $after: String) {
-  issue(id: $id) {
-    id
-    attachments(first: $first, after: $after, includeArchived: true) {
-      nodes { id title url metadata updatedAt }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}
+query QProjects($filter:ProjectFilter,$first:Int!,$after:String,$includeArchived:Boolean!) { projects(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id name description url} pageInfo { hasNextPage endCursor }} }
 
-query QRecordByURL($url: String!, $first: Int!, $after: String) {
-  attachmentsForURL(url: $url, first: $first, after: $after, includeArchived: true) {
-    nodes { id title url metadata updatedAt issue { id } }
-    pageInfo { hasNextPage endCursor }
-  }
-}
+query QIssue($id:String!) { issue(id:$id) {id identifier title description url updatedAt archivedAt startedAt completedAt team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }} }
 
-query QAttachmentById($id: String!) {
-  attachment(id: $id) { id title url metadata updatedAt issue { id } }
-}
+query QIssues($filter:IssueFilter,$first:Int!,$after:String,$includeArchived:Boolean!) { issues(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id identifier title description url updatedAt archivedAt startedAt completedAt team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }} pageInfo { hasNextPage endCursor }} }
 
-query QDocument($id: String!) {
-  document(id: $id) {
-    id title content url updatedAt archivedAt
-    project { id }
-    issue { id }
-  }
-}
+query QAttachmentById($id:String!) {attachment(id:$id) {id title url metadata issue {id}}}
 
-query QComment($id: String!) {
-  comment(id: $id) { id body createdAt updatedAt user { id name } issue { id } }
-}
+query QWorkAttachments($id:String!,$first:Int!,$after:String) {issue(id:$id) {attachments(first:$first,after:$after,includeArchived:true) {nodes {id title url metadata} pageInfo { hasNextPage endCursor }}}}
 
-query QSearchIssues($term: String!, $filter: IssueFilter, $first: Int!, $after: String) {
-  searchIssues(term: $term, filter: $filter, first: $first, after: $after) {
-    nodes { id title url }
-    pageInfo { hasNextPage endCursor }
-  }
-}
+query QDocument($id:String!) {document(id:$id) {id title content url updatedAt archivedAt project {id} issue {id}}}
 
-query QSearchDocuments($term: String!, $first: Int!, $after: String) {
-  searchDocuments(term: $term, first: $first, after: $after) {
-    nodes { id title url project { id } issue { id } }
-    pageInfo { hasNextPage endCursor }
-  }
-}
+query QDocuments($filter:DocumentFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {documents(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id title url project {id} issue {id}} pageInfo { hasNextPage endCursor }}}
 
-mutation MCreateIssue($input: IssueCreateInput!) {
-  issueCreate(input: $input) {
-    success
-    issue { id identifier title url state { id } project { id } parent { id } }
-  }
-}
+query QComment($id:String!) {comment(id:$id) {id body issue {id} createdAt}}
 
-mutation MUpdateIssue($id: String!, $input: IssueUpdateInput!) {
-  issueUpdate(id: $id, input: $input) {
-    success
-    issue { id updatedAt state { id type } }
-  }
-}
+query QHistory($id:String!,$first:Int!,$after:String) {issue(id:$id) {history(first:$first,after:$after) {nodes {id createdAt fromStateId toStateId fromParentId toParentId fromProjectId toProjectId} pageInfo { hasNextPage endCursor }}}}
 
-mutation MCreateIssueBatch($input: IssueBatchCreateInput!) {
-  issueBatchCreate(input: $input) { success issues { id identifier url } }
-}
+query QSearchIssues($term:String!,$first:Int!,$after:String) {searchIssues(term:$term,first:$first,after:$after) {nodes {id title url} pageInfo { hasNextPage endCursor }}}
 
-mutation MCreateProject($input: ProjectCreateInput!) {
-  projectCreate(input: $input) { success project { id name url } }
-}
+query QSearchProjects($term:String!,$first:Int!,$after:String) {searchProjects(term:$term,first:$first,after:$after) {nodes {id name url} pageInfo { hasNextPage endCursor }}}
 
-mutation MUpdateProject($id: String!, $input: ProjectUpdateInput!) {
-  projectUpdate(id: $id, input: $input) { success project { id name url updatedAt } }
-}
+query QSearchDocuments($term:String!,$first:Int!,$after:String) {searchDocuments(term:$term,first:$first,after:$after) {nodes {id title url} pageInfo { hasNextPage endCursor }}}
 
-mutation MCreateInitiative($input: InitiativeCreateInput!) {
-  initiativeCreate(input: $input) { success initiative { id name } }
-}
+mutation MCreateIssue($input:IssueCreateInput!) {issueCreate(input:$input) {success issue {id identifier title description url updatedAt archivedAt startedAt completedAt team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }}}}
 
-mutation MUpdateInitiative($id: String!, $input: InitiativeUpdateInput!) {
-  initiativeUpdate(id: $id, input: $input) { success initiative { id name } }
-}
+mutation MUpdateIssue($id:String!,$input:IssueUpdateInput!) {issueUpdate(id:$id,input:$input) {success issue {id identifier title description url updatedAt archivedAt startedAt completedAt team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }}}}
 
-mutation MLinkProjectToInitiative($input: InitiativeToProjectCreateInput!) {
-  initiativeToProjectCreate(input: $input) { success initiativeToProject { id } }
-}
+mutation MCreateProject($input:ProjectCreateInput!) {projectCreate(input:$input) {success project {id name content url}}}
 
-mutation MUpsertRecord($input: AttachmentCreateInput!) {
-  attachmentCreate(input: $input) {
-    success
-    attachment { id title url metadata issue { id } }
-  }
-}
+mutation MUpdateProject($id:String!,$input:ProjectUpdateInput!) {projectUpdate(id:$id,input:$input) {success project {id name content url}}}
 
-mutation MUpdateAttachment($id: String!, $input: AttachmentUpdateInput!) {
-  attachmentUpdate(id: $id, input: $input) {
-    success
-    attachment { id title url metadata }
-  }
-}
+mutation MUpsertRecord($input:AttachmentCreateInput!) {attachmentCreate(input:$input) {success attachment {id metadata}}}
 
-mutation MCreateDocument($input: DocumentCreateInput!) {
-  documentCreate(input: $input) { success document { id title content url } }
-}
+mutation MUpdateAttachment($id:String!,$input:AttachmentUpdateInput!) {attachmentUpdate(id:$id,input:$input) {success attachment {id metadata}}}
 
-mutation MUpdateDocument($id: String!, $input: DocumentUpdateInput!) {
-  documentUpdate(id: $id, input: $input) { success document { id title content url updatedAt } }
-}
+mutation MCreateDocument($input:DocumentCreateInput!) {documentCreate(input:$input) {success document {id title content url}}}
 
-mutation MCreateComment($input: CommentCreateInput!) {
-  commentCreate(input: $input) { success comment { id body createdAt user { id } } }
-}
+mutation MUpdateDocument($id:String!,$input:DocumentUpdateInput!) {documentUpdate(id:$id,input:$input) {success document {id title content url}}}
 
-mutation MCreateRelation($input: IssueRelationCreateInput!) {
-  issueRelationCreate(input: $input) { success }
-}
+mutation MCreateComment($input:CommentCreateInput!) {commentCreate(input:$input) {success comment {id body}}}
 
-mutation MCreateWorkflowState($input: WorkflowStateCreateInput!) {
-  workflowStateCreate(input: $input) { success }
-}
-
-mutation MCreateProjectStatus($input: ProjectStatusCreateInput!) {
-  projectStatusCreate(input: $input) { success }
-}
-
-mutation MCreateIssueLabel($input: IssueLabelCreateInput!) {
-  issueLabelCreate(input: $input) { success }
-}
-
-mutation MConfigureTeam($id: String!, $input: TeamUpdateInput!) {
-  teamUpdate(id: $id, input: $input) { success }
-}
+mutation MCreateIssueLabel($input:IssueLabelCreateInput!) {issueLabelCreate(input:$input) {success issueLabel {id name}}}

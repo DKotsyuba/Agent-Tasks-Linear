@@ -1,17 +1,18 @@
-# Recovering an interrupted write
+# Recovering an interrupted request
 
-Retain each mutation's idempotency_key until its outcome is known.
+Keep the `request_id` and the complete original arguments until the outcome is known. `outcome_unknown` is never success.
 
-1. Stop the previous gateway before starting another writer.
-2. Call at_resume to find pending operation keys.
-3. Call at_reconcile with mode=inspect and the operation_key. Inspection makes no writes and needs no new key.
-4. Continue with mode=resume_pending, the original operation_key, and a new idempotency_key for the reconciliation request.
-5. Retry the original intent using its original key only after reconciliation confirms the outcome.
+1. Keep one gateway writer. Restart it on the same fixed loopback port if it stopped.
+2. For an existing issue, use `get_context` with `type: issue`. A prepared update includes its original tool request and intended native update.
+3. Retry that same tool with the same `request_id` and arguments. A different request cannot replace a pending operation.
+   An already applied target is finalized without reapplying the mutation. If native fields differ from both the saved source and intended target, MCP reports a conflict and preserves the manual content. Resolve that conflict explicitly in Linear before retrying; reads never restore old content.
+4. For interrupted creates, retry the original create call. The same UUID addresses the same Project/Issue/Document. Default project documents have repeatable subordinate IDs. Existing objects are checked before reuse.
+5. Review creation uses its request UUID as the native comment UUID. A retry reuses the matching report instead of posting another comment.
 
-Receipts retain object IDs and completed steps. A verified existing create is reused; an absent ambiguous create remains unknown. A metadata upsert may repeat the same saved ID and content under the one-writer assumption. No new object ID is invented to work around a timeout.
+Edits to Projects/Documents are native partial updates. Repeat the same field assignment after checking context if their result was uncertain. Do not replay an old edit after newer intentional edits; use a fresh request for a new intention.
 
-If a required object was deleted, a stored record is corrupt or a create remains ambiguous, inspect the object and pending recipe before further writes. Do not clear pending metadata manually or claim success. The original request and history remain available.
+Manual state violations are not automatically rolled back. Restore changed parent/project/type label in Linear. An explicit return to In Progress can recover an externally changed workflow status and starts a fresh result/review round. A description-only change is adopted through an explicit edit, preserving unrelated sections.
 
-restore_projection is an explicit owner/root action: with work_id and idempotency_key it restores the recorded issue status when work membership is unchanged and no other operation is pending. It does not create a result or recover deleted artifacts.
+If the object or its state attachment was deleted, do not silently recreate a different work item. Inspect the preserved native history and the original request. API authentication, rate limits, malformed/partial responses and missing objects remain distinct failures.
 
-Back up the deployment configuration and signing key as secrets. There is no local business-data cache to recover. A lost signing key must not be silently replaced with a new key.
+Only the transport configuration contains a secret bearer credential. Workflow state is in Linear; no signing key or local workflow database needs recovery.

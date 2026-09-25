@@ -1,445 +1,218 @@
-//! Explicitly opted-in acceptance against an isolated real Linear product; never runs by default.
-
-use agent_tasks_linear::{
-    config::Config,
-    gateway::Gateway,
-    linear::Linear,
-    model::{Outcome, Principal, Role},
-    records::{Signer, Store},
-    server,
-};
-use rmcp::{
-    ServiceExt,
-    model::CallToolRequestParams,
-    transport::{
-        StreamableHttpClientTransport, TokioChildProcess,
-        streamable_http_client::StreamableHttpClientTransportConfig,
-    },
-};
+//! Opt-in native Linear pilot. Creates a readable disposable project; reports are synthetic Git evidence.
+use agent_tasks_linear::{gateway::Gateway, linear::Linear, records::child_id};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-/// Live fixture holding only deployment secrets; all workflow facts remain in Linear.
-struct Live {
-    /// Shared production gateway; replaced during the cold-start check.
+/// Resumable pilot call journal containing no credentials and never used as production workflow state.
+struct Pilot {
+    /// Real workflow dispatcher behind the tested MCP transports.
     gateway: Arc<Gateway>,
-    /// Protected deployment configuration read from an explicitly supplied path.
-    config: Config,
-    /// Private provisioned role bindings for this run, created using production configuration code.
-    binding_path: PathBuf,
-    /// Product control UUID supplied after reviewed bootstrap.
-    product: String,
-    /// Safe evidence output path, excluded from the repository.
-    report_path: PathBuf,
-    /// Tool inputs/outcomes; contains no authentication tokens or signing keys.
+    /// Owner-selected test team.
+    team: String,
+    /// Stable run ID used only for request identities, never issue titles.
+    run: String,
+    /// Local non-secret test evidence path, required explicitly by the operator.
+    path: PathBuf,
+    /// Completed steps and native results, written after each confirmed response.
     report: Value,
-    /// Historical calls eligible for exact replay; fresh calls never accidentally reuse an earlier stage.
-    resume_calls: usize,
 }
-impl Live {
-    /// Connect only when all three live-test environment variables were deliberately supplied.
+impl Pilot {
+    /// Resume an explicit report path or initialize its identifiers before the first API mutation.
     fn new() -> Self {
-        let path = std::env::var("ATL_LIVE_CONFIG").expect("ATL_LIVE_CONFIG is required");
-        let config = Config::load(std::path::Path::new(&path)).unwrap();
-        let product = std::env::var("ATL_LIVE_PRODUCT").expect("ATL_LIVE_PRODUCT is required");
-        Uuid::parse_str(&product).unwrap();
-        let token = std::env::var("LINEAR_API_KEY").expect("LINEAR_API_KEY is required");
-        let gateway = Gateway::new(Store {
-            linear: Linear::new(Some(token), false).unwrap(),
-            signer: Signer::new(&config.signing_key).unwrap(),
-        })
-        .unwrap();
-        std::fs::create_dir_all(".local").unwrap();
-        let report_path = std::env::var_os("ATL_LIVE_REPORT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap()
-                    .join(format!(".local/live-{}.json", Uuid::new_v4()))
-            });
-        let mut report: Value = if report_path.exists() {
-            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap()
-        } else {
-            json!({"product_id":product,"started_at":agent_tasks_linear::model::now(),"calls":[],"complete":false})
-        };
-        assert_eq!(
-            report["product_id"], product,
-            "Report belongs to another product"
-        );
-        let run = report["run_id"]
-            .as_str()
-            .map(str::to_owned)
+        let key = std::env::var("LINEAR_API_KEY")
+            .ok()
             .or_else(|| {
-                report["calls"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|row| row["tool"] == "at_knowledge_save")
-                    .and_then(|row| row["arguments"]["title"].as_str())
-                    .and_then(|title| title.strip_prefix("Live check "))
-                    .map(str::to_owned)
+                std::env::var("LINEAR_API_KEY_FILE").ok().map(|p| {
+                    std::fs::read_to_string(p)
+                        .expect("read API key file")
+                        .trim()
+                        .to_owned()
+                })
             })
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-        report["run_id"] = json!(run);
-        let binding_path = report_path.with_extension("toml");
-        config.write_new(&binding_path).unwrap();
-        let resume_calls = report["calls"].as_array().unwrap().len();
-        println!("Live report: {}", report_path.display());
+            .expect("Set LINEAR_API_KEY or LINEAR_API_KEY_FILE");
+        let team = std::env::var("ATL_LIVE_TEAM_ID").expect("Set ATL_LIVE_TEAM_ID");
+        let path = PathBuf::from(
+            std::env::var("ATL_LIVE_REPORT")
+                .expect("Set ATL_LIVE_REPORT to an explicit resumable evidence path"),
+        );
+        let report = if path.exists() {
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
+        } else {
+            json!({"run":Uuid::new_v4().to_string(),"team":team,"steps":{}})
+        };
+        assert_eq!(report["team"], team, "Report belongs to a different team");
+        let run = report["run"].as_str().unwrap().to_owned();
+        std::fs::write(&path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
         Self {
-            gateway,
-            config,
-            binding_path,
-            product,
-            report_path,
+            gateway: Gateway::new(Linear::new(Some(key), false).unwrap()).unwrap(),
+            team,
+            run,
+            path,
             report,
-            resume_calls,
         }
     }
-    /// Resolve the locally provisioned owner without exposing its secret to test output.
-    fn owner(&self) -> Principal {
-        self.config
-            .bindings
-            .iter()
-            .find(|b| b.principal.role == Role::Owner)
-            .unwrap()
-            .principal
-            .clone()
+    /// Allocate a repeatable v4-format request identity for a named pilot step.
+    fn id(&self, key: &str) -> String {
+        child_id(&self.run, key)
     }
-    /// Provision an assignment with the same protected-file mechanism used by the administrative CLI.
-    fn bind(&mut self, name: &str, principal: Principal) {
-        Config::add_binding(&self.binding_path, name.into(), principal).unwrap();
-        self.config = Config::load(&self.binding_path).unwrap();
+    /// Execute and journal one confirmed tool call; unknown writes stop and preserve its retry identity.
+    async fn call(&mut self, key: &str, tool: &str, mut args: Value) -> Value {
+        if self.report["steps"][key].is_object() {
+            return self.report["steps"][key].clone();
+        }
+        if !matches!(tool, "get_context" | "list_items" | "search") {
+            args["request_id"] = json!(self.id(key));
+            args["actor"] = json!("codex:live-pilot");
+        }
+        let out = self.gateway.call(tool, args).await;
+        assert_eq!(out.status, "ok", "{key} ({tool}): {}", out.data);
+        self.report["steps"][key] = out.data.clone();
+        std::fs::write(&self.path, serde_json::to_vec_pretty(&self.report).unwrap()).unwrap();
+        eprintln!("live step: {key} confirmed");
+        out.data
     }
-    /// Use the real authenticated HTTP MCP surface for one identity and preserve its observable result.
-    async fn call(&mut self, principal: &Principal, name: &str, args: Value) -> Outcome {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let mut config = Config::load(&self.binding_path).unwrap();
-        let binding = config
-            .bindings
-            .iter()
-            .find(|b| b.principal.id == principal.id)
-            .expect("principal was not provisioned")
-            .clone();
-        assert!(
-            serde_json::to_value(&binding.principal).unwrap()
-                == serde_json::to_value(principal).unwrap(),
-            "binding generation or scope does not match"
-        );
-        config.listen = address;
-        let cancel = CancellationToken::new();
-        let router = server::router(self.gateway.clone(), &config, cancel.clone());
-        let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        let transport = StreamableHttpClientTransport::with_client(
-            reqwest::Client::new(),
-            StreamableHttpClientTransportConfig::with_uri(format!(
-                "http://{address}/mcp/{}",
-                binding.name
-            ))
-            .auth_header(binding.token),
-        );
-        let client = ().serve(transport).await.unwrap();
-        let reply = client
-            .peer()
-            .call_tool(
-                CallToolRequestParams::new(name.to_owned())
-                    .with_arguments(args.as_object().unwrap().clone()),
-            )
-            .await
-            .unwrap();
-        let wire = serde_json::to_value(reply).unwrap();
-        let outcome: Outcome = serde_json::from_value(wire["structuredContent"].clone()).unwrap();
-        client.cancel().await.unwrap();
-        cancel.cancel();
-        task.abort();
-        self.report["calls"].as_array_mut().unwrap().push(json!({"principal_id":principal.id,"role":principal.role,"tool":name,"arguments":args,"outcome":outcome}));
-        std::fs::write(
-            &self.report_path,
-            serde_json::to_vec_pretty(&self.report).unwrap(),
+    /// Advance one status through the public transition guard.
+    async fn mv(&mut self, key: &str, id: &str, status: &str) {
+        self.call(
+            key,
+            "move_status",
+            json!({"id":id,"status":status,"actor_role":"orchestrator"}),
         )
-        .unwrap();
-        println!("{name}: {}", outcome.status);
-        outcome
+        .await;
     }
-    /// Retain each logical call key so an interrupted pilot can resume without duplicate work.
-    async fn mutate(
-        &mut self,
-        principal: &Principal,
-        name: &str,
-        work: &str,
-        args: Value,
-    ) -> Outcome {
-        let previous = self.report["calls"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .take(self.resume_calls)
-            .find(|row| {
-                let a = &row["arguments"];
-                let target = a["work_id"]
-                    .as_str()
-                    .or(a["parent_id"].as_str())
-                    .or(a["epic_id"].as_str())
-                    .or(a["product_id"].as_str());
-                row["principal_id"] == principal.id
-                    && row["tool"] == name
-                    && (target == Some(work)
-                        || (a["record_id"].is_string() && a["record_id"] == args["record_id"]))
-                    && matches!(
-                        row["outcome"]["status"].as_str(),
-                        Some("committed" | "noop" | "outcome_unknown")
-                    )
-                    && [
-                        "title",
-                        "kind",
-                        "summary",
-                        "change_proposal_id",
-                        "expected_content_hash",
-                        "record_id",
-                    ]
-                    .iter()
-                    .all(|field| a[*field] == args[*field])
-                    && a["observation"]["state"] == args["observation"]["state"]
-            })
-            .map(|row| row["arguments"].clone());
-        if let Some(original) = previous {
-            let result = self.call(principal, name, original).await;
-            assert!(
-                matches!(result.status.as_str(), "committed" | "noop"),
-                "Saved intent must reconcile before this test continues: {result:?}"
-            );
-            return result;
-        }
-        let args = self.arguments(principal, work, args).await;
-        let result = self.call(principal, name, args).await;
-        assert!(
-            matches!(result.status.as_str(), "committed" | "noop"),
-            "{name} failed: {result:?}"
-        );
-        result
-    }
-    /// Add only the product and retry key; activity calls require no plan or evidence tokens.
-    async fn arguments(&self, _principal: &Principal, _work: &str, mut args: Value) -> Value {
-        args["product_id"] = json!(self.product);
-        args["idempotency_key"] = json!(Uuid::new_v4().to_string());
-        args
-    }
-    /// Start a new executable in an empty working directory and read accepted state through its stdio bridge.
-    async fn cold_resume(&self, work: &str) -> Outcome {
-        let directory = std::env::current_dir()
-            .unwrap()
-            .join(format!(".local/cold-runtime-{}", Uuid::new_v4()));
-        std::fs::create_dir(&directory).unwrap();
-        let path = directory.join("runtime.toml");
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
-        let mut config = Config::load(&self.binding_path).unwrap();
-        config.listen = address;
-        config.write_new(&path).unwrap();
-        let mut process = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-tasks-linear"))
-            .arg("--config")
-            .arg(&path)
-            .arg("serve")
-            .current_dir(&directory)
-            .stdout(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let http = reqwest::Client::new();
-        let mut ready = false;
-        for _ in 0..50 {
-            assert!(
-                process.try_wait().unwrap().is_none(),
-                "fresh gateway exited during startup"
-            );
-            if http
-                .get(format!("http://{address}/health"))
-                .send()
-                .await
-                .is_ok_and(|r| r.status().is_success())
-            {
-                ready = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        assert!(ready, "fresh gateway did not become ready");
-        let owner_name = config
-            .bindings
-            .iter()
-            .find(|b| b.principal.role == Role::Owner)
-            .unwrap()
-            .name
-            .clone();
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-tasks-linear"));
-        command
-            .arg("--config")
-            .arg(&path)
-            .args(["stdio", "--binding", &owner_name])
-            .current_dir(&directory)
-            .kill_on_drop(true);
-        let bridge = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
-        let result = bridge
-            .peer()
-            .call_tool(
-                CallToolRequestParams::new("at_resume").with_arguments(
-                    json!({"product_id":self.product,"work_id":work})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                ),
-            )
-            .await
-            .unwrap();
-        let wire = serde_json::to_value(result).unwrap();
-        let outcome = serde_json::from_value(wire["structuredContent"].clone()).unwrap();
-        bridge.cancel().await.unwrap();
-        process.kill().await.unwrap();
-        let _ = process.wait().await;
-        std::fs::remove_file(path).unwrap();
-        std::fs::remove_dir(directory).unwrap();
-        outcome
+    /// Record a synthetic independent review, explicitly identifying the pilot's evidence scope.
+    async fn review(&mut self, key: &str, id: &str) {
+        self.call(key,"record_review",json!({"id":id,"reviewer":"codex:pilot-reviewer","verdict":"accepted","summary":"Проверены записи и переходы MCP в реальном Linear. Git-артефакты учебные; реальный PR не создавался.","findings":"","artifacts":["https://example.com/mcp-fixtures/review-report"]})).await;
     }
 }
-
-impl Drop for Live {
-    /// Remove only this run's private binding copy; preserve the non-secret evidence report.
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.binding_path);
-    }
-}
-
-/// Exercise the short trusted-agent cycle against an explicitly configured disposable Linear product.
+/// Real two-module cycle through all sixteen tools, with readable data and no native status provisioning.
 #[tokio::test]
-#[ignore = "Requires an authorized disposable product, protected config and LINEAR_API_KEY"]
-async fn live_activity_cycle() {
-    let mut live = Live::new();
-    let owner = live.owner();
-    let product = live.product.clone();
-    let run = live.report["run_id"].as_str().unwrap().to_owned();
-    let repository = std::env::current_dir().unwrap();
-    let commit = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .unwrap();
-    let commit = String::from_utf8(commit.stdout).unwrap().trim().to_owned();
-    let branch = std::process::Command::new("git")
-        .args(["branch", "--show-current"])
-        .output()
-        .unwrap();
-    let branch = String::from_utf8(branch.stdout).unwrap().trim().to_owned();
-    let module = live
-        .mutate(
-            &owner,
-            "at_work_create",
-            &product,
-            json!({"kind":"module","parent_id":product,
-        "title":format!("Activity cycle {run}"),"description":"Trusted agent activity pilot"}),
+#[ignore = "Writes a disposable Linear project; requires explicit test team, credential and report path"]
+async fn native_linear_two_module_cycle() {
+    let mut p = Pilot::new();
+    let project = p.id("project");
+    let epic = p.id("epic");
+    let modules = [p.id("module_one"), p.id("module_two")];
+    let tasks = [p.id("task_one"), p.id("task_two")];
+    let seam = p.id("integration");
+    p.call("project","create_project",json!({"team_id":p.team,"title":"Проверка базового MCP","description":"Тестовый проект для проверки нового агентского цикла. Ссылки на Git-артефакты — учебные данные.","repository_url":"https://github.com/modelcontextprotocol/rust-sdk"})).await;
+    p.call("project_edit","edit_project",json!({"id":project,"description":"Проверка двух модулей, тасок, общего ревью и интеграционной проверки через API Linear. Git-артефакты учебные."})).await;
+    p.call("epic","create_epic",json!({"project_id":project,"team_id":p.team,"title":"Пройти агентский цикл в Linear","fields":{"description":"Проверить основную модель MCP на тестовых данных","business_requirements":"Понятные задачи, результаты и история работы","expected_result":"Два завершённых модуля и проверенное взаимодействие","scope":"Только проверка MCP; Git-операции не выполняются","acceptance_criteria":"Нативные статусы, ревью модуля и спайка работают"}})).await;
+    for (i, key) in ["module_one", "module_two"].iter().enumerate() {
+        p.call(key,"create_module",json!({"project_id":project,"team_id":p.team,"parent_id":epic,"title":if i==0{"Подготовить источник данных"}else{"Обработать данные источника"},"fields":{"description":"Тестовая поставка для проверки MCP","expected_result":"Проверяемый контракт","acceptance_criteria":"Сценарии выполнены","required_contract":if i==0{"Не требуется"}else{"Данные источника"},"provided_contract":if i==0{"Данные источника"}else{"Результат обработки"},"lead":"codex:live-pilot","branch":format!("test/module-{}",i+1),"worktree":format!("/tmp/mcp-pilot/module-{}",i+1)}})).await;
+    }
+    for (i, key) in ["task_one", "task_two"].iter().enumerate() {
+        p.call(key,"create_task",json!({"project_id":project,"team_id":p.team,"parent_id":modules[i],"title":if i==0{"Описать формат входных данных"}else{"Проверить обработку входных данных"},"fields":{"expected_result":"Рабочий результат шага","acceptance_criteria":"Локальная проверка проходит","local_check":"Проверить ожидаемый формат результата","work_type":if i==0{"code"}else{"non_code"}}})).await;
+    }
+    p.mv("epic_start", &epic, "In Progress").await;
+    for i in 0..2 {
+        p.mv(&format!("module_start_{i}"), &modules[i], "In Progress")
+            .await;
+        p.mv(&format!("task_start_{i}"), &tasks[i], "In Progress")
+            .await;
+        let mut fields = json!({"result":"Тестовый результат шага записан","check_result":"Локальная проверка учебного сценария успешна"});
+        fields[if i == 0 { "commit_url" } else { "artifact_url" }] =
+            json!("https://example.com/mcp-fixtures/task-result");
+        p.call(
+            &format!("task_result_{i}"),
+            "edit_task",
+            json!({"id":tasks[i],"fields":fields}),
         )
         .await;
-    let module = module.data["created_work_id"].as_str().unwrap().to_owned();
-    let task = live
-        .mutate(
-            &owner,
-            "at_work_create",
-            &module,
-            json!({"kind":"task","parent_id":module,
-        "title":"Record agent, checkout and result links"}),
-        )
-        .await;
-    let task = task.data["created_work_id"].as_str().unwrap().to_owned();
-    let principal_id = format!("activity-lead-{run}");
-    let assigned = live
-        .mutate(
-            &owner,
-            "at_assign",
-            &module,
-            json!({"work_id":module,"principal_id":principal_id}),
-        )
-        .await;
-    let lead = Principal {
-        id: principal_id.clone(),
-        role: Role::Lead,
-        products: vec![product.clone()],
-        assignment_id: assigned.data["assignment_id"].as_str().map(str::to_owned),
-        generation: Some(1),
-        epoch: owner.epoch,
-    };
-    live.bind("activity-lead", lead.clone());
-    let execution = json!({"repository":repository,"branch":branch,"worktree":repository,"agent":principal_id,
-        "runtime":"cargo-test","run_id":run,"run_url":format!("file:{}",live.report_path.display())});
-    live.mutate(
-        &lead,
-        "at_begin",
-        &task,
-        json!({"work_id":task,"execution":execution}),
+        p.mv(&format!("task_done_{i}"), &tasks[i], "Done").await;
+        p.call(&format!("module_result_{i}"),"edit_module",json!({"id":modules[i],"fields":{"pr_url":"https://example.com/mcp-fixtures/pull-request","result":"Таски модуля завершены","check_result":"Проверены учебные сценарии модуля"}})).await;
+        p.mv(&format!("module_review_{i}"), &modules[i], "In Review")
+            .await;
+        p.review(&format!("review_report_{i}"), &modules[i]).await;
+        p.call(&format!("module_merge_{i}"),"edit_module",json!({"id":modules[i],"fields":{"merge_report":"Учебное сообщение агента о слиянии; Git-операции не выполнялись"}})).await;
+        p.mv(&format!("module_done_{i}"), &modules[i], "Done").await;
+    }
+    p.call("integration","create_atomic",json!({"project_id":project,"team_id":p.team,"parent_id":epic,"title":"Проверить взаимодействие модулей","fields":{"work_type":"integration","executor":"codex:live-pilot","expected_result":"Источник и обработчик совместимы","acceptance_criteria":"Сценарий сквозной обработки успешен","local_check":"Проверить прохождение данных по обоим модулям","integration_modules":modules,"scenarios":"Передать результат источника в обработчик","environment":"Учебный интеграционный стенд"}})).await;
+    p.mv("integration_start", &seam, "In Progress").await;
+    let doc=p.call("integration_doc","save_document",json!({"issue_id":seam,"title":"Результат проверки взаимодействия","content":"Сквозной цикл MCP прошёл реальные записи Linear. Проверены готовность модулей и запись результата спайки. Это тест системы задач; Git-артефакты учебные."})).await;
+    p.call("integration_doc_edit","save_document",json!({"id":doc["id"],"content":"Подтверждено через реальный API Linear: обе таски Done, модули прошли ревью, отчёт спайки прикреплён. Git-артефакты учебные."})).await;
+    p.call("integration_result","edit_atomic",json!({"id":seam,"fields":{"result":"Совместный учебный сценарий выполнен","check_result":"Оба модуля доступны в проверяемом составе","artifact_url":doc["url"]}})).await;
+    p.mv("integration_review", &seam, "In Review").await;
+    p.review("integration_report", &seam).await;
+    p.mv("integration_done", &seam, "Done").await;
+    p.call("epic_result","edit_epic",json!({"id":epic,"fields":{"result":"Два модуля завершены, локальные результаты и общее взаимодействие отражены в Linear."}})).await;
+    p.mv("epic_review", &epic, "In Review").await;
+    p.review("epic_report", &epic).await;
+    p.mv("epic_done", &epic, "Done").await;
+    p.call(
+        "context_project",
+        "get_context",
+        json!({"type":"project","id":project}),
     )
     .await;
-    let artifacts = json!([{"kind":"git_commit","locator":repository,"commit":commit},
-        {"kind":"file","locator":live.report_path}]);
-    live.mutate(&lead,"at_checkpoint",&task,json!({"work_id":task,"summary":"Recorded the running test client and checkout","artifacts":artifacts})).await;
-    let done = live
-        .mutate(
-            &lead,
-            "at_complete",
-            &task,
-            json!({"work_id":task,"summary":"Activity trace recorded","artifacts":artifacts}),
+    p.call(
+        "context_document",
+        "get_context",
+        json!({"type":"document","id":doc["id"]}),
+    )
+    .await;
+    p.call(
+        "list_modules",
+        "list_items",
+        json!({"type":"issue","project_id":project,"kind":"module","status":"Done","first":1}),
+    )
+    .await;
+    p.call(
+        "list_projects",
+        "list_items",
+        json!({"type":"project","first":1}),
+    )
+    .await;
+    p.call(
+        "list_documents",
+        "list_items",
+        json!({"type":"document","project_id":project,"first":1}),
+    )
+    .await;
+    for kind in ["issue", "project", "document"] {
+        p.call(
+            &format!("search_{kind}"),
+            "search",
+            json!({"type":kind,"query":"проверка","first":5}),
         )
         .await;
-    assert_eq!(done.data["state"], "accepted");
-    let context = live
-        .call(
-            &lead,
-            "at_context",
-            json!({"product_id":product,"work_id":task,"section":"work"}),
-        )
-        .await;
-    assert_eq!(context.status, "ok");
-    let content: Value = serde_json::from_str(context.data["content"].as_str().unwrap()).unwrap();
-    assert_eq!(content["activity"]["execution"], execution);
-    assert_eq!(content["activity"]["completed_by"], principal_id);
-    assert_eq!(content["head"]["result_id"], done.data["result_id"]);
-    let cold = live.cold_resume(&task).await;
-    assert_eq!(cold.status, "ok", "{cold:?}");
-    assert_eq!(
-        cold.data["items"][0]["activity"]["execution"]["run_id"],
-        run
-    );
-    assert_eq!(cold.data["items"][0]["activity"]["artifacts"], artifacts);
-    live.mutate(&lead,"at_complete",&module,json!({"work_id":module,"summary":"Live activity pilot completed","artifacts":artifacts,"execution":execution})).await;
-    live.report["complete"] = json!(true);
-    live.report["commit"] = json!(commit);
-    live.report["module_id"] = json!(module);
-    live.report["task_url"] = content["native"]["url"].clone();
-    live.report["cold_resume"] = serde_json::to_value(cold).unwrap();
-    let serialized = serde_json::to_string_pretty(&live.report).unwrap();
-    assert!(!serialized.contains(&live.config.signing_key));
-    for binding in &live.config.bindings {
-        assert!(!serialized.contains(&binding.token));
     }
-    std::fs::write(&live.report_path, serialized).unwrap();
-}
-
-/// Inspect and resume the original saved intent after a diagnosed transport or consistency failure.
-#[tokio::test]
-#[ignore = "Requires explicit isolated Linear product with an already inspected pending operation"]
-async fn reconcile_pending_live_operation() {
-    let mut live = Live::new();
-    let owner = live.owner();
-    let snapshot = live.gateway.store.snapshot(&live.product).await.unwrap();
-    let key = snapshot.config.payload["pending_operation_key"]
-        .as_str()
-        .expect("no pending operation");
-    let mut args = json!({"product_id":live.product,"idempotency_key":Uuid::new_v4().to_string(),"expected":{"work_revision":snapshot.work(&live.product).unwrap().head.revision},"mode":"inspect","operation_key":key});
-    let inspected = live.call(&owner, "at_reconcile", args.clone()).await;
-    assert_eq!(inspected.status, "ok", "{inspected:?}");
-    args["mode"] = json!("resume_pending");
-    let result = live.call(&owner, "at_reconcile", args).await;
-    assert!(
-        matches!(result.status.as_str(), "committed" | "noop"),
-        "{result:?}"
+    // Exercise the final write/readback guard on an independent non-code delivery as well.
+    let standalone = p.id("standalone_atomic");
+    p.call("standalone_atomic", "create_atomic", json!({"project_id":project,"team_id":p.team,
+        "title":"Проверить независимый атомик", "fields":{"work_type":"non_code",
+        "executor":"codex:live-pilot", "expected_result":"Читаемый отчёт доступен в карточке",
+        "acceptance_criteria":"Записанные поля совпадают с ответом Linear", "local_check":"Прочитать результат через новый процесс"}})).await;
+    p.mv("standalone_start", &standalone, "In Progress").await;
+    p.call("standalone_result", "edit_atomic", json!({"id":standalone,"fields":{
+        "result":"Запись подтверждена реальным ответом Linear", "check_result":"Полный ответ совпадает с запрошенными полями", "artifact_url":doc["url"]}})).await;
+    p.mv("standalone_review", &standalone, "In Review").await;
+    p.review("standalone_report", &standalone).await;
+    p.mv("standalone_done", &standalone, "Done").await;
+    // A fresh gateway has no knowledge except native Linear data.
+    p.gateway = Gateway::new(p.gateway.store.linear.clone()).unwrap();
+    for id in [
+        &epic,
+        &modules[0],
+        &modules[1],
+        &tasks[0],
+        &tasks[1],
+        &seam,
+        &standalone,
+    ] {
+        let out = p
+            .gateway
+            .call("get_context", json!({"type":"issue","id":id}))
+            .await;
+        assert_eq!(out.status, "ok", "{}", out.data);
+        assert_eq!(out.data["issue"]["state"]["name"], "Done");
+        assert_eq!(out.data["discrepancies"], json!([]));
+    }
+    p.report["verified"] = json!(true);
+    std::fs::write(&p.path, serde_json::to_vec_pretty(&p.report).unwrap()).unwrap();
+    eprintln!(
+        "live verified project: {}",
+        p.report["steps"]["project"]["project"]["url"]
     );
 }

@@ -1,6 +1,6 @@
 //! Static checks against the pinned official Linear schema, without claiming live API validation.
 
-use agent_tasks_linear::{admin, linear::OPERATIONS};
+use agent_tasks_linear::linear::OPERATIONS;
 use graphql_parser::{query as q, schema as s};
 use std::collections::BTreeMap;
 
@@ -118,14 +118,5 @@ fn static_graphql_operations_match_official_snapshot() {
             count += 1;
         }
     }
-    assert!(count >= 33);
-}
-/// Every generated project status supplies required ordering and both retirement projections.
-#[test]
-fn bootstrap_status_plan_has_required_position_and_skipped_projection() {
-    let plan = admin::bootstrap_plan("10000000-0000-4000-8000-000000000001", "Fixture").unwrap();
-    for status in plan["project_statuses"].as_object().unwrap().values() {
-        assert!(status["position"].is_number());
-    }
-    assert_eq!(plan["project_statuses"]["skipped"]["type"], "canceled");
+    assert!(count >= 25);
 }

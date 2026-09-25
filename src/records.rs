@@ -1,460 +1,371 @@
-//! Signed Linear attachments and request-local traversal of committed work.
-
+//! Minimal native attachment state and lossless editing of readable Markdown sections.
 use crate::{
     linear::Linear,
-    model::{Fault, Principal, Record, Result, array, now, require, text},
+    model::{Fault, Meta, Result, Work, require},
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
-use uuid::Uuid;
 
-/// Canonical JSON rejects floating point numbers and uses sorted object keys.
-pub fn canonical(value: &Value) -> Result<Vec<u8>> {
-    match value {
-        Value::Number(n) => require(
-            n.is_i64() || n.is_u64(),
-            "INVALID_INPUT",
-            "Canonical records permit integer numbers only",
-        )?,
-        Value::Array(a) => {
-            for v in a {
-                canonical(v)?;
-            }
-        }
-        Value::Object(m) => {
-            for v in m.values() {
-                canonical(v)?;
-            }
-        }
-        _ => {}
-    }
-    serde_json::to_vec(value)
-        .map_err(|_| Fault::new("INVALID_INPUT", "Cannot encode canonical JSON"))
+/// Issue fields exposed to agents and rendered as understandable sections.
+pub const FIELDS: &[(&str, &str)] = &[
+    ("description", "Описание"),
+    ("business_requirements", "Бизнес-требования"),
+    ("expected_result", "Ожидаемый результат"),
+    ("scope", "Границы"),
+    ("acceptance_criteria", "Критерии приёмки"),
+    ("required_contract", "Требуемый контракт"),
+    ("provided_contract", "Предоставляемый контракт"),
+    ("lead", "Лид"),
+    ("executor", "Исполнитель"),
+    ("session_url", "Сессия"),
+    ("repository_url", "Репозиторий"),
+    ("branch", "Ветка"),
+    ("worktree", "Рабочая копия"),
+    ("pr_url", "Pull request"),
+    ("commit_url", "Коммит"),
+    ("work_type", "Вид работы"),
+    ("local_check", "План проверки"),
+    ("result", "Результат"),
+    ("check_result", "Результаты проверок"),
+    ("artifact_url", "Артефакт"),
+    ("merge_report", "Слияние PR"),
+    ("after_epic", "После эпика"),
+    ("integration_modules", "Проверяемые модули"),
+    ("scenarios", "Сценарии взаимодействия"),
+    ("environment", "Среда проверки"),
+    ("reason", "Причина отмены"),
+    ("duplicate_of", "Исходная работа"),
+];
+/// Derive a stable UUID in the API-required v4 format for subordinate objects.
+/// This only prevents duplicate creation on retries; it is not a proof or content verification.
+pub fn child_id(parent: &str, purpose: &str) -> String {
+    let hash = Sha256::digest(format!("{parent}:{purpose}").as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes).to_string()
 }
-/// SHA-256 of canonical structured data.
-pub fn hash(value: &Value) -> Result<String> {
-    Ok(format!("{:x}", Sha256::digest(canonical(value)?)))
-}
-/// SHA-256 of exact UTF-8 document content returned by Linear.
-pub fn content_hash(content: &str) -> String {
-    format!("{:x}", Sha256::digest(content.as_bytes()))
-}
-
-/// Protected signing material; never implements Debug or serializes its secret.
-#[derive(Clone)]
-pub struct Signer {
-    /// Random secret of at least 32 bytes.
-    key: Vec<u8>,
-}
-impl Signer {
-    /// Validate secret entropy length; provisioning supplies cryptographically random bytes.
-    pub fn new(key: impl AsRef<[u8]>) -> Result<Self> {
-        require(
-            key.as_ref().len() >= 32,
-            "CONFIG_INVALID",
-            "Signing key must contain at least 32 bytes",
-        )?;
-        Ok(Self {
-            key: key.as_ref().to_vec(),
-        })
-    }
-    /// Authenticate canonical data with HMAC-SHA256.
-    pub fn tag(&self, value: &Value) -> Result<String> {
-        let mut h = Hmac::<Sha256>::new_from_slice(&self.key).unwrap();
-        h.update(&canonical(value)?);
-        Ok(URL_SAFE_NO_PAD.encode(h.finalize().into_bytes()))
-    }
-    /// Verify a tag using the library's constant-time MAC check.
-    pub fn verify_tag(&self, value: &Value, tag: &str) -> Result<()> {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(tag)
-            .map_err(|_| Fault::new("SNAPSHOT_TAMPERED", "Invalid signature encoding"))?;
-        let mut h = Hmac::<Sha256>::new_from_slice(&self.key).unwrap();
-        h.update(&canonical(value)?);
-        h.verify_slice(&bytes)
-            .map_err(|_| Fault::new("SNAPSHOT_TAMPERED", "Record signature does not match"))
-    }
-    /// Seal a record after setting the canonical payload hash and timestamp.
-    pub fn seal(&self, record: &mut Record) -> Result<()> {
-        record.payload_sha256 = hash(&record.payload)?;
-        record.signature = Value::Null;
-        let mut data = serde_json::to_value(&*record).unwrap();
-        data.as_object_mut().unwrap().remove("signature");
-        record.signature =
-            json!({"kid":"deployment-v1","algorithm":"HMAC-SHA256","value":self.tag(&data)?});
-        Ok(())
-    }
-    /// Verify scope-bound content and its schema revision before any field is trusted.
-    pub fn verify(&self, record: &Record) -> Result<()> {
-        require(
-            record.schema_version == 1,
-            "SCHEMA_UNSUPPORTED",
-            "Unsupported record schema",
-        )?;
-        require(
-            record.payload_sha256 == hash(&record.payload)?,
-            "SNAPSHOT_TAMPERED",
-            "Payload hash does not match",
-        )?;
-        require(
-            record.signature["algorithm"] == "HMAC-SHA256"
-                && record.signature["kid"] == "deployment-v1",
-            "SNAPSHOT_TAMPERED",
-            "Unsupported signing key or algorithm",
-        )?;
-        let mut data = serde_json::to_value(record).unwrap();
-        data.as_object_mut().unwrap().remove("signature");
-        self.verify_tag(&data, text(&record.signature, "value")?)
-    }
-    /// Create a signed immutable fact, using a caller-reserved UUID when supplied.
-    pub fn record(
-        &self,
-        actor: &Principal,
-        product: &str,
-        work: &str,
-        kind: &str,
-        payload: Value,
-        id: Option<String>,
-    ) -> Result<Record> {
-        let mut r = Record {
-            schema_version: 1,
-            record_kind: kind.into(),
-            record_id: id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-            product_id: product.into(),
-            work_id: work.into(),
-            revision: 1,
-            created_at: now(),
-            actor: json!({"principal_id":actor.id,"role":actor.role,"generation":actor.generation}),
-            payload,
-            payload_sha256: String::new(),
-            signature: Value::Null,
+/// Patch only named level-two sections; all other prose and sections remain byte-for-byte.
+/// Null removes that field. Nested content should use level-three headings or deeper.
+pub fn patch_description(original: &str, patch: &Value) -> String {
+    let mut output = original.to_owned();
+    for (key, label) in FIELDS {
+        let Some(value) = patch.get(*key) else {
+            continue;
         };
-        self.seal(&mut r)?;
-        Ok(r)
-    }
-    /// Create a cursor authenticated against substitution; cursor content is not confidential.
-    pub fn cursor(&self, value: &Value) -> Result<String> {
-        Ok(format!(
-            "{}.{}",
-            URL_SAFE_NO_PAD.encode(canonical(value)?),
-            self.tag(value)?
-        ))
-    }
-    /// Decode and authenticate a cursor before considering any of its fields.
-    pub fn decode_cursor(&self, token: &str) -> Result<Value> {
-        let (data, tag) = token
-            .split_once('.')
-            .ok_or_else(|| Fault::new("STALE_CONTEXT", "Invalid continuation"))?;
-        let value: Value = serde_json::from_slice(
-            &URL_SAFE_NO_PAD
-                .decode(data)
-                .map_err(|_| Fault::new("STALE_CONTEXT", "Invalid continuation"))?,
-        )
-        .map_err(|_| Fault::new("STALE_CONTEXT", "Invalid continuation"))?;
-        self.verify_tag(&value, tag)?;
-        Ok(value)
-    }
-}
-
-/// One committed work's authoritative identity, head and current native fields.
-#[derive(Clone)]
-pub struct Work {
-    /// Current Linear Issue fields; titles remain native.
-    pub native: Value,
-    /// Immutable parent and native container mapping.
-    pub identity: Record,
-    /// Mutable workflow pointers and direct child IDs.
-    pub head: Record,
-}
-/// Request-local facts; discarded when the request completes, never persisted locally.
-#[derive(Clone)]
-pub struct Snapshot {
-    /// Product control Issue UUID.
-    pub product: String,
-    /// Current product policy and native IDs.
-    pub config: Record,
-    /// Committed work tree indexed by native Issue UUID.
-    pub works: BTreeMap<String, Work>,
-    /// Signed facts indexed by preallocated record UUID.
-    pub records: BTreeMap<String, Record>,
-}
-impl Snapshot {
-    /// Latest exact record written by a committed recipe, including the initial head of newly created work.
-    pub fn latest_committed(&self, id: &str) -> Option<&Value> {
-        self.records
-            .values()
-            .filter(|r| r.record_kind == "operation_receipt" && r.payload["state"] == "committed")
-            .flat_map(|r| array(&r.payload["plan"], "effects"))
-            .filter_map(|effect| match effect["kind"].as_str() {
-                Some("record") => Some(&effect["record"]),
-                Some("new_work") => Some(&effect["head"]),
-                _ => None,
-            })
-            .filter(|record| record["record_id"] == id)
-            .max_by_key(|value| value["revision"].as_u64().unwrap_or(0))
-    }
-    /// Whether this exact record version belongs to the latest committed receipt for its identity.
-    pub fn is_committed(&self, record: &Record) -> bool {
-        self.latest_committed(&record.record_id)
-            .is_some_and(|value| *value == serde_json::to_value(record).unwrap())
-    }
-    /// Require an existing committed work in this product.
-    pub fn work(&self, id: &str) -> Result<&Work> {
-        self.works
-            .get(id)
-            .ok_or_else(|| Fault::new("OUT_OF_SCOPE", "Work is not committed in this product"))
-    }
-    /// Require an existing signed record, optionally constraining its fact kind.
-    pub fn record(&self, id: &str, kind: Option<&str>) -> Result<&Record> {
-        let r = self
-            .records
-            .get(id)
-            .ok_or_else(|| Fault::new("RECORD_MISSING", "Required record is missing"))?;
-        require(
-            kind.is_none_or(|k| k == r.record_kind),
-            "INVALID_INPUT",
-            "Referenced record has the wrong kind",
-        )?;
-        Ok(r)
-    }
-    /// Test immutable ancestry without relying on client scope strings.
-    pub fn within(&self, id: &str, root: &str) -> bool {
-        let mut current = id;
-        let mut seen = BTreeSet::new();
-        while seen.insert(current.to_owned()) {
-            if current == root {
-                return true;
+        let heading = format!("## {label}\n");
+        let positions: Vec<usize> = output
+            .match_indices(&heading)
+            .filter(|(i, _)| *i == 0 || output.as_bytes()[i - 1] == b'\n')
+            .map(|(i, _)| i)
+            .collect();
+        let rendered = if value.is_null() {
+            String::new()
+        } else {
+            let body = value.as_str().map(str::to_owned).unwrap_or_else(|| {
+                format!("```json\n{}\n```", serde_json::to_string(value).unwrap())
+            });
+            format!("{heading}{body}\n\n")
+        };
+        if let Some(&start) = positions.first() {
+            let body = start + heading.len();
+            let end = output[body..]
+                .find("\n## ")
+                .map(|i| body + i + 1)
+                .unwrap_or(output.len());
+            output.replace_range(start..end, &rendered);
+        } else if !rendered.is_empty() {
+            if !output.is_empty() && !output.ends_with("\n\n") {
+                output.push_str("\n\n");
             }
-            let Some(work) = self.works.get(current) else {
-                return false;
-            };
-            let Some(parent) = work.identity.payload["primary_parent_id"].as_str() else {
-                return false;
-            };
-            current = parent;
+            output.push_str(&rendered);
         }
-        false
     }
+    output
 }
-
-/// Reads and writes signed records using only the official Linear client.
+/// Native persistence with fresh reads; no local workflow database or signed receipts.
 #[derive(Clone)]
 pub struct Store {
-    /// Concrete HTTP adapter shared by admin and workflow operations.
+    /// Shared protected Linear API client.
     pub linear: Linear,
-    /// Record authentication and cursor signing.
-    pub signer: Signer,
 }
 impl Store {
-    /// Serialize one envelope into flat attachment metadata, rejecting excessive records.
-    pub fn attachment_input(&self, record: &Record, base_url: &str) -> Result<Value> {
-        let body = serde_json::to_string(record).unwrap();
-        require(
-            body.len() <= 256 * 1024,
-            "RECORD_TOO_LARGE",
-            "Record exceeds the provisional 256 KiB safety cap",
-        )?;
-        Ok(
-            json!({"id":record.record_id,"issueId":record.work_id,"title":format!("AT {} · r{}",record.record_kind,record.revision),"url":format!("{base_url}#agent-tasks-v1/{}/{}",record.record_kind,record.record_id),"metadata":{"at_schema":1,"at_kind":record.record_kind,"at_product_id":record.product_id,"at_work_id":record.work_id,"payload_json":body}}),
-        )
-    }
-    /// Upsert once, then verify bounded read-back; older replicated versions cause read-only retries.
-    pub async fn put(&self, record: &Record, base_url: &str) -> Result<()> {
-        let input = self.attachment_input(record, base_url)?;
-        let reply = self
-            .linear
-            .call("MUpsertRecord", json!({"input":input}))
-            .await?;
-        require(
-            reply["attachmentCreate"]["attachment"]["id"] == record.record_id,
-            "LINEAR_PARTIAL_ERROR",
-            "Attachment ID changed during upsert",
-        )
-        .map_err(Fault::uncertain)?;
-        self.verify(record).await
-    }
-    /// Verify an exact signed version with bounded read-only retries; never repeat an external write.
-    pub async fn verify(&self, record: &Record) -> Result<()> {
-        let mut observed = None;
-        for delay in [0, 50, 100, 200, 400] {
-            if delay > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-            }
-            let fetched = match self
-                .linear
-                .object("QAttachmentById", "attachment", &record.record_id)
-                .await
-            {
-                Ok(value) => value,
-                Err(error) if error.code == "RECORD_MISSING" => continue,
-                Err(error) => return Err(error.uncertain()),
-            };
-            let saved = self.parse(&fetched, &record.product_id)?.ok_or_else(|| {
-                Fault::new("SNAPSHOT_TAMPERED", "Missing managed record").uncertain()
-            })?;
-            if saved == *record {
-                return Ok(());
-            }
-            observed = Some(saved.revision);
-            if saved.revision >= record.revision {
-                let actual = serde_json::to_value(&saved).unwrap();
-                let expected = serde_json::to_value(record).unwrap();
-                let fields = expected
-                    .as_object()
-                    .unwrap()
-                    .iter()
-                    .filter(|(key, value)| actual.get(*key) != Some(*value))
-                    .map(|(key, _)| key.as_str())
-                    .collect::<Vec<_>>();
-                return Err(Fault::new(
-                    "SNAPSHOT_TAMPERED",
-                    format!(
-                        "Record read-back differs at revision {} in {}",
-                        saved.revision,
-                        fields.join(", ")
-                    ),
-                )
-                .uncertain());
-            }
+    /// Read a native object, distinguishing absence from authentication and partial errors.
+    pub async fn optional(&self, query: &str, field: &str, id: &str) -> Result<Option<Value>> {
+        match self.linear.object(query, field, id).await {
+            Ok(v) => Ok(Some(v)),
+            Err(e) if e.code == "RECORD_MISSING" => Ok(None),
+            Err(e) => Err(e),
         }
-        Err(Fault::new(
-            "OPERATION_IN_DOUBT",
-            format!(
-                "Record read-back remained stale: expected revision {}, observed {:?}",
-                record.revision, observed
-            ),
-        )
-        .uncertain())
     }
-    /// Parse only this product's metadata and reject corruption before returning the record.
-    pub fn parse(&self, attachment: &Value, product: &str) -> Result<Option<Record>> {
-        let meta = &attachment["metadata"];
-        if meta["at_product_id"] != product {
+    /// Read the deterministic metadata attachment for one issue; unmanaged issues stay unmanaged.
+    pub async fn meta(&self, id: &str) -> Result<Option<Meta>> {
+        let Some(a) = self
+            .optional("QAttachmentById", "attachment", &child_id(id, "state"))
+            .await?
+        else {
             return Ok(None);
-        }
-        let r: Record = serde_json::from_str(text(meta, "payload_json")?).map_err(|_| {
-            Fault::new(
-                "SNAPSHOT_TAMPERED",
-                "Managed attachment is not a valid envelope",
-            )
-        })?;
-        self.signer.verify(&r)?;
+        };
         require(
-            r.product_id == product
-                && meta["at_work_id"] == r.work_id
-                && meta["at_kind"] == r.record_kind
-                && attachment["id"] == r.record_id,
-            "SNAPSHOT_TAMPERED",
-            "Attachment identity does not match its signature",
+            a["issue"]["id"] == id,
+            "STATE_INVALID",
+            "State attachment belongs to another issue",
         )?;
-        Ok(Some(r))
+        let m: Meta = serde_json::from_value(a["metadata"]["workflow"].clone())
+            .map_err(|_| Fault::new("STATE_INVALID", "Invalid workflow metadata"))?;
+        require(
+            m.schema == 2,
+            "STATE_INVALID",
+            "Unsupported workflow data version",
+        )?;
+        Ok(Some(m))
     }
-    /// Load the bounded committed work tree; missing pages never become an empty success.
-    pub async fn snapshot(&self, product: &str) -> Result<Snapshot> {
-        let mut works = BTreeMap::new();
-        let mut records = BTreeMap::new();
-        let mut queue = vec![product.to_owned()];
-        let mut config = None;
-        // ponytail: request-local full tree, capped at 200 works; switch to exact dependency reads when API cost warrants it.
-        while let Some(id) = queue.pop() {
-            require(
-                works.len() < 200,
-                "INCOMPLETE_DATA",
-                "Product exceeds the 200-work request budget",
-            )?;
-            require(
-                !works.contains_key(&id),
-                "STRUCTURE_DRIFT",
-                "Work tree contains a repeated child or cycle",
-            )?;
-            let native = self.linear.object("QIssue", "issue", &id).await?;
-            let attachments = self.linear.attachments(&id).await?;
-            let mut identity = None;
-            let mut head = None;
-            for attachment in attachments {
-                if let Some(record) = self.parse(&attachment, product)? {
-                    require(
-                        record.work_id == id,
-                        "SNAPSHOT_TAMPERED",
-                        "Record is attached to another work",
-                    )?;
-                    match record.record_kind.as_str() {
-                        "identity" => {
-                            require(identity.is_none(), "STRUCTURE_DRIFT", "Multiple identities")?;
-                            identity = Some(record.clone())
-                        }
-                        "work_head" => {
-                            require(head.is_none(), "STRUCTURE_DRIFT", "Multiple work heads")?;
-                            head = Some(record.clone())
-                        }
-                        "product_config" if id == product => {
-                            require(
-                                config.is_none(),
-                                "STRUCTURE_DRIFT",
-                                "Multiple product configurations",
-                            )?;
-                            config = Some(record.clone())
-                        }
-                        _ => {}
-                    };
-                    require(
-                        records.insert(record.record_id.clone(), record).is_none(),
-                        "SNAPSHOT_TAMPERED",
-                        "Duplicate record identity",
-                    )?;
-                }
-            }
-            let identity = identity.ok_or_else(|| {
-                Fault::new("RECORD_MISSING", "Committed work identity is missing")
-            })?;
-            let head =
-                head.ok_or_else(|| Fault::new("RECORD_MISSING", "Committed work head is missing"))?;
-            queue.extend(
-                array(&head.payload, "children")
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned),
-            );
-            works.insert(
-                id,
-                Work {
-                    native,
-                    identity,
-                    head,
-                },
-            );
-        }
-        let config = config.ok_or_else(|| {
-            Fault::new(
-                "PRODUCT_NOT_INITIALIZED",
-                "Run the administrative bootstrap before using this product",
-            )
-        })?;
-        Ok(Snapshot {
-            product: product.into(),
-            config,
-            works,
-            records,
+    /// Fetch native issue data and its metadata; no writes occur during context reads.
+    pub async fn work(&self, id: &str) -> Result<Work> {
+        let native = self.linear.object("QIssue", "issue", id).await?;
+        let meta = self.meta(native["id"].as_str().unwrap()).await?;
+        let fields = meta.as_ref().map(|m| m.fields.clone()).unwrap_or(json!({}));
+        Ok(Work {
+            native,
+            meta,
+            fields,
         })
     }
-    /// Read a referenced native document within the product; its contents are reported material, not proof.
-    pub async fn document(&self, snapshot: &Snapshot, record: &Record) -> Result<Value> {
-        let doc = self
-            .linear
-            .object(
-                "QDocument",
-                "document",
-                text(&record.payload, "document_id")?,
+    /// Create or update the single state attachment; mutation uncertainty propagates to caller.
+    pub async fn save(&self, work: &Value, meta: &Meta) -> Result<()> {
+        let id = work["id"].as_str().unwrap();
+        let aid = child_id(id, "state");
+        let metadata = json!({"workflow":meta});
+        if self
+            .optional("QAttachmentById", "attachment", &aid)
+            .await?
+            .is_some()
+        {
+            self.linear
+                .call(
+                    "MUpdateAttachment",
+                    json!({"id":aid,"input":{"title":"Данные выполнения","metadata":metadata}}),
+                )
+                .await?;
+        } else {
+            self.linear.call("MUpsertRecord",json!({"input":{"id":aid,"issueId":id,"title":"Данные выполнения","url":format!("{}#execution",work["url"].as_str().unwrap_or("https://linear.app")),"metadata":metadata}})).await?;
+        }
+        Ok(())
+    }
+    /// Read every connection page, refusing truncated graphs instead of assuming omitted work is done.
+    pub async fn pages(&self, query: &str, field: &str, mut args: Value) -> Result<Vec<Value>> {
+        let mut out = vec![];
+        let mut after = Value::Null;
+        for _ in 0..200 {
+            args["first"] = json!(100);
+            args["after"] = after.clone();
+            let data = self.linear.call(query, args.clone()).await?;
+            let c = &data[field];
+            let nodes = c["nodes"]
+                .as_array()
+                .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Missing connection page"))?;
+            out.extend(nodes.iter().cloned());
+            if c["pageInfo"]["hasNextPage"] == false {
+                return Ok(out);
+            }
+            let next = c["pageInfo"]["endCursor"].clone();
+            require(
+                next.is_string() && next != after,
+                "INCOMPLETE_DATA",
+                "Pagination did not advance",
+            )?;
+            after = next;
+        }
+        Err(Fault::new(
+            "INCOMPLETE_DATA",
+            "Connection exceeds 200 pages; narrow the project",
+        ))
+    }
+    /// Read the whole project hierarchy, including archived children needed for frozen membership.
+    pub async fn graph(&self, project: &str) -> Result<Vec<Work>> {
+        let nodes = self
+            .pages(
+                "QIssues",
+                "issues",
+                json!({"filter":{"project":{"id":{"eq":project}}},"includeArchived":true}),
             )
             .await?;
-        require(
-            doc["project"]["id"] == snapshot.config.payload["general_project_id"],
-            "OUT_OF_SCOPE",
-            "Document is outside the product knowledge project",
-        )?;
-        Ok(doc)
+        let mut out = Vec::with_capacity(nodes.len());
+        for native in nodes {
+            let meta = self.meta(native["id"].as_str().unwrap()).await?;
+            let fields = meta.as_ref().map(|m| m.fields.clone()).unwrap_or(json!({}));
+            out.push(Work {
+                native,
+                meta,
+                fields,
+            });
+        }
+        // Follow recorded children too: a native project move must not hide unfinished scope.
+        let mut index = 0;
+        while index < out.len() {
+            require(
+                out.len() <= 20_000,
+                "INCOMPLETE_DATA",
+                "Hierarchy exceeds the read budget",
+            )?;
+            let ids = out[index]
+                .meta
+                .as_ref()
+                .map(|m| m.children.clone())
+                .unwrap_or_default();
+            for id in ids {
+                if !out.iter().any(|w| w.id() == id) {
+                    match self.work(&id).await {
+                        Ok(w) => out.push(w),
+                        Err(e) if e.code == "RECORD_MISSING" => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+            index += 1;
+        }
+        Ok(out)
     }
+}
+
+/// Compare Markdown across Linear's whitespace and punctuation-escape normalization.
+/// Text, headings and unknown sections are retained; this is not a content proof.
+pub fn markdown_key(value: &str) -> String {
+    // Native Linear links gain the target's title. In typed URL sections only,
+    // the destination is the field value; preserve labels in all ordinary prose.
+    let url_fields = read_fields(value).ok().map(|fields| {
+        Value::Object(
+            fields
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| key.ends_with("_url") || key.as_str() == "duplicate_of")
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        )
+    });
+    let source = url_fields
+        .map(|fields| patch_description(value, &fields))
+        .unwrap_or_else(|| value.to_owned());
+    let mut text = String::new();
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek().is_some_and(char::is_ascii_punctuation) {
+            text.push(chars.next().unwrap());
+        } else {
+            text.push(c);
+        }
+    }
+    // Linear serializes bare URLs as Markdown links, including angle-bracket destinations.
+    let mut offset = 0;
+    while let Some(middle) = text[offset..].find("](").map(|i| offset + i) {
+        let Some(open) = text[..middle].rfind('[') else {
+            offset = middle + 2;
+            continue;
+        };
+        let Some(close) = link_end(&text, middle + 2) else {
+            break;
+        };
+        let label = &text[open + 1..middle];
+        let destination = text[middle + 2..close]
+            .trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>');
+        if destination.starts_with("https://") || destination.starts_with("http://") {
+            let replacement = if label == destination {
+                destination.to_owned()
+            } else {
+                format!("[{label}]({destination})")
+            };
+            text.replace_range(open..=close, &replacement);
+            offset = open + replacement.len();
+        } else {
+            offset = close + 1;
+        }
+    }
+    text.lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Find the closing Markdown link parenthesis after a destination start byte offset.
+/// Angle-bracket destinations may contain parentheses; bare destinations must balance them.
+fn link_end(text: &str, start: usize) -> Option<usize> {
+    if text[start..].starts_with('<') {
+        return text[start..].find(">)").map(|i| start + i + 1);
+    }
+    let mut depth = 1;
+    for (offset, c) in text[start..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse the recognized readable sections after manual edits; unknown sections stay unowned.
+/// Invalid structured integration lists fail rather than retaining stale hidden values.
+pub fn read_fields(description: &str) -> Result<Value> {
+    let mut fields = json!({});
+    for (key, label) in FIELDS {
+        let heading = format!("## {label}\n");
+        let starts: Vec<_> = description
+            .match_indices(&heading)
+            .filter(|(i, _)| *i == 0 || description.as_bytes()[i - 1] == b'\n')
+            .collect();
+        require(
+            starts.len() <= 1,
+            "INVALID_INPUT",
+            format!("Duplicate section: {label}"),
+        )?;
+        if let Some((i, _)) = starts.first() {
+            let start = i + heading.len();
+            let end = description[start..]
+                .find("\n## ")
+                .map(|n| start + n)
+                .unwrap_or(description.len());
+            let body = description[start..end].trim();
+            if !body.is_empty() {
+                fields[*key] = if *key == "integration_modules" {
+                    let body = body
+                        .strip_prefix("```json")
+                        .or_else(|| body.strip_prefix("```"))
+                        .and_then(|s| s.trim().strip_suffix("```"))
+                        .unwrap_or(body)
+                        .trim();
+                    // Linear escapes bare brackets on Markdown round trips.
+                    let body = body.replace("\\[", "[").replace("\\]", "]");
+                    serde_json::from_str(&body).map_err(|_| {
+                        Fault::new(
+                            "INVALID_INPUT",
+                            "Integration Modules section must contain a JSON array of UUIDs",
+                        )
+                    })?
+                } else if key.ends_with("_url") || *key == "duplicate_of" {
+                    let destination = body
+                        .strip_prefix('[')
+                        .and_then(|s| s.split_once("]("))
+                        .and_then(|(_, url)| url.strip_suffix(')'))
+                        .unwrap_or(body)
+                        .trim()
+                        .trim_start_matches('<')
+                        .trim_end_matches('>');
+                    json!(destination)
+                } else {
+                    json!(body)
+                };
+            }
+        }
+    }
+    Ok(fields)
 }
