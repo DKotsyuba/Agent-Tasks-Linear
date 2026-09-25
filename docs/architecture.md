@@ -21,7 +21,7 @@ Project creation also creates native `Runbook` and `Решения` documents. R
 
 ## Public data fields
 
-Create calls require `request_id`, `actor`, `title`, `project_id` and `team_id`; Task also requires `parent_id`. Issue fields may be prepared in Backlog/Todo. Project creation instead requires `team_id`, `title`, `description`, `repository_url` (GitHub HTTPS).
+Create calls require `request_id`, `actor`, `title`, `project_id` and `team_id`; Task also requires `parent_id`. Issue titles are stored with exactly one leading kind marker (`[EPIC]`, `[MODULE]`, `[TASK]`, `[ATOMIC]`); repeated or wrong recognized markers are normalized, unrelated markers such as `[UI]` are preserved, and a marker without a title is rejected. Project titles remain unchanged. Issue `priority` is native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low. Omitted create priority is 0; omitted edit priority preserves the native value and 0 clears it. Issue fields may be prepared in Backlog/Todo. Project creation instead requires `team_id`, `title`, `description`, `repository_url` (GitHub HTTPS).
 
 Issue create/edit calls accept a `fields` object. Omitted values are preserved; null removes a nullable value. `work_type` defaults to `code` for Module/Task/Atomic and `non_code` for Epic. Use `non_code` explicitly for document/administrative work and `integration` for an integration Atomic.
 
@@ -41,7 +41,11 @@ Issue create/edit calls accept a `fields` object. Omitted values are preserved; 
 | `integration_modules`, `scenarios`, `environment` | Participating Module UUIDs and actual interaction checks |
 | `reason`, `duplicate_of` | Retirement reason and original issue URL |
 
-Descriptions have readable Russian level-two section headings. Use level-three or deeper headings inside field values. Unrelated sections/prose remain intact during partial edits. A manually changed description is reported; an explicit edit adopts the current recognized fields after full schema validation. Native Markdown escaping and link formatting are accounted for without removing unrelated prose. Titles contain only the supplied human title.
+Descriptions have readable Russian level-two section headings. Use level-three or deeper headings inside field values. Unrelated sections/prose remain intact during partial edits. A manually changed description is reported; a content edit can adopt the current recognized fields after full schema validation. Title/priority-only edits do not send or adopt descriptions and preserve review identity, results and revision, including while In Review or Done. Native Markdown escaping and link formatting are accounted for without removing unrelated prose.
+
+## Priority views
+
+`list_items` keeps native pagination by default. `order_by: "priority"` requires an issue, Project, and kind, and optionally scopes to one parent; omitted or null parent means Project root. The complete live sibling group is loaded within the normal page budget, filtered and sorted by priority (1, 2, 3, 4, then 0), native `prioritySortOrder`, and UUID. Its cursor binds the filters and last UUID, so subsequent pages are sorted after the whole group and reject changed filters or missing anchors. `priority` may filter a native priority value 0–4. Priority is advisory ordering and never changes transition conditions or starts work. `get_context` reports sorted peers in the same Project, parent and kind group.
 
 Machine data lives on one small native attachment per managed issue: kind, expected parent/project/status, known children, frozen membership, implementation/review round, current review, integration completion snapshot and any prepared write. Recorded children remain visible to guards if moved to a different native Project. No signatures or proof certificates are used. The attachment links back to the issue. Native dates/history remain available in Linear; MCP does not maintain a second time-in-status system.
 

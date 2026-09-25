@@ -10,8 +10,18 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
 
-/// Compare the native fields this service owns, ignoring timestamps and Markdown presentation normalization.
-/// Unknown description sections still participate, so a retry cannot erase newly added human text.
+/// Read a native priority that is represented as an integral JSON number from 0 through 4.
+fn native_priority(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|n| (0.0..=4.0).contains(n) && n.fract() == 0.0)
+            .map(|n| n as u64)
+    })
+}
+
+/// Compare owned native IDs, relationships, title, labels and Markdown description, ignoring timestamps and normalizing Markdown presentation; compare priority only when the target carries it.
+/// Unknown description sections still participate, so retries reject changes that could erase newly added human text; older snapshots without priority remain compatible.
 fn same_native(a: &Value, b: &Value) -> bool {
     ["id", "title", "archivedAt"]
         .iter()
@@ -20,8 +30,35 @@ fn same_native(a: &Value, b: &Value) -> bool {
             .iter()
             .all(|key| a[key]["id"] == b[key]["id"])
         && a["labels"] == b["labels"]
+        && (b.get("priority").is_none()
+            || native_priority(&a["priority"]) == native_priority(&b["priority"]))
         && markdown_key(a["description"].as_str().unwrap_or(""))
             == markdown_key(b["description"].as_str().unwrap_or(""))
+}
+
+/// Order native Issue objects by priority 1–4 then 0, ascending `prioritySortOrder`, and ascending UUID; missing or unknown priorities rank with 0 and missing tie order follows known values.
+fn priority_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+    /// Map native priority zero/unknown to the final advisory bucket.
+    fn rank(v: &Value) -> u64 {
+        match native_priority(&v["priority"]).unwrap_or(0) {
+            1..=4 => native_priority(&v["priority"]).unwrap(),
+            _ => 5,
+        }
+    }
+    rank(a)
+        .cmp(&rank(b))
+        .then_with(|| {
+            a["prioritySortOrder"]
+                .as_f64()
+                .unwrap_or(f64::MAX)
+                .total_cmp(&b["prioritySortOrder"].as_f64().unwrap_or(f64::MAX))
+        })
+        .then_with(|| {
+            a["id"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["id"].as_str().unwrap_or(""))
+        })
 }
 
 /// One writer shared by HTTP clients and stdio bridges. No background work is performed.
@@ -248,6 +285,8 @@ impl Gateway {
         let id = text(a, "request_id")?;
         let project = text(a, "project_id")?;
         let team = text(a, "team_id")?;
+        let title = kind.title(text(a, "title")?)?;
+        let priority = a.get("priority").and_then(Value::as_u64).unwrap_or(0);
         let p = self.project(project).await?;
         require(
             p["teams"]["nodes"]
@@ -263,6 +302,12 @@ impl Gateway {
                 meta.kind == kind && meta.creation == *a,
                 "REQUEST_CONFLICT",
                 "request_id already belongs to another creation",
+            )?;
+            require(
+                existing["title"] == title
+                    && native_priority(&existing["priority"]) == Some(priority),
+                "REQUEST_CONFLICT",
+                "Created Issue no longer matches its canonical title and priority",
             )?;
             self.register_child(meta.parent_id.as_deref(), id, true)
                 .await?;
@@ -315,7 +360,8 @@ impl Gateway {
             require(
                 existing["project"]["id"] == project
                     && existing["team"]["id"] == team
-                    && existing["title"] == a["title"]
+                    && existing["title"] == title
+                    && native_priority(&existing["priority"]) == Some(priority)
                     && markdown_key(existing["description"].as_str().unwrap_or(""))
                         == markdown_key(&description)
                     && existing["parent"]["id"].as_str() == parent
@@ -325,8 +371,14 @@ impl Gateway {
             )?;
             existing
         } else {
-            self.store.linear.call("MCreateIssue",json!({"input":{"id":id,"title":a["title"],"description":description,"projectId":project,"teamId":team,"parentId":a.get("parent_id").unwrap_or(&Value::Null),"stateId":state,"labelIds":[label]}})).await?["issueCreate"]["issue"].clone()
+            self.store.linear.call("MCreateIssue",json!({"input":{"id":id,"title":title,"priority":priority,"description":description,"projectId":project,"teamId":team,"parentId":a.get("parent_id").unwrap_or(&Value::Null),"stateId":state,"labelIds":[label]}})).await?["issueCreate"]["issue"].clone()
         };
+        require(
+            native["title"] == title && native_priority(&native["priority"]) == Some(priority),
+            "NATIVE_STATE_MISMATCH",
+            "Linear did not confirm the canonical title and priority",
+        )
+        .map_err(Fault::uncertain)?;
         let actual = native["description"]
             .as_str()
             .unwrap_or(&description)
@@ -540,7 +592,9 @@ impl Gateway {
             "Linear did not confirm all requested fields; inspect context and retry the same request",
         )
         .map_err(Fault::uncertain)?;
-        next.description = native["description"].as_str().unwrap_or("").to_owned();
+        if input.get("description").is_some() {
+            next.description = native["description"].as_str().unwrap_or("").to_owned();
+        }
         next.completed_at = native["completedAt"].as_str().map(str::to_owned);
         if w.managed()?.parent_id != next.parent_id {
             self.register_child(next.parent_id.as_deref(), w.id(), true)
@@ -556,7 +610,8 @@ impl Gateway {
             .map_err(Fault::uncertain)?;
         Ok(json!({"issue":native,"round":next.round}))
     }
-    /// Apply partial human edits without exposing a status field or replacing unrelated sections.
+    /// Apply one managed issue edit for `kind`; missing title normalizes the existing title, missing priority preserves it, and priority zero clears it.
+    /// Empty or title/priority-only edits preserve native descriptions and review identity in any status; requirement/parent edits invalidate review and require reopening reviewed work, except the existing Module merge-report allowance. Returns the confirmed issue outcome or a safe conflict/write fault.
     async fn edit_work(&self, kind: Kind, a: &Value) -> Result<Value> {
         let (w, graph) = self.loaded(text(a, "id")?).await?;
         let m = w.managed()?;
@@ -573,21 +628,28 @@ impl Gateway {
         errors.retain(|e| !e.starts_with("Description changed"));
         rules::enforce(errors)?;
         let mut next = m.clone();
-        let mut fields = if w.native["description"] == m.description {
+        let patch = a.get("fields").cloned().unwrap_or(json!({}));
+        let presentation_only = patch.as_object().is_some_and(|o| o.is_empty())
+            && a.get("parent_id")
+                .is_none_or(|v| v.as_str() == m.parent_id.as_deref());
+        let mut fields = if w.native["description"] == m.description || presentation_only {
             m.fields.clone()
         } else {
             read_fields(w.native["description"].as_str().unwrap_or(""))?
         };
-        let patch = a.get("fields").cloned().unwrap_or(json!({}));
         let merge_only = kind == Kind::Module
             && patch
                 .as_object()
                 .is_some_and(|o| !o.is_empty() && o.keys().all(|k| k == "merge_report"))
             && a.get("title").is_none()
+            && a.get("priority").is_none()
             && a.get("parent_id").is_none()
             && w.native["description"] == m.description;
+        let content_edit = !patch.as_object().unwrap().is_empty()
+            || a.get("parent_id")
+                .is_some_and(|v| v.as_str() != m.parent_id.as_deref());
         require(
-            !matches!(m.status, Status::InReview | Status::Done) || merge_only,
+            !matches!(m.status, Status::InReview | Status::Done) || merge_only || !content_edit,
             "REOPEN_REQUIRED",
             "Reopen reviewed work before editing its requirements or result",
         )?;
@@ -632,19 +694,35 @@ impl Gateway {
         self.catalog.validate_fields(kind, &fields)?;
         Self::check_fields(kind, &fields, next.parent_id.as_deref(), &graph)?;
         next.fields = fields;
-        next.description =
-            patch_description(w.native["description"].as_str().unwrap_or(""), &patch);
-        if !merge_only {
+        if !presentation_only {
+            next.description =
+                patch_description(w.native["description"].as_str().unwrap_or(""), &patch);
+        }
+        if content_edit && !merge_only {
             next.revision += 1;
             next.review = None;
         }
-        let mut input = json!({"description":next.description});
+        let mut input = json!({});
         if let Some(title) = a.get("title") {
-            input["title"] = title.clone();
+            input["title"] = json!(kind.title(title.as_str().unwrap_or(""))?);
+        } else {
+            let current = w.native["title"].as_str().unwrap_or("");
+            input["title"] = json!(kind.title(current)?);
+        }
+        if let Some(priority) = a.get("priority") {
+            input["priority"] = priority.clone();
+        }
+        if content_edit {
+            input["description"] = json!(next.description.clone());
         }
         if a.get("parent_id").is_some() {
             input["parentId"] = a["parent_id"].clone();
         }
+        require(
+            !input.as_object().unwrap().is_empty(),
+            "INVALID_INPUT",
+            "No issue fields to edit",
+        )?;
         self.update(&w, next, input, request).await
     }
     /// Guard and explicitly move work; check_only never persists intent, labels or changes.
@@ -778,7 +856,8 @@ impl Gateway {
             .map_err(Fault::uncertain)?;
         Ok(json!({"review":next.review,"issue_id":w.id()}))
     }
-    /// Return current context and transition conditions without interpreting document text as instructions.
+    /// Read a Project, Issue or Document by validated type and UUID; issue context reuses its loaded Project graph for children, transition conditions and same Project/parent/type-label priority peers.
+    /// Reads do not mutate Linear; missing records, unmanaged issues and native/API failures propagate as safe faults.
     async fn context(&self, a: &Value) -> Result<Value> {
         let id = text(a, "id")?;
         match text(a, "type")? {
@@ -798,13 +877,31 @@ impl Gateway {
             _ => {
                 let (w, g) = self.loaded(id).await?;
                 let checkout=rules::parent(&w).and_then(|p|rules::find(&g,p)).filter(|p|p.meta.as_ref().is_some_and(|m|m.kind==Kind::Module)).map(|p|json!({"repository_url":p.fields["repository_url"],"branch":p.fields["branch"],"worktree":p.fields["worktree"],"lead":p.fields["lead"]}));
+                let m = w.managed()?;
+                let peers: Vec<_> = g
+                    .iter()
+                    .filter(|peer| {
+                        peer.id() != id
+                            && peer.native["labels"]["nodes"]
+                                .as_array()
+                                .is_some_and(|labels| {
+                                    labels.iter().any(|label| label["name"] == m.kind.label())
+                                })
+                            && peer.native["project"]["id"] == m.project_id
+                            && peer.native["parent"]["id"].as_str() == m.parent_id.as_deref()
+                    })
+                    .collect();
+                let mut peers = peers;
+                peers.sort_by(|a, b| priority_cmp(&a.native, &b.native));
+                let priority_group = json!({"project_id":m.project_id,"parent_id":m.parent_id,"kind":m.kind,"peers":peers.iter().map(|p|json!({"id":p.id(),"identifier":p.native["identifier"],"title":p.native["title"],"status":p.native["state"]["name"],"priority":p.native["priority"],"priorityLabel":p.native["priorityLabel"]})).collect::<Vec<_>>()});
                 Ok(
-                    json!({"issue":w.native,"fields":w.fields,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"discrepancies":rules::discrepancies(&w,&g),"transitions":rules::actions(&w,&g)}),
+                    json!({"issue":w.native,"fields":w.fields,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":rules::discrepancies(&w,&g),"transitions":rules::actions(&w,&g)}),
                 )
             }
         }
     }
-    /// Forward native list/search pagination while rejecting filters that cannot be applied honestly.
+    /// List or search one entity type; `search` selects native search and `a` supplies the accepted filters/page cursor.
+    /// Default lists and searches forward native cursors unchanged. Priority ordering loads the complete filtered Issue group within the Store page budget, validates parent scope, sorts before slicing, and binds JSON cursors to every group filter; malformed, changed-scope or missing-anchor cursors fail with `INVALID_CURSOR`.
     async fn list(&self, a: &Value, search: bool) -> Result<Value> {
         let kind = text(a, "type")?;
         let (query, field) = match (search, kind) {
@@ -832,7 +929,11 @@ impl Gateway {
                         "INVALID_INPUT",
                         "This filter is not supported for the requested entity type",
                     )?;
-                    filter[field] = json!({"id":{"eq":id}});
+                    filter[field] = if key == "parent_id" && id.is_null() {
+                        json!({"null":true})
+                    } else {
+                        json!({"id":{"eq":id}})
+                    };
                 }
             }
             if let Some(v) = a.get("kind") {
@@ -852,7 +953,101 @@ impl Gateway {
                 )?;
                 filter["state"] = json!({"name":{"eq":v}});
             }
+            if let Some(v) = a.get("priority") {
+                require(
+                    kind == "issue",
+                    "INVALID_INPUT",
+                    "priority applies only to issues",
+                )?;
+                filter["priority"] = json!({"eq":v});
+            }
             args["filter"] = filter;
+        }
+        if !search && a["order_by"] == "priority" {
+            require(
+                kind == "issue" && a["project_id"].is_string() && a["kind"].is_string(),
+                "INVALID_INPUT",
+                "Priority ordering requires issue type, project_id and kind",
+            )?;
+            let project = a["project_id"].as_str().unwrap();
+            let k: Kind = serde_json::from_value(a["kind"].clone()).unwrap();
+            let parent = a["parent_id"].as_str();
+            let group = json!({"project_id":project,"parent_id":parent,"kind":k,"team_id":a.get("team_id"),"status":a.get("status"),"include_archived":a.get("include_archived").and_then(Value::as_bool).unwrap_or(false),"priority":a.get("priority")});
+            if let Some(pid) = parent {
+                let graph = self.store.graph(project).await?;
+                let p = rules::find(&graph, pid).ok_or_else(|| {
+                    Fault::new("INVALID_PARENT", "Parent must belong to this Project")
+                })?;
+                require(
+                    p.native["project"]["id"] == project
+                        && p.meta.as_ref().is_some_and(|pm| pm.project_id == project),
+                    "INVALID_PARENT",
+                    "Parent must belong to this Project",
+                )?;
+                let pk = p.managed()?.kind;
+                let valid = matches!(
+                    (k, pk),
+                    (Kind::Module, Kind::Epic)
+                        | (Kind::Task, Kind::Module)
+                        | (Kind::Atomic, Kind::Epic | Kind::Module)
+                );
+                require(
+                    valid,
+                    "INVALID_PARENT",
+                    "Parent kind is incompatible with requested kind",
+                )?;
+            }
+            let mut fetch = json!({"filter":{"project":{"id":{"eq":project}}},"includeArchived":group["include_archived"]});
+            for (key, field) in [("team_id", "team"), ("status", "state")] {
+                if let Some(v) = a.get(key) {
+                    fetch["filter"][field] = if key == "team_id" {
+                        json!({"id":{"eq":v}})
+                    } else {
+                        json!({"name":{"eq":v}})
+                    };
+                }
+            }
+            fetch["filter"]["labels"] = json!({"some":{"name":{"eq":k.label()}}});
+            let mut nodes = self.store.pages("QIssues", "issues", fetch).await?;
+            nodes.retain(|v| v["project"]["id"] == project && v["parent"]["id"].as_str() == parent);
+            if let Some(priority) = a.get("priority").and_then(Value::as_u64) {
+                nodes.retain(|v| native_priority(&v["priority"]).unwrap_or(0) == priority);
+            }
+            nodes.sort_by(priority_cmp);
+            let first = a.get("first").and_then(Value::as_u64).unwrap_or(50) as usize;
+            let start = if let Some(cursor) = a.get("after").and_then(Value::as_str) {
+                let decoded: Value = serde_json::from_str(cursor)
+                    .map_err(|_| Fault::new("INVALID_CURSOR", "Priority cursor is invalid"))?;
+                require(
+                    decoded["version"] == 1 && decoded["group"] == group,
+                    "INVALID_CURSOR",
+                    "Priority cursor belongs to another scope",
+                )?;
+                let anchor = decoded["last"]
+                    .as_str()
+                    .ok_or_else(|| Fault::new("INVALID_CURSOR", "Priority cursor has no anchor"))?;
+                nodes
+                    .iter()
+                    .position(|v| v["id"] == anchor)
+                    .map(|i| i + 1)
+                    .ok_or_else(|| {
+                        Fault::new(
+                            "INVALID_CURSOR",
+                            "Priority cursor anchor is no longer in this group",
+                        )
+                    })?
+            } else {
+                0
+            };
+            let end = (start + first).min(nodes.len());
+            let page_nodes = nodes[start..end].to_vec();
+            let has_next = end < nodes.len();
+            let end_cursor = page_nodes
+                .last()
+                .map(|v| json!({"version":1,"group":group,"last":v["id"]}).to_string());
+            return Ok(
+                json!({"nodes":page_nodes,"pageInfo":{"hasNextPage":has_next,"endCursor":end_cursor},"scope":group}),
+            );
         }
         Ok(self.store.linear.call(query, args).await?[field].clone())
     }

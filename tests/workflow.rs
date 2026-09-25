@@ -542,3 +542,221 @@ async fn stale_success_payload_is_unknown_until_fields_are_confirmed() {
     let context = f.ok("get_context", json!({"type":"issue","id":atom})).await;
     assert_eq!(context["fields"]["result"], "Visible result");
 }
+
+/// Verify canonical issue titles, full-group priority pagination and identity-safe presentation edits.
+#[tokio::test]
+async fn canonical_titles_and_priority_views_preserve_workflow_identity() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let _epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, None).await;
+    let wrong_parent = id();
+    let wrong_project = id();
+    let wrong_kind = id();
+    let mut tied_ids = Vec::new();
+    {
+        let mut db = f.db.lock().await;
+        let base = db.issues[&module].clone();
+        assert_eq!(base["title"], "[MODULE] Readable module");
+        db.issues.get_mut(&module).unwrap()["priority"] = json!(2);
+        for i in 0..105 {
+            let mut item = base.clone();
+            let issue_id = id();
+            item["id"] = json!(issue_id);
+            item["title"] = json!(format!("[MODULE] sibling {i}"));
+            item["priority"] = json!(if i % 3 == 0 { 1 } else { 0 });
+            item["prioritySortOrder"] = json!(if i == 1 || i == 4 { -49 } else { i as i64 - 50 });
+            if i == 1 || i == 4 {
+                tied_ids.push(issue_id.clone());
+            }
+            db.issues.insert(issue_id, item);
+        }
+        let mut moved = base.clone();
+        moved["id"] = json!(wrong_parent);
+        moved["parent"] = json!({"id":id()});
+        db.issues.insert(wrong_parent.clone(), moved);
+        let mut other_project = base.clone();
+        other_project["id"] = json!(wrong_project);
+        other_project["project"]["id"] = json!(id());
+        db.issues.insert(wrong_project.clone(), other_project);
+        let mut other_kind = base.clone();
+        other_kind["id"] = json!(wrong_kind);
+        let epic_label = db
+            .labels
+            .values()
+            .find(|v| v["name"] == "EPIC")
+            .unwrap()
+            .clone();
+        other_kind["labels"] =
+            json!({"nodes":[epic_label],"pageInfo":{"hasNextPage":false,"endCursor":null}});
+        db.issues.insert(wrong_kind.clone(), other_kind);
+    }
+    let page1 = f.ok("list_items",json!({"type":"issue","project_id":project,"kind":"module","order_by":"priority","first":100})).await;
+    assert_eq!(page1["nodes"].as_array().unwrap().len(), 100);
+    let cursor = page1["pageInfo"]["endCursor"].as_str().unwrap().to_owned();
+    let page2 = f.ok("list_items",json!({"type":"issue","project_id":project,"kind":"module","order_by":"priority","first":100,"after":cursor})).await;
+    assert_eq!(page2["nodes"].as_array().unwrap().len(), 6);
+    let ordered: Vec<_> = page1["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(page2["nodes"].as_array().unwrap())
+        .collect();
+    assert_eq!(ordered.len(), 106);
+    assert!(ordered[..35].iter().all(|v| v["priority"] == 1));
+    assert_eq!(ordered[35]["priority"], 2);
+    assert!(ordered[36..].iter().all(|v| v["priority"] == 0));
+    for pair in ordered.windows(2) {
+        let priority_rank = |v: &serde_json::Value| {
+            if v["priority"] == 0 {
+                5
+            } else {
+                v["priority"].as_u64().unwrap_or(5)
+            }
+        };
+        assert!(priority_rank(pair[0]) <= priority_rank(pair[1]));
+        if priority_rank(pair[0]) == priority_rank(pair[1]) {
+            assert!(
+                pair[0]["prioritySortOrder"].as_f64().unwrap()
+                    <= pair[1]["prioritySortOrder"].as_f64().unwrap()
+            );
+        }
+    }
+    let mut expected_ties = tied_ids.clone();
+    expected_ties.sort();
+    let actual_ties: Vec<_> = ordered
+        .iter()
+        .filter(|v| v["priority"] == 0 && v["prioritySortOrder"] == -49)
+        .map(|v| v["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(actual_ties, expected_ties);
+    let priority_filter = f
+        .ok(
+            "list_items",
+            json!({"type":"issue","project_id":project,"priority":1}),
+        )
+        .await;
+    assert_eq!(priority_filter["nodes"].as_array().unwrap().len(), 35);
+    assert_eq!(
+        f.call("list_items", json!({"type":"project","priority":1}))
+            .await
+            .status,
+        "blocked"
+    );
+    let mismatch = f.call("list_items",json!({"type":"issue","project_id":project,"kind":"module","order_by":"priority","status":"Done","after":cursor})).await;
+    assert_eq!(mismatch.status, "blocked");
+    let invalid_parent = f.call("list_items",json!({"type":"issue","project_id":project,"kind":"module","order_by":"priority","parent_id":id()})).await;
+    assert_eq!(invalid_parent.status, "blocked");
+    let anchor = serde_json::from_str::<serde_json::Value>(&cursor).unwrap()["last"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.db.lock().await.issues.remove(&anchor);
+    let missing_anchor = f.call("list_items",json!({"type":"issue","project_id":project,"kind":"module","order_by":"priority","first":100,"after":cursor})).await;
+    assert_eq!(missing_anchor.status, "blocked");
+
+    let created = f.ok("create_epic",json!({"project_id":project,"team_id":f.team,"title":"[TASK] [epic] [EPIC] [UI] Ship it"})).await;
+    assert_eq!(created["issue"]["title"], "[EPIC] [UI] Ship it");
+    assert_eq!(created["issue"]["priority"], 0);
+    let epic_id = created["issue"]["id"].as_str().unwrap();
+    f.ok("edit_epic", json!({"id":epic_id,"fields":{}})).await;
+    assert_eq!(
+        f.db.lock().await.issues[epic_id]["title"],
+        "[EPIC] [UI] Ship it"
+    );
+    let invalid_priority = f
+        .call(
+            "create_epic",
+            json!({"project_id":project,"team_id":f.team,"title":"Bad priority","priority":5}),
+        )
+        .await;
+    assert_eq!(invalid_priority.status, "blocked");
+    let blank = f
+        .call(
+            "create_epic",
+            json!({"project_id":project,"team_id":f.team,"title":"[TASK] [EPIC] "}),
+        )
+        .await;
+    assert_eq!(blank.status, "blocked");
+
+    f.mv(&module, "In Progress").await;
+    f.result("module", &module).await;
+    f.mv(&module, "In Review").await;
+    f.review(&module, "accepted").await;
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"merge_report":"Merged"}}),
+    )
+    .await;
+    f.mv(&module, "Done").await;
+    let before = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    let desc = before["issue"]["description"].clone();
+    f.ok(
+        "edit_module",
+        json!({"id":module,"title":"[TASK] [MODULE] Revised","priority":4}),
+    )
+    .await;
+    let after = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    assert_eq!(after["issue"]["title"], "[MODULE] Revised");
+    assert_eq!(after["issue"]["priority"], 4);
+    assert_eq!(after["issue"]["description"], desc);
+    assert_eq!(after["workflow"]["status"], "Done");
+    assert_eq!(
+        after["workflow"]["revision"],
+        before["workflow"]["revision"]
+    );
+    assert_eq!(after["workflow"]["review"], before["workflow"]["review"]);
+    assert_eq!(after["fields"]["result"], before["fields"]["result"]);
+    {
+        let mut db = f.db.lock().await;
+        db.issues.get_mut(&module).unwrap()["title"] = json!("[TASK] [EPIC] Existing");
+        db.issues.get_mut(&module).unwrap()["priority"] = json!(3);
+    }
+    f.ok("edit_module", json!({"id":module,"fields":{}})).await;
+    let normalized = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    assert_eq!(normalized["issue"]["title"], "[MODULE] Existing");
+    assert_eq!(normalized["issue"]["priority"], 3);
+    assert_eq!(normalized["workflow"]["status"], "Done");
+    assert_eq!(
+        normalized["workflow"]["review"],
+        before["workflow"]["review"]
+    );
+    f.ok("edit_module", json!({"id":module,"priority":0})).await;
+    assert_eq!(
+        f.ok("get_context", json!({"type":"issue","id":module}))
+            .await["issue"]["priority"],
+        0
+    );
+    let drifted = json!(format!("{}\nmanual note", desc.as_str().unwrap()));
+    f.db.lock().await.issues.get_mut(&module).unwrap()["description"] = drifted.clone();
+    f.ok(
+        "edit_module",
+        json!({"id":module,"parent_id":null,"fields":{}}),
+    )
+    .await;
+    let after_drift = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    assert_eq!(after_drift["issue"]["description"], drifted);
+    assert_eq!(after_drift["workflow"]["description"], desc);
+    assert_eq!(
+        after_drift["workflow"]["review"],
+        before["workflow"]["review"]
+    );
+    assert!(after["priority_group"]["peers"].as_array().unwrap().len() >= 100);
+    let peer_ids: Vec<_> = after["priority_group"]["peers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
+    assert!(!peer_ids.contains(&wrong_parent.as_str()));
+    assert!(!peer_ids.contains(&wrong_project.as_str()));
+    assert!(!peer_ids.contains(&wrong_kind.as_str()));
+}

@@ -46,6 +46,16 @@ pub const STATES: [&str; 7] = [
 fn page(nodes: Vec<Value>) -> Value {
     json!({"nodes":nodes,"pageInfo":{"hasNextPage":false,"endCursor":null}})
 }
+/// Slice a connection with opaque numeric cursors using the requested native page size.
+fn issue_page(nodes: Vec<Value>, variables: &Value) -> Value {
+    let first = variables["first"].as_u64().unwrap_or(100) as usize;
+    let start = variables["after"]
+        .as_str()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    let end = (start + first).min(nodes.len());
+    json!({"nodes":nodes[start.min(nodes.len())..end].to_vec(),"pageInfo":{"hasNextPage":end<nodes.len(),"endCursor":if end<nodes.len(){json!(end.to_string())}else{Value::Null}}})
+}
 /// Resolve a native status object by its fixture identifier.
 fn state(id: &str) -> Value {
     json!({"id":id,"name":id,"type":match id {"Backlog"=>"backlog","Todo"=>"unstarted","Done"=>"completed","Canceled"|"Duplicate"=>"canceled",_=>"started"}})
@@ -83,15 +93,40 @@ async fn graphql(
         "QComment" => db.comments.get(id).cloned().map(|v| ("comment", v)),
         "QIssues" => Some((
             "issues",
-            page(
+            issue_page(
                 db.issues
                     .values()
                     .filter(|i| {
                         v["filter"]["project"].is_null()
                             || i["project"]["id"] == v["filter"]["project"]["id"]["eq"]
                     })
+                    .filter(|i| {
+                        v["filter"]["team"].is_null()
+                            || i["team"]["id"] == v["filter"]["team"]["id"]["eq"]
+                    })
+                    .filter(|i| {
+                        v["filter"]["state"].is_null()
+                            || i["state"]["name"] == v["filter"]["state"]["name"]["eq"]
+                    })
+                    .filter(|i| {
+                        v["filter"]["priority"].is_null()
+                            || i["priority"] == v["filter"]["priority"]["eq"]
+                    })
+                    .filter(|i| {
+                        v["filter"]["parent"].is_null()
+                            || i["parent"]["id"] == v["filter"]["parent"]["id"]["eq"]
+                    })
+                    .filter(|i| {
+                        v["filter"]["labels"].is_null()
+                            || i["labels"]["nodes"].as_array().is_some_and(|ls| {
+                                ls.iter().any(|l| {
+                                    l["name"] == v["filter"]["labels"]["some"]["name"]["eq"]
+                                })
+                            })
+                    })
                     .cloned()
                     .collect(),
+                v,
             ),
         )),
         "QDocuments" => Some((
@@ -136,7 +171,7 @@ async fn graphql(
                 .iter()
                 .map(|i| db.labels[i.as_str().unwrap()].clone())
                 .collect();
-            let item = json!({"id":id,"identifier":format!("TEST-{}",db.issues.len()+1),"title":input["title"],"description":input["description"],"team":{"id":input["teamId"]},"project":{"id":input["projectId"]},"parent":input.get("parentId").filter(|v|!v.is_null()).map(|id|json!({"id":id})),"state":state(input["stateId"].as_str().unwrap()),"url":format!("https://linear.app/issue/{id}"),"labels":page(labels),"archivedAt":null,"startedAt":null,"completedAt":null});
+            let item = json!({"id":id,"identifier":format!("TEST-{}",db.issues.len()+1),"title":input["title"],"description":input["description"],"priority":input.get("priority").cloned().unwrap_or(json!(0)),"priorityLabel":match input["priority"].as_u64().unwrap_or(0){1=>"Urgent",2=>"High",3=>"Medium",4=>"Low",_=>"No priority"},"prioritySortOrder":-(db.issues.len() as i64),"team":{"id":input["teamId"]},"project":{"id":input["projectId"]},"parent":input.get("parentId").filter(|v|!v.is_null()).map(|id|json!({"id":id})),"state":state(input["stateId"].as_str().unwrap()),"url":format!("https://linear.app/issue/{id}"),"labels":page(labels),"archivedAt":null,"startedAt":null,"completedAt":null});
             db.issues.insert(id.into(), item.clone());
             Some(("issueCreate", json!({"success":true,"issue":item})))
         }

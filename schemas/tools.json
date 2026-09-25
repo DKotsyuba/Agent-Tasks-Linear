@@ -114,7 +114,7 @@
   },
   {
     "name": "create_epic",
-    "description": "Create a native epic Issue. Project-level Modules start in Todo. Epic membership freezes at first start. Fields may be prepared later; status changes use move_status.",
+    "description": "Create a native epic Issue with one canonical [EPIC] title prefix. Project-level Modules start in Todo. Epic membership freezes at first start. Priority defaults to 0 (none); fields may be prepared later; status changes use move_status.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -156,6 +156,12 @@
           "minLength": 1,
           "maxLength": 30000,
           "pattern": "\\S"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low."
         },
         "fields": {
           "type": "object",
@@ -410,7 +416,7 @@
   },
   {
     "name": "edit_epic",
-    "description": "Partially edit a epic; null removes a field. Preserve unrelated description sections. Status never changes. Reopen reviewed work before changing its result; merge_report may be added after Module review.",
+    "description": "Partially edit a epic; title keeps one canonical [EPIC] prefix. Priority 0 clears, omitted priority preserves it. Null removes a field. Presentation-only title/priority edits are allowed in In Review and Done and preserve description, results, status, revision and review; content edits require reopening. merge_report may be added after Module review.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -435,6 +441,12 @@
           "minLength": 1,
           "maxLength": 30000,
           "pattern": "\\S"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low."
         },
         "parent_id": {
           "anyOf": [
@@ -699,7 +711,7 @@
   },
   {
     "name": "create_module",
-    "description": "Create a native module Issue. Project-level Modules start in Todo. Epic membership freezes at first start. Fields may be prepared later; status changes use move_status.",
+    "description": "Create a native module Issue with one canonical [MODULE] title prefix. Project-level Modules start in Todo. Epic membership freezes at first start. Priority defaults to 0 (none); fields may be prepared later; status changes use move_status.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -741,6 +753,12 @@
           "minLength": 1,
           "maxLength": 30000,
           "pattern": "\\S"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low."
         },
         "fields": {
           "type": "object",
@@ -1059,7 +1077,7 @@
   },
   {
     "name": "edit_module",
-    "description": "Partially edit a module; null removes a field. Preserve unrelated description sections. Status never changes. Reopen reviewed work before changing its result; merge_report may be added after Module review.",
+    "description": "Partially edit a module; title keeps one canonical [MODULE] prefix. Priority 0 clears, omitted priority preserves it. Null removes a field. Presentation-only title/priority edits are allowed in In Review and Done and preserve description, results, status, revision and review; content edits require reopening. merge_report may be added after Module review.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1084,6 +1102,12 @@
           "minLength": 1,
           "maxLength": 30000,
           "pattern": "\\S"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low."
         },
         "parent_id": {
           "anyOf": [
@@ -1412,7 +1436,7 @@
   },
   {
     "name": "create_task",
-    "description": "Create a native task Issue. Project-level Modules start in Todo. Epic membership freezes at first start. Fields may be prepared later; status changes use move_status.",
+    "description": "Create a native task Issue with one canonical [TASK] title prefix. Project-level Modules start in Todo. Epic membership freezes at first start. Priority defaults to 0 (none); fields may be prepared later; status changes use move_status.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1454,6 +1478,12 @@
           "minLength": 1,
           "maxLength": 30000,
           "pattern": "\\S"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low."
         },
         "fields": {
           "type": "object",
@@ -1696,7 +1726,7 @@
   },
   {
     "name": "edit_task",
-    "description": "Partially edit a task; null removes a field. Preserve unrelated description sections. Status never changes. Reopen reviewed work before changing its result; merge_report may be added after Module review.",
+    "description": "Partially edit a task; title keeps one canonical [TASK] prefix. Priority 0 clears, omitted priority preserves it. Null removes a field. Presentation-only title/priority edits are allowed in In Review and Done and preserve description, results, status, revision and review; content edits require reopening. merge_report may be added after Module review.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1721,6 +1751,12 @@
           "minLength": 1,
           "maxLength": 30000,
           "pattern": "\\S"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low."
         },
         "parent_id": {
           "anyOf": [
@@ -1972,7 +2008,7 @@
   },
   {
     "name": "create_atomic",
-    "description": "Create a native atomic Issue. Project-level Modules start in Todo. Epic membership freezes at first start. Fields may be prepared later; status changes use move_status.",
+    "description": "Create a native atomic Issue with one canonical [ATOMIC] title prefix. Project-level Modules start in Todo. Epic membership freezes at first start. Priority defaults to 0 (none); fields may be prepared later; status changes use move_status.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2014,6 +2050,12 @@
           "minLength": 1,
           "maxLength": 30000,
           "pattern": "\\S"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low."
         },
         "fields": {
           "type": "object",
@@ -2300,7 +2342,7 @@
   },
   {
     "name": "edit_atomic",
-    "description": "Partially edit a atomic; null removes a field. Preserve unrelated description sections. Status never changes. Reopen reviewed work before changing its result; merge_report may be added after Module review.",
+    "description": "Partially edit a atomic; title keeps one canonical [ATOMIC] prefix. Priority 0 clears, omitted priority preserves it. Null removes a field. Presentation-only title/priority edits are allowed in In Review and Done and preserve description, results, status, revision and review; content edits require reopening. merge_report may be added after Module review.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2325,6 +2367,12 @@
           "minLength": 1,
           "maxLength": 30000,
           "pattern": "\\S"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low."
         },
         "parent_id": {
           "anyOf": [
@@ -2621,7 +2669,7 @@
   },
   {
     "name": "get_context",
-    "description": "Read native Project, Issue or Document. Issues include children, parent checkout, discrepancies and guarded transitions. Reads never repair Linear.",
+    "description": "Read native Project, Issue or Document. Issues include children, same-scope priority peers, parent checkout, discrepancies and guarded transitions. Reads never repair Linear.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2653,7 +2701,7 @@
   },
   {
     "name": "list_items",
-    "description": "List native items using opaque Linear pagination. kind and status apply only to issues.",
+    "description": "List native items; native order keeps native pagination. For order_by=priority, require type=issue, project_id and kind; absent/null parent_id is the Project root. A supplied parent must be in that Project and have a compatible kind. Fetch the complete live sibling group within the page budget, then sort by priority 1,2,3,4,0, native prioritySortOrder, then UUID; page only after sorting. The scope-bound cursor includes Project, parent, kind, team, status, archived setting and priority filter. Priority is advisory and never starts or gates work. The optional 0–4 priority filter applies only to issues.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2670,9 +2718,16 @@
           "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
         },
         "parent_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "team_id": {
           "type": "string",
@@ -2696,6 +2751,18 @@
             "Done",
             "Canceled",
             "Duplicate"
+          ]
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low."
+        },
+        "order_by": {
+          "enum": [
+            "native",
+            "priority"
           ]
         },
         "first": {

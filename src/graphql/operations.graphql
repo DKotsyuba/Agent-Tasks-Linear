@@ -14,9 +14,9 @@ query QProject($id:String!) {project(id:$id) {id name description content url ar
 
 query QProjects($filter:ProjectFilter,$first:Int!,$after:String,$includeArchived:Boolean!) { projects(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id name description url} pageInfo { hasNextPage endCursor }} }
 
-query QIssue($id:String!) { issue(id:$id) {id identifier title description url updatedAt archivedAt startedAt completedAt team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }} }
+query QIssue($id:String!) { issue(id:$id) {id identifier title description url updatedAt archivedAt startedAt completedAt priority priorityLabel prioritySortOrder team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }} }
 
-query QIssues($filter:IssueFilter,$first:Int!,$after:String,$includeArchived:Boolean!) { issues(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id identifier title description url updatedAt archivedAt startedAt completedAt team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }} pageInfo { hasNextPage endCursor }} }
+query QIssues($filter:IssueFilter,$first:Int!,$after:String,$includeArchived:Boolean!) { issues(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id identifier title description url updatedAt archivedAt startedAt completedAt priority priorityLabel prioritySortOrder team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }} pageInfo { hasNextPage endCursor }} }
 
 query QAttachmentById($id:String!) {attachment(id:$id) {id title url metadata issue {id}}}
 
@@ -30,15 +30,15 @@ query QComment($id:String!) {comment(id:$id) {id body issue {id} createdAt}}
 
 query QHistory($id:String!,$first:Int!,$after:String) {issue(id:$id) {history(first:$first,after:$after) {nodes {id createdAt fromStateId toStateId fromParentId toParentId fromProjectId toProjectId} pageInfo { hasNextPage endCursor }}}}
 
-query QSearchIssues($term:String!,$first:Int!,$after:String) {searchIssues(term:$term,first:$first,after:$after) {nodes {id title url} pageInfo { hasNextPage endCursor }}}
+query QSearchIssues($term:String!,$first:Int!,$after:String) {searchIssues(term:$term,first:$first,after:$after) {nodes {id identifier title url priority priorityLabel prioritySortOrder} pageInfo { hasNextPage endCursor }}}
 
 query QSearchProjects($term:String!,$first:Int!,$after:String) {searchProjects(term:$term,first:$first,after:$after) {nodes {id name url} pageInfo { hasNextPage endCursor }}}
 
 query QSearchDocuments($term:String!,$first:Int!,$after:String) {searchDocuments(term:$term,first:$first,after:$after) {nodes {id title url} pageInfo { hasNextPage endCursor }}}
 
-mutation MCreateIssue($input:IssueCreateInput!) {issueCreate(input:$input) {success issue {id identifier title description url updatedAt archivedAt startedAt completedAt team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }}}}
+mutation MCreateIssue($input:IssueCreateInput!) {issueCreate(input:$input) {success issue {id identifier title description url updatedAt archivedAt startedAt completedAt priority priorityLabel prioritySortOrder team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }}}}
 
-mutation MUpdateIssue($id:String!,$input:IssueUpdateInput!) {issueUpdate(id:$id,input:$input) {success issue {id identifier title description url updatedAt archivedAt startedAt completedAt team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }}}}
+mutation MUpdateIssue($id:String!,$input:IssueUpdateInput!) {issueUpdate(id:$id,input:$input) {success issue {id identifier title description url updatedAt archivedAt startedAt completedAt priority priorityLabel prioritySortOrder team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }}}}
 
 mutation MCreateProject($input:ProjectCreateInput!) {projectCreate(input:$input) {success project {id name content url}}}
 

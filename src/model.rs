@@ -74,6 +74,28 @@ impl Kind {
             Self::Atomic => "ATOMIC",
         }
     }
+    /// Prefix a nonblank title with this kind's marker, case-insensitively stripping repeated leading recognized markers while preserving unrelated title text; returns `INVALID_INPUT` if no title remains.
+    pub fn title(self, value: &str) -> Result<String> {
+        let mut title = value.trim();
+        while let Some(rest) = title.strip_prefix('[') {
+            let Some((prefix, tail)) = rest.split_once(']') else {
+                break;
+            };
+            if !matches!(
+                prefix.trim().to_ascii_uppercase().as_str(),
+                "EPIC" | "MODULE" | "TASK" | "ATOMIC"
+            ) {
+                break;
+            }
+            title = tail.trim_start();
+        }
+        require(
+            !title.trim().is_empty(),
+            "INVALID_INPUT",
+            "title must contain text after its kind prefix",
+        )?;
+        Ok(format!("[{}] {}", self.label(), title.trim()))
+    }
 }
 /// Standard workflow names. Configuration must resolve existing Linear states to these names.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
