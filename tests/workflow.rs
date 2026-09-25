@@ -760,3 +760,78 @@ async fn canonical_titles_and_priority_views_preserve_workflow_identity() {
     assert!(!peer_ids.contains(&wrong_project.as_str()));
     assert!(!peer_ids.contains(&wrong_kind.as_str()));
 }
+
+/// Verify title/priority edits bypass validation of persisted legacy fields without weakening content validation.
+#[tokio::test]
+async fn presentation_edits_preserve_legacy_metadata_without_adopting_it() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.result("module", &module).await;
+    f.mv(&module, "In Progress").await;
+    f.mv(&module, "In Review").await;
+    f.review(&module, "accepted").await;
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"merge_report":"Merged"}}),
+    )
+    .await;
+    f.mv(&module, "Done").await;
+    let legacy_pr = "[https://example.com/mcp-fixtures/pull-request](<https://example.com/mcp-fixtures/pull-request>)";
+    let legacy_artifact =
+        "[https://example.com/mcp-fixtures/artifact](<https://example.com/mcp-fixtures/artifact>)";
+    {
+        let mut db = f.db.lock().await;
+        let attachment = db
+            .attachments
+            .values_mut()
+            .find(|a| a["issue"]["id"] == module)
+            .unwrap();
+        attachment["metadata"]["workflow"]["fields"]["pr_url"] = json!(legacy_pr);
+        attachment["metadata"]["workflow"]["fields"]["artifact_url"] = json!(legacy_artifact);
+    }
+    let before = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    f.ok(
+        "edit_module",
+        json!({"id":module,"title":"Renamed","priority":4}),
+    )
+    .await;
+    let after = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    assert_eq!(after["issue"]["title"], "[MODULE] Renamed");
+    assert_eq!(
+        after["issue"]["description"],
+        before["issue"]["description"]
+    );
+    assert_eq!(after["fields"]["pr_url"], legacy_pr);
+    assert_eq!(after["fields"]["artifact_url"], legacy_artifact);
+    assert_eq!(
+        after["workflow"]["revision"],
+        before["workflow"]["revision"]
+    );
+    assert_eq!(after["workflow"]["review"], before["workflow"]["review"]);
+    assert_eq!(after["workflow"]["status"], "Done");
+
+    f.mv(&module, "In Progress").await;
+    {
+        let mut db = f.db.lock().await;
+        let attachment = db
+            .attachments
+            .values_mut()
+            .find(|a| a["issue"]["id"] == module)
+            .unwrap();
+        attachment["metadata"]["workflow"]["fields"]["pr_url"] = json!(legacy_pr);
+        attachment["metadata"]["workflow"]["fields"]["artifact_url"] = json!(legacy_artifact);
+    }
+    let rejected = f
+        .call(
+            "edit_module",
+            json!({"id":module,"fields":{"pr_url":"not a URL"}}),
+        )
+        .await;
+    assert_eq!(rejected.status, "blocked");
+    assert_eq!(rejected.data["code"], "INVALID_INPUT");
+}

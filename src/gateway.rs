@@ -611,7 +611,7 @@ impl Gateway {
         Ok(json!({"issue":native,"round":next.round}))
     }
     /// Apply one managed issue edit for `kind`; missing title normalizes the existing title, missing priority preserves it, and priority zero clears it.
-    /// Empty or title/priority-only edits preserve native descriptions and review identity in any status; requirement/parent edits invalidate review and require reopening reviewed work, except the existing Module merge-report allowance. Returns the confirmed issue outcome or a safe conflict/write fault.
+    /// Empty or title/priority-only edits preserve native descriptions, stored fields and review identity in any status, without validating or adopting legacy content; requirement/parent edits validate content, invalidate review and require reopening reviewed work, except the existing Module merge-report allowance. Returns the confirmed issue outcome or a safe conflict/write fault.
     async fn edit_work(&self, kind: Kind, a: &Value) -> Result<Value> {
         let (w, graph) = self.loaded(text(a, "id")?).await?;
         let m = w.managed()?;
@@ -691,8 +691,10 @@ impl Gateway {
                 fields[k] = v.clone();
             }
         }
-        self.catalog.validate_fields(kind, &fields)?;
-        Self::check_fields(kind, &fields, next.parent_id.as_deref(), &graph)?;
+        if !presentation_only {
+            self.catalog.validate_fields(kind, &fields)?;
+            Self::check_fields(kind, &fields, next.parent_id.as_deref(), &graph)?;
+        }
         next.fields = fields;
         if !presentation_only {
             next.description =
