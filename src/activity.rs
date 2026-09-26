@@ -27,7 +27,7 @@ pub struct ActivityRecord {
     pub target: ActivityTarget,
     /// Parent comment UUID for a reply.
     pub parent_id: Option<String>,
-    /// note, progress, question, decision or review; manual comments become notes.
+    /// note, progress, question, decision, review or project_update; manual comments become notes.
     pub kind: String,
     /// Reported role, or user/reviewer for native manual/current review comments.
     pub role: Option<String>,
@@ -43,6 +43,10 @@ pub struct ActivityRecord {
     pub summary: Option<String>,
     /// Explicit HTTP(S) source links from the visible header.
     pub source_links: Vec<String>,
+    /// Native health for ProjectUpdates; absent for comments.
+    pub health: Option<String>,
+    /// Explicit health explanation for a formatted ProjectUpdate.
+    pub reason: Option<String>,
     /// Native Linear creation time.
     pub created_at: String,
     /// Native Linear update time.
@@ -231,6 +235,8 @@ pub fn record(comment: &Value, current_review: Option<&Review>) -> Result<Activi
         body: body.into(),
         summary,
         source_links: sources,
+        health: None,
+        reason: None,
         created_at: text(comment, "createdAt")?.into(),
         updated_at: text(comment, "updatedAt")?.into(),
         resolved_at: comment["resolvedAt"].as_str().map(str::to_owned),
@@ -257,6 +263,69 @@ pub fn record(comment: &Value, current_review: Option<&Review>) -> Result<Activi
             .map(|r| r.revision)
             .or_else(|| value("Revision").and_then(|s| s.parse().ok())),
         formal_review: current.is_some(),
+    })
+}
+
+/// Render one ProjectUpdate body with visible author and single-line health explanation.
+/// The caller supplies the selected native health separately; this function performs no write.
+pub fn render_project_update(actor: &str, reason: &str, body: &str) -> Result<String> {
+    for (name, value) in [("actor", actor), ("reason", reason)] {
+        require(
+            !value.trim().is_empty() && !value.contains(['\n', '\r']),
+            "INVALID_INPUT",
+            format!("{name} must be one nonblank line"),
+        )?;
+    }
+    require(
+        !body.trim().is_empty(),
+        "INVALID_INPUT",
+        "Project update body is empty",
+    )?;
+    Ok(format!(
+        "Author: {actor}\nReason: {reason}\n\n{}",
+        body.trim()
+    ))
+}
+
+/// Map a native ProjectUpdate to the same activity contract while preserving native health.
+/// Unformatted updates retain their full body and native user; no comment or workflow state is read.
+pub fn project_update_record(update: &Value) -> Result<ActivityRecord> {
+    let native_body = update["body"].as_str().unwrap_or("");
+    let (header, content) = native_body.split_once("\n\n").unwrap_or(("", native_body));
+    let mut lines = header.lines();
+    let actor = lines.next().and_then(|line| line.strip_prefix("Author: "));
+    let reason = lines.next().and_then(|line| line.strip_prefix("Reason: "));
+    let formatted = actor.is_some() && reason.is_some();
+    let body = if formatted { content } else { native_body };
+    Ok(ActivityRecord {
+        id: text(update, "id")?.into(),
+        url: text(update, "url")?.into(),
+        target: ActivityTarget {
+            kind: "project".into(),
+            id: text(&update["project"], "id")?.into(),
+        },
+        parent_id: None,
+        kind: "project_update".into(),
+        role: Some("project updater".into()),
+        actor: actor
+            .map(str::to_owned)
+            .or_else(|| update["user"]["name"].as_str().map(str::to_owned)),
+        session: None,
+        recipient: None,
+        body: body.into(),
+        summary: Some(body.split("\n\n").next().unwrap_or(body).trim().to_owned()),
+        source_links: vec![],
+        health: Some(text(update, "health")?.into()),
+        reason: reason.map(str::to_owned),
+        created_at: text(update, "createdAt")?.into(),
+        updated_at: text(update, "updatedAt")?.into(),
+        resolved_at: None,
+        resolving_comment_id: None,
+        verdict: None,
+        findings: None,
+        round: None,
+        revision: None,
+        formal_review: false,
     })
 }
 

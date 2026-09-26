@@ -1,4 +1,4 @@
-//! Basic MCP workflow over native Linear Projects, Issues and Documents.
+//! Explicit MCP workflow over native Linear Projects, Issues, Documents and activity.
 
 pub mod activity;
 pub mod catalog;

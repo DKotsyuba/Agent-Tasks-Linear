@@ -116,6 +116,20 @@ async fn graphql(
             .get(id)
             .cloned()
             .map(|v| ("projectUpdate", v)),
+        "QProjectUpdates" => Some((
+            "projectUpdates",
+            issue_page(
+                db.project_updates
+                    .values()
+                    .filter(|update| {
+                        v["filter"]["project"].is_null()
+                            || update["project"]["id"] == v["filter"]["project"]["id"]["eq"]
+                    })
+                    .cloned()
+                    .collect(),
+                v,
+            ),
+        )),
         "QCommentChildren" => db.comments.get(id).map(|_| {
             (
                 "comment",
@@ -336,6 +350,37 @@ async fn graphql(
                 item[k] = v.clone();
             }
             Some(("documentUpdate", json!({"success":true,"document":item})))
+        }
+        "MCreateProjectUpdate" => {
+            let id = input["id"].as_str().unwrap();
+            let project = input["projectId"].as_str().unwrap();
+            assert!(db.projects.contains_key(project));
+            assert!(!db.project_updates.contains_key(id));
+            db.tick += 1;
+            let item = json!({
+                "id":id,"url":format!("https://linear.app/project/{project}/updates/{id}"),
+                "body":input["body"],"health":input["health"],
+                "createdAt":format!("2026-09-25T00:00:{:02}Z",db.tick),
+                "updatedAt":format!("2026-09-25T00:00:{:02}Z",db.tick),
+                "archivedAt":null,"project":{"id":project},"user":{"id":"fixture","name":"Fixture"}
+            });
+            db.project_updates.insert(id.into(), item.clone());
+            Some((
+                "projectUpdateCreate",
+                json!({"success":true,"projectUpdate":item}),
+            ))
+        }
+        "MUpdateProjectUpdate" => {
+            db.tick += 1;
+            let tick = db.tick;
+            let item = db.project_updates.get_mut(id).unwrap();
+            item["body"] = input["body"].clone();
+            item["health"] = input["health"].clone();
+            item["updatedAt"] = json!(format!("2026-09-25T00:00:{tick:02}Z"));
+            Some((
+                "projectUpdateUpdate",
+                json!({"success":true,"projectUpdate":item}),
+            ))
         }
         "MCreateComment" => {
             let id = input["id"].as_str().unwrap();

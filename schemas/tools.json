@@ -2808,7 +2808,7 @@
   },
   {
     "name": "get_context",
-    "description": "Read native Project, Issue or Document. Issues include children, priority peers, parent checkout, current-round git_reports, discrepancies and guarded transitions. Modules also expose module_report with derived results, checks, counts, source commits and an unpublished PR draft. Reads never repair Linear.",
+    "description": "Read native Project, Issue, Document or ProjectUpdate. ProjectUpdate includes native health and normalized activity. Issues include children, priority peers, parent checkout, current-round git_reports, discrepancies and guarded transitions. Modules also expose module_report and an unpublished PR draft. Reads never repair Linear.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2816,7 +2816,8 @@
           "enum": [
             "project",
             "issue",
-            "document"
+            "document",
+            "project_update"
           ]
         },
         "id": {
@@ -2840,7 +2841,7 @@
   },
   {
     "name": "list_items",
-    "description": "List native Projects, Issues, Documents or Comments with opaque pagination. Comment pages include normalized activity_records; target_type+target_id and optional parent_id scope them. Issue priority ordering fetches the bounded sibling group before sorting. Priority never gates work.",
+    "description": "List native Projects, Issues, Documents, Comments or ProjectUpdates with opaque pagination. Comment and ProjectUpdate pages include normalized activity_records; target_type+target_id scopes Comments, project_id scopes updates. Issue priority ordering fetches the bounded sibling group before sorting. Priority never gates work.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2849,7 +2850,8 @@
             "project",
             "issue",
             "document",
-            "comment"
+            "comment",
+            "project_update"
           ]
         },
         "project_id": {
@@ -3396,6 +3398,76 @@
         "actor",
         "id",
         "resolved"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "save_project_update",
+    "description": "Create or edit a native ProjectUpdate for one Project with explicit onTrack/atRisk/offTrack health, author, explanation and body. New updates use request_id as native ID; edits need id and expected_updated_at from a prior read. Same arguments recover unknown outcomes. Does not change Issue status or publish on reads.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "health": {
+          "enum": [
+            "onTrack",
+            "atRisk",
+            "offTrack"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "expected_updated_at": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "request_id",
+        "actor",
+        "project_id",
+        "health",
+        "reason",
+        "body"
       ],
       "additionalProperties": false
     },

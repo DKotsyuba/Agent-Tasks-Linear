@@ -105,6 +105,7 @@ impl Gateway {
             "add_comment" => self.add_comment(&args).await,
             "get_comment" => self.get_comment(&args).await,
             "resolve_comment" => self.resolve_comment(&args).await,
+            "save_project_update" => self.save_project_update(&args).await,
             _ => {
                 let (action, kind) = name
                     .split_once('_')
@@ -288,6 +289,97 @@ impl Gateway {
             .await?["projectUpdate"]["project"]
             .clone())
     }
+    /// Create or edit one native ProjectUpdate with explicit health, author and rationale.
+    /// New updates use request_id as native ID; edits compare expected_updated_at before writing,
+    /// and identical native content makes a lost response replay safe without a second state store.
+    async fn save_project_update(&self, a: &Value) -> Result<Value> {
+        let project_id = text(a, "project_id")?;
+        self.project(project_id).await?;
+        let health = text(a, "health")?;
+        let body = crate::activity::render_project_update(
+            text(a, "actor")?,
+            text(a, "reason")?,
+            text(a, "body")?,
+        )?;
+        let editing = a["id"].is_string();
+        let id = if editing {
+            text(a, "id")?
+        } else {
+            require(
+                a.get("expected_updated_at").is_none(),
+                "INVALID_INPUT",
+                "Creation has no prior update timestamp",
+            )?;
+            text(a, "request_id")?
+        };
+        let existing = self
+            .store
+            .optional("QProjectUpdate", "projectUpdate", id)
+            .await?;
+        if let Some(current) = &existing {
+            require(
+                current["project"]["id"] == project_id,
+                "REQUEST_CONFLICT",
+                "ProjectUpdate belongs to another Project",
+            )?;
+            if current["health"] == health
+                && markdown_key(current["body"].as_str().unwrap_or("")) == markdown_key(&body)
+            {
+                return Ok(json!({
+                    "project_update":current,
+                    "activity":crate::activity::project_update_record(current)?,
+                    "url":current["url"],"replayed":true
+                }));
+            }
+            require(
+                editing,
+                "REQUEST_CONFLICT",
+                "request_id already names another ProjectUpdate",
+            )?;
+            require(
+                current["updatedAt"] == text(a, "expected_updated_at")?,
+                "PENDING_CONFLICT",
+                "ProjectUpdate changed since it was read; preserve the concurrent edit",
+            )?;
+        } else {
+            require(
+                !editing,
+                "RECORD_MISSING",
+                "ProjectUpdate to edit is missing",
+            )?;
+        }
+        let native =
+            if editing {
+                self.store
+                    .linear
+                    .call(
+                        "MUpdateProjectUpdate",
+                        json!({"id":id,"input":{"health":health,"body":body}}),
+                    )
+                    .await?["projectUpdateUpdate"]["projectUpdate"]
+                    .clone()
+            } else {
+                self.store.linear.call(
+                "MCreateProjectUpdate",
+                json!({"input":{"id":id,"projectId":project_id,"health":health,"body":body}}),
+            ).await?["projectUpdateCreate"]["projectUpdate"].clone()
+            };
+        require(
+            native["id"] == id
+                && native["project"]["id"] == project_id
+                && native["health"] == health
+                && markdown_key(native["body"].as_str().unwrap_or("")) == markdown_key(&body),
+            "NATIVE_STATE_MISMATCH",
+            "Linear did not confirm ProjectUpdate content, health and ownership",
+        )
+        .map_err(Fault::uncertain)?;
+        Ok(json!({
+            "project_update":native,
+            "activity":crate::activity::project_update_record(&native).map_err(Fault::uncertain)?,
+            "url":native["url"],"replayed":false
+        }))
+    }
+
     /// Create a native issue, then its small attachment. Same-ID retries resume incomplete creation.
     /// Modules and standalone code Atomics inherit omitted repository fields from Project;
     /// legacy repository prose is not inherited as a URL. Tasks use their Module's checkout.
@@ -1410,6 +1502,15 @@ impl Gateway {
                 Ok(json!({"project":p,"documents":docs}))
             }
             "document" => self.store.linear.object("QDocument", "document", id).await,
+            "project_update" => {
+                let update = self
+                    .store
+                    .linear
+                    .object("QProjectUpdate", "projectUpdate", id)
+                    .await?;
+                let activity = crate::activity::project_update_record(&update)?;
+                Ok(json!({"project_update":update,"activity":activity}))
+            }
             _ => {
                 let (w, g) = self.loaded(id).await?;
                 let checkout=rules::parent(&w).and_then(|p|rules::find(&g,p)).filter(|p|p.meta.as_ref().is_some_and(|m|m.kind==Kind::Module)).map(|p|json!({"repository_path":p.fields["repository_path"],"repository_url":p.fields["repository_url"],"branch":p.fields["branch"],"worktree":p.fields["worktree"],"lead":p.fields["lead"]}));
@@ -1517,6 +1618,53 @@ impl Gateway {
         if kind == "comment" {
             require(!search, "INVALID_INPUT", "Comment search is unavailable")?;
             return self.list_comments(a).await;
+        }
+        if kind == "project_update" {
+            require(
+                !search,
+                "INVALID_INPUT",
+                "ProjectUpdate search is unavailable",
+            )?;
+            require(
+                [
+                    "parent_id",
+                    "target_type",
+                    "target_id",
+                    "team_id",
+                    "kind",
+                    "status",
+                    "priority",
+                    "order_by",
+                ]
+                .iter()
+                .all(|key| a.get(*key).is_none()),
+                "INVALID_INPUT",
+                "Issue and Comment filters do not apply to ProjectUpdates",
+            )?;
+            let mut filter = json!({});
+            if let Some(project_id) = a["project_id"].as_str() {
+                filter["project"] = json!({"id":{"eq":project_id}});
+            }
+            let mut page = self.store.linear.call("QProjectUpdates",json!({
+                "filter":filter,
+                "first":a.get("first").and_then(Value::as_u64).unwrap_or(50),
+                "after":a.get("after").unwrap_or(&Value::Null),
+                "includeArchived":a.get("include_archived").and_then(Value::as_bool).unwrap_or(false)
+            })).await?["projectUpdates"].clone();
+            require(
+                page["nodes"].is_array(),
+                "INCOMPLETE_DATA",
+                "ProjectUpdate page is missing",
+            )?;
+            page["activity_records"] = json!(
+                page["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(crate::activity::project_update_record)
+                    .collect::<Result<Vec<_>>>()?
+            );
+            return Ok(page);
         }
         let (query, field) = match (search, kind) {
             (true, "issue") => ("QSearchIssues", "searchIssues"),

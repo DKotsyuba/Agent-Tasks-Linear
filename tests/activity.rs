@@ -171,3 +171,134 @@ async fn question_activity_is_addressed_and_readable() {
     assert_eq!(record["body"], "Who can review?");
     assert_eq!(record["formal_review"], false);
 }
+
+/// Native ProjectUpdates preserve all health values, native cursors and explicit author/reason
+/// while leaving issue status and ordinary project comments separate.
+#[tokio::test]
+async fn project_updates_create_read_and_page() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let issue = f.work("module", &project, None).await;
+    let mut updates = vec![];
+    for health in ["onTrack", "atRisk", "offTrack"] {
+        let args = json!({"request_id":id(),"project_id":project,"health":health,
+            "reason":format!("{health} because of observed work"),"body":format!("{health} report")});
+        if health == "atRisk" {
+            f.db.lock().await.lose = Some("MCreateProjectUpdate".into());
+            assert_eq!(
+                f.call("save_project_update", args.clone()).await.status,
+                "outcome_unknown"
+            );
+            f.restart();
+        }
+        let update = f.ok("save_project_update", args.clone()).await;
+        assert_eq!(update["project_update"]["health"], health);
+        assert_eq!(update["activity"]["health"], health);
+        assert_eq!(
+            update["activity"]["reason"],
+            format!("{health} because of observed work")
+        );
+        assert_eq!(update["activity"]["actor"], "codex:fixture");
+        assert_eq!(
+            f.ok("save_project_update", args).await["url"],
+            update["url"]
+        );
+        assert_eq!(
+            f.ok(
+                "get_context",
+                json!({"type":"project_update","id":update["project_update"]["id"]})
+            )
+            .await["activity"]["id"],
+            update["project_update"]["id"]
+        );
+        updates.push(update["project_update"]["id"].as_str().unwrap().to_owned());
+    }
+    let mut after = None;
+    let mut listed = vec![];
+    loop {
+        let mut args = json!({"type":"project_update","project_id":project,"first":1});
+        if let Some(cursor) = &after {
+            args["after"] = json!(cursor);
+        }
+        let page = f.ok("list_items", args).await;
+        assert_eq!(page["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(page["activity_records"].as_array().unwrap().len(), 1);
+        listed.push(page["nodes"][0]["id"].as_str().unwrap().to_owned());
+        if page["pageInfo"]["hasNextPage"] == false {
+            break;
+        }
+        after = page["pageInfo"]["endCursor"].as_str().map(str::to_owned);
+    }
+    listed.sort();
+    updates.sort();
+    assert_eq!(listed, updates);
+    f.ok(
+        "add_comment",
+        json!({"target_type":"project","target_id":project,"body":"Ordinary note"}),
+    )
+    .await;
+    assert_eq!(
+        f.ok(
+            "list_items",
+            json!({"type":"comment","target_type":"project","target_id":project})
+        )
+        .await["nodes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        f.ok("get_context", json!({"type":"issue","id":issue}))
+            .await["issue"]["state"]["name"],
+        "Todo"
+    );
+}
+
+/// Editing is scoped to the original Project, recovers a lost response from native state, and
+/// refuses an intervening native edit when the caller's timestamp is stale.
+#[tokio::test]
+async fn project_update_edits_require_scope_and_observed_version() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let other = f.project().await;
+    let created = f.ok("save_project_update",json!({
+        "project_id":project,"health":"onTrack","reason":"Work is proceeding","body":"Initial"
+    })).await;
+    let update_id = created["project_update"]["id"].as_str().unwrap();
+    let original_time = created["project_update"]["updatedAt"].as_str().unwrap();
+    let wrong = f
+        .call(
+            "save_project_update",
+            json!({
+                "id":update_id,"project_id":other,"health":"offTrack",
+                "reason":"Wrong project","body":"Wrong","expected_updated_at":original_time
+            }),
+        )
+        .await;
+    assert_eq!(wrong.data["code"], "REQUEST_CONFLICT");
+    let args = json!({"request_id":id(),"id":update_id,"project_id":project,
+        "health":"offTrack","reason":"A blocker appeared","body":"Revised",
+        "expected_updated_at":original_time});
+    f.db.lock().await.lose = Some("MUpdateProjectUpdate".into());
+    assert_eq!(
+        f.call("save_project_update", args.clone()).await.status,
+        "outcome_unknown"
+    );
+    f.restart();
+    let replayed = f.ok("save_project_update", args.clone()).await;
+    assert_eq!(replayed["replayed"], true);
+    assert_eq!(replayed["project_update"]["health"], "offTrack");
+    assert_eq!(f.db.lock().await.project_updates.len(), 1);
+    {
+        let mut db = f.db.lock().await;
+        db.project_updates.get_mut(update_id).unwrap()["body"] = json!("Manual edit");
+        db.project_updates.get_mut(update_id).unwrap()["updatedAt"] = json!("2026-09-26T00:00:00Z");
+    }
+    let conflict = f.call("save_project_update", args).await;
+    assert_eq!(conflict.data["code"], "PENDING_CONFLICT");
+    assert_eq!(
+        f.db.lock().await.project_updates[update_id]["body"],
+        "Manual edit"
+    );
+}
