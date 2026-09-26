@@ -184,6 +184,35 @@ async fn local_commit_imports_are_durable_ordered_and_round_scoped() {
     f.mv(&atomic, "In Review").await;
     f.review(&atomic, "accepted").await;
     f.mv(&atomic, "Done").await;
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"pr_url":"https://example.test/pull/1"}}),
+    )
+    .await;
+    let ready = f
+        .ok("get_context", json!({"id":module,"type":"issue"}))
+        .await;
+    assert!(ready["fields"]["result"].is_null());
+    let guard = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"In Review","actor_role":"orchestrator","check_only":true}),
+        )
+        .await;
+    assert_eq!(guard["allowed"], true);
+    f.mv(&module, "In Review").await;
+    let submitted = f
+        .ok("get_context", json!({"id":module,"type":"issue"}))
+        .await;
+    assert_eq!(
+        submitted["fields"]["result"],
+        ready["module_report"]["summary"]
+    );
+    assert_eq!(
+        submitted["fields"]["check_result"],
+        ready["module_report"]["reported_checks"]
+    );
+    assert_eq!(submitted["module_report"], ready["module_report"]);
     fs::remove_dir_all(root).unwrap();
     f.restart();
     let cold = f.ok("get_context", json!({"id":task,"type":"issue"})).await;

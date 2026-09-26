@@ -452,7 +452,15 @@ pub fn transition(w: &Work, graph: &[Work], target: Status, role: &str) -> Vec<S
             }
             Kind::Module => {
                 completed_children(&mut e, w, graph);
-                needs(&mut e, &w.fields, &["pr_url", "result", "check_result"]);
+                needs(&mut e, &w.fields, &["pr_url"]);
+                match crate::reports::module_report(w, graph) {
+                    Ok(report) => needs(
+                        &mut e,
+                        &json!({"result":report.summary,"check_result":report.reported_checks}),
+                        &["result", "check_result"],
+                    ),
+                    Err(error) => e.push(error.to_string()),
+                }
             }
             Kind::Atomic => {
                 result(&mut e, w);

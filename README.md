@@ -11,7 +11,7 @@ Rust MCP for an explicit agent workflow using native Linear Projects, Issues and
 | `create_module`, `edit_module` | Contracts, lead session, branch/worktree, PR and merge report |
 | `create_task`, `edit_task` | Local work, checks and commit or non-code artifact |
 | `create_atomic`, `edit_atomic` | Independent work, including explicit integration checks |
-| `get_context` | Native content, workflow state, children, discrepancies and allowed transitions |
+| `get_context` | Native content, workflow state, children, current reports, Module/PR draft, discrepancies and transitions |
 | `list_items`, `search` | Native lists/search with opaque pagination; optional priority ordering for one issue sibling group |
 | `save_document` | Native documents attached to a Project or Issue |
 | `move_status` | Explicit guarded transition or `check_only` validation |

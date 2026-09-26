@@ -7,5 +7,6 @@ pub mod git;
 pub mod linear;
 pub mod model;
 pub mod records;
+pub mod reports;
 pub mod rules;
 pub mod server;

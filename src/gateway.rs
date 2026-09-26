@@ -953,6 +953,8 @@ impl Gateway {
     }
 
     /// Guard and explicitly move work; check_only never persists intent, labels or changes.
+    /// Module submission stores the same derived current-child result used by context/readiness,
+    /// preserving a real PR requirement and binding review to the resulting content revision.
     async fn move_status(&self, a: &Value) -> Result<Value> {
         let (w, graph) = self.loaded(text(a, "id")?).await?;
         let target: Status = serde_json::from_value(a["status"].clone()).unwrap();
@@ -981,6 +983,22 @@ impl Gateway {
         let mut next = m.clone();
         next.status = target;
         let mut input = json!({"stateId":state});
+        if target == Status::InReview && m.kind == Kind::Module {
+            let report = crate::reports::module_report(&w, &graph)?;
+            let patch = json!({"result":report.summary,"check_result":report.reported_checks});
+            self.catalog.validate_fields(Kind::Module, &patch)?;
+            if next.fields["result"] != patch["result"]
+                || next.fields["check_result"] != patch["check_result"]
+            {
+                next.fields["result"] = patch["result"].clone();
+                next.fields["check_result"] = patch["check_result"].clone();
+                next.description =
+                    patch_description(w.native["description"].as_str().unwrap_or(""), &patch);
+                next.revision += 1;
+                next.review = None;
+                input["description"] = json!(next.description);
+            }
+        }
         if target == Status::InProgress {
             next.round += 1;
             next.review = None;
@@ -1087,8 +1105,8 @@ impl Gateway {
         Ok(json!({"review":next.review,"issue_id":w.id()}))
     }
     /// Read a Project, Issue or Document by validated type and UUID; issue context reuses its loaded Project graph for children, transition conditions and same Project/parent/type-label priority peers.
-    /// Parent checkout includes its optional local repository path. Readiness probes local Git
-    /// when configured; reads do not mutate Linear. Missing records and API failures propagate.
+    /// Parent checkout includes its optional local path; Modules include a derived ModuleReport.
+    /// Readiness probes configured local Git. Missing records, report limits and API errors propagate.
     async fn context(&self, a: &Value) -> Result<Value> {
         let id = text(a, "id")?;
         match text(a, "type")? {
@@ -1109,6 +1127,11 @@ impl Gateway {
                 let (w, g) = self.loaded(id).await?;
                 let checkout=rules::parent(&w).and_then(|p|rules::find(&g,p)).filter(|p|p.meta.as_ref().is_some_and(|m|m.kind==Kind::Module)).map(|p|json!({"repository_path":p.fields["repository_path"],"repository_url":p.fields["repository_url"],"branch":p.fields["branch"],"worktree":p.fields["worktree"],"lead":p.fields["lead"]}));
                 let m = w.managed()?;
+                let module_report = if m.kind == Kind::Module {
+                    Some(crate::reports::module_report(&w, &g)?)
+                } else {
+                    None
+                };
                 let peers: Vec<_> = g
                     .iter()
                     .filter(|peer| {
@@ -1126,7 +1149,7 @@ impl Gateway {
                 peers.sort_by(|a, b| priority_cmp(&a.native, &b.native));
                 let priority_group = json!({"project_id":m.project_id,"parent_id":m.parent_id,"kind":m.kind,"peers":peers.iter().map(|p|json!({"id":p.id(),"identifier":p.native["identifier"],"title":p.native["title"],"status":p.native["state"]["name"],"priority":p.native["priority"],"priorityLabel":p.native["priorityLabel"]})).collect::<Vec<_>>()});
                 Ok(
-                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":rules::discrepancies(&w,&g),"transitions":rules::actions(&w,&g)}),
+                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"module_report":module_report,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":rules::discrepancies(&w,&g),"transitions":rules::actions(&w,&g)}),
                 )
             }
         }

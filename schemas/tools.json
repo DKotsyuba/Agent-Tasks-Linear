@@ -2808,7 +2808,7 @@
   },
   {
     "name": "get_context",
-    "description": "Read native Project, Issue or Document. Issues include children, same-scope priority peers, parent checkout, discrepancies and guarded transitions. Reads never repair Linear.",
+    "description": "Read native Project, Issue or Document. Issues include children, priority peers, parent checkout, current-round git_reports, discrepancies and guarded transitions. Modules also expose module_report with derived results, checks, counts, source commits and an unpublished PR draft. Reads never repair Linear.",
     "inputSchema": {
       "type": "object",
       "properties": {
