@@ -3,7 +3,7 @@ use crate::{
     catalog::Catalog,
     linear::Linear,
     model::{Fault, Kind, Meta, Outcome, Pending, Result, Review, Status, Work, require, text},
-    records::{Store, child_id, markdown_key, patch_description, read_fields},
+    records::{Store, child_id, markdown_equivalent, markdown_key, patch_description, read_fields},
     rules,
 };
 use serde_json::{Value, json};
@@ -20,7 +20,7 @@ fn native_priority(value: &Value) -> Option<u64> {
     })
 }
 
-/// Compare owned native IDs, relationships, title, labels and Markdown description, ignoring timestamps and normalizing Markdown presentation; compare priority only when the target carries it.
+/// Compare owned native IDs, relationships, title, labels and Markdown description, ignoring timestamps and normalizing native presentation against the requested source; compare priority only when the target carries it.
 /// Unknown description sections still participate, so retries reject changes that could erase newly added human text; older snapshots without priority remain compatible.
 fn same_native(a: &Value, b: &Value) -> bool {
     ["id", "title", "archivedAt"]
@@ -32,8 +32,10 @@ fn same_native(a: &Value, b: &Value) -> bool {
         && a["labels"] == b["labels"]
         && (b.get("priority").is_none()
             || native_priority(&a["priority"]) == native_priority(&b["priority"]))
-        && markdown_key(a["description"].as_str().unwrap_or(""))
-            == markdown_key(b["description"].as_str().unwrap_or(""))
+        && markdown_equivalent(
+            b["description"].as_str().unwrap_or(""),
+            a["description"].as_str().unwrap_or(""),
+        )
 }
 
 /// Order native Issue objects by priority 1–4 then 0, ascending `prioritySortOrder`, and ascending UUID; missing or unknown priorities rank with 0 and missing tie order follows known values.

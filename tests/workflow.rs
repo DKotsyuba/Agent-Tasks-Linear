@@ -576,6 +576,69 @@ async fn markdown_list_pending_retry_preserves_manual_changes() {
     assert_eq!(context["issue"]["description"], native);
 }
 
+/// Native titles replace only requested bare URLs; explicit labels, destinations, words,
+/// code literals and extra sections remain substantive differences.
+#[test]
+fn markdown_native_link_title_preserves_meaningful_differences() {
+    use agent_tasks_linear::records::markdown_equivalent;
+    let url = "https://linear.app/example/document/spec-123";
+    let expected = format!("Plan: {url}\n\nKeep [Role](https://example.com/role)");
+    let native = expected.replace(url, &format!("[Spec title](<{url}>)"));
+    assert!(markdown_equivalent(&expected, &native));
+    assert!(markdown_equivalent(
+        &expected,
+        &native.replace("Spec title", "New spec title")
+    ));
+    for changed in [
+        native.replace("spec-123", "spec-124"),
+        native.replace("Plan:", "Changed:"),
+        native.replace("[Role]", "[Other]"),
+        format!("{native}\n\n## Notes\nExtra text"),
+    ] {
+        assert!(!markdown_equivalent(&expected, &changed), "{changed}");
+    }
+    assert!(!markdown_equivalent(
+        &format!("[Original](<{url}>)"),
+        &format!("[Changed](<{url}>)"),
+    ));
+    assert!(!markdown_equivalent(
+        &format!("`{url}`"),
+        &format!("`[Spec title](<{url}>)`"),
+    ));
+}
+
+/// A pending Issue edit accepts Linear's title for an originally bare document URL without
+/// changing the requested words, other link labels, or its saved request identity.
+#[tokio::test]
+async fn markdown_document_title_pending_retry_preserves_content() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    let url = "https://linear.app/example/document/spec-123";
+    let request = json!({"request_id":id(),"id":module,"fields":{
+        "description":format!("Plan: {url}\n\nKeep [Role](https://example.com/role)")
+    }});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("edit_module", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    let native = f.db.lock().await.issues[&module]["description"]
+        .as_str()
+        .unwrap()
+        .replace(url, &format!("[Spec title](<{url}>)"));
+    f.db.lock().await.issues.get_mut(&module).unwrap()["description"] = json!(native);
+    f.restart();
+    f.ok("edit_module", request.clone()).await;
+    f.ok("edit_module", request).await;
+    let context = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    assert!(context["workflow"]["pending"].is_null());
+    assert_eq!(context["discrepancies"], json!([]));
+    assert_eq!(context["issue"]["description"], native);
+}
+
 /// Duplicate transfers attachments with native provenance; lost responses recover without altering the original's record.
 #[tokio::test]
 async fn duplicate_transition_recovers_relation_write() {

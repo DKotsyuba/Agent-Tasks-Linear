@@ -291,6 +291,71 @@ pub fn markdown_key(value: &str) -> String {
     serde_json::to_string(&parts).unwrap()
 }
 
+/// Compare requested Markdown with Linear's native rendering without losing intentional labels.
+/// Only a bare HTTP(S) URL in the request may become a titled link at the same text position;
+/// explicitly labeled links, different destinations, code, extra prose and list boundaries still differ.
+/// The comparison is directional and never rewrites either source.
+pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
+    let expected_key = markdown_key(expected);
+    let actual_key = markdown_key(actual);
+    if expected_key == actual_key {
+        return true;
+    }
+    // A code span or block makes a URL literal; conservative disagreement preserves that content.
+    if expected.contains('\u{60}')
+        || actual.contains('\u{60}')
+        || Parser::new(expected)
+            .any(|event| matches!(event, Event::Code(_) | Event::Start(Tag::CodeBlock(_))))
+        || Parser::new(actual)
+            .any(|event| matches!(event, Event::Code(_) | Event::Start(Tag::CodeBlock(_))))
+    {
+        return false;
+    }
+    let expected_parts: Vec<String> = serde_json::from_str(&expected_key).unwrap();
+    let actual_parts: Vec<String> = serde_json::from_str(&actual_key).unwrap();
+    expected_parts.len() == actual_parts.len()
+        && expected_parts
+            .iter()
+            .zip(&actual_parts)
+            .all(|(expected, actual)| same_text_with_native_link_title(expected, actual))
+}
+
+/// Compare normalized text while consuming only a native titled link aligned to a requested
+/// bare URL with the same destination. A URL must end at whitespace/end to avoid prefix matches.
+fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> bool {
+    while !expected.is_empty() && !actual.is_empty() {
+        if (expected.starts_with("https://") || expected.starts_with("http://"))
+            && actual.starts_with('[')
+            && let Some(middle) = actual.find("](")
+            && let Some(close) = link_end(actual, middle + 2)
+        {
+            let destination = actual[middle + 2..close]
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>');
+            if expected.starts_with(destination)
+                && (destination.starts_with("https://") || destination.starts_with("http://"))
+                && expected[destination.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace)
+            {
+                expected = &expected[destination.len()..];
+                actual = &actual[close + 1..];
+                continue;
+            }
+        }
+        let left = expected.chars().next().unwrap();
+        let right = actual.chars().next().unwrap();
+        if left != right {
+            return false;
+        }
+        expected = &expected[left.len_utf8()..];
+        actual = &actual[right.len_utf8()..];
+    }
+    expected.is_empty() && actual.is_empty()
+}
+
 /// Normalize an intact Markdown text segment using Linear's existing escape, link and whitespace rules.
 /// List boundaries are excluded by the caller; this helper does not infer or rewrite list/code syntax.
 fn markdown_text_key(source: &str) -> String {
