@@ -3,8 +3,10 @@
 pub mod catalog;
 pub mod config;
 pub mod gateway;
+pub mod git;
 pub mod linear;
 pub mod model;
 pub mod records;
+pub mod reports;
 pub mod rules;
 pub mod server;

@@ -1,7 +1,7 @@
 [
   {
     "name": "create_project",
-    "description": "Create a native permanent Project with a GitHub URL, Runbook and Decisions documents. Reuse request_id unchanged on retry.",
+    "description": "Create a native permanent Project with Runbook and Decisions documents. Both repository_path and external repository_url are optional for planning; supplied paths must identify an existing local Git repository. Reuse request_id unchanged on retry.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -33,6 +33,13 @@
           "maxLength": 30000,
           "pattern": "\\S"
         },
+        "repository_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": "\\S",
+          "description": "Absolute path to an existing local Git repository or linked worktree."
+        },
         "repository_url": {
           "type": "string",
           "format": "uri",
@@ -45,8 +52,7 @@
         "actor",
         "team_id",
         "title",
-        "description",
-        "repository_url"
+        "description"
       ],
       "additionalProperties": false
     },
@@ -59,7 +65,7 @@
   },
   {
     "name": "edit_project",
-    "description": "Partially edit a native Project. Omitted fields remain unchanged. Does not change status.",
+    "description": "Partially edit a native Project. Omitted fields remain unchanged; null removes repository_path or repository_url. Supplied local paths must identify an existing Git repository. Does not change status.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -91,11 +97,32 @@
           "maxLength": 30000,
           "pattern": "\\S"
         },
+        "repository_path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000,
+              "pattern": "\\S",
+              "description": "Absolute path to an existing local Git repository or linked worktree."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "repository_url": {
-          "type": "string",
-          "format": "uri",
-          "pattern": "^https?://",
-          "maxLength": 4000
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://",
+              "maxLength": 4000
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -368,6 +395,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"
@@ -665,6 +706,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"
@@ -1017,6 +1072,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"
@@ -1384,6 +1453,20 @@
                 }
               ]
             },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "work_type": {
               "enum": [
                 "code",
@@ -1683,6 +1766,20 @@
                 }
               ]
             },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "work_type": {
               "enum": [
                 "code",
@@ -1962,6 +2059,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"
@@ -2275,6 +2386,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"
@@ -2610,6 +2735,20 @@
                 }
               ]
             },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "work_type": {
               "enum": [
                 "code",
@@ -2669,7 +2808,7 @@
   },
   {
     "name": "get_context",
-    "description": "Read native Project, Issue or Document. Issues include children, same-scope priority peers, parent checkout, discrepancies and guarded transitions. Reads never repair Linear.",
+    "description": "Read native Project, Issue or Document. Issues include children, priority peers, parent checkout, current-round git_reports, discrepancies and guarded transitions. Modules also expose module_report with derived results, checks, counts, source commits and an unpublished PR draft. Reads never repair Linear.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3016,6 +3155,53 @@
         "summary",
         "findings",
         "artifacts"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "record_commits",
+    "description": "Read and persist local Git commit snapshots for an active code Task or Atomic. Uses the assigned checkout; commits are concrete hexadecimal hashes, in attachment order. Result and Checks sections are required. Deduplicates repository/SHA within this work round, preserves old snapshots and fills result/check_result. Never changes status or writes Git. Reuse request_id and arguments after an unknown outcome.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "work_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "commits": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{4,64}$"
+          },
+          "minItems": 1,
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "request_id",
+        "actor",
+        "work_id",
+        "commits"
       ],
       "additionalProperties": false
     },

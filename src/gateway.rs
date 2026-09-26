@@ -1,4 +1,4 @@
-//! Sixteen explicit workflow operations over native Linear entities.
+//! Explicit workflow operations over native Linear entities and local Git source snapshots.
 use crate::{
     catalog::Catalog,
     linear::Linear,
@@ -101,6 +101,7 @@ impl Gateway {
             "save_document" => self.document(&args).await,
             "move_status" => self.move_status(&args).await,
             "record_review" => self.review(&args).await,
+            "record_commits" => self.record_commits(&args).await,
             _ => {
                 let (action, kind) = name
                     .split_once('_')
@@ -186,21 +187,20 @@ impl Gateway {
             .await?;
         Ok(id)
     }
-    /// Create a permanent native project and ensure its two default documents on every retry.
+    /// Create a permanent native project with optional local repository path and HTTP(S) URL.
+    /// Planning needs neither; a supplied path must be an existing Git checkout.
+    /// Ensures both default documents on every retry and rejects conflicting same-ID content.
     async fn create_project(&self, a: &Value) -> Result<Value> {
         let id = text(a, "request_id")?;
         let title = text(a, "title")?;
         let description = text(a, "description")?;
-        let repository = text(a, "repository_url")?;
-        require(
-            repository.starts_with("https://github.com/"),
-            "INVALID_INPUT",
-            "repository_url must be a GitHub HTTPS repository link",
-        )?;
+        if let Some(path) = a["repository_path"].as_str() {
+            crate::git::validate_repository(path)?;
+        }
         self.states(text(a, "team_id")?).await?;
         let content = patch_description(
             "",
-            &json!({"description":description,"repository_url":repository}),
+            &json!({"description":description,"repository_path":a["repository_path"],"repository_url":a["repository_url"]}),
         );
         let project = if let Some(p) = self.store.optional("QProject", "project", id).await? {
             require(
@@ -248,7 +248,9 @@ impl Gateway {
         }
         Ok(json!({"project":project,"documents":docs}))
     }
-    /// Patch only requested project fields, preserving native content outside owned sections.
+    /// Patch requested project fields, preserving omitted sections, prose and documents.
+    /// Null removes either repository field; supplied paths must be existing local Git checkouts.
+    /// Returns the native project or a validation/API fault without changing work statuses.
     async fn edit_project(&self, a: &Value) -> Result<Value> {
         let id = text(a, "id")?;
         let p = self.project(id).await?;
@@ -257,7 +259,10 @@ impl Gateway {
             input["name"] = v.clone();
         }
         let mut fields = json!({});
-        for key in ["description", "repository_url"] {
+        if let Some(path) = a["repository_path"].as_str() {
+            crate::git::validate_repository(path)?;
+        }
+        for key in ["description", "repository_path", "repository_url"] {
             if let Some(v) = a.get(key) {
                 fields[key] = v.clone();
             }
@@ -281,6 +286,8 @@ impl Gateway {
             .clone())
     }
     /// Create a native issue, then its small attachment. Same-ID retries resume incomplete creation.
+    /// Modules and standalone code Atomics inherit omitted repository fields from Project;
+    /// legacy repository prose is not inherited as a URL. Tasks use their Module's checkout.
     async fn create_work(&self, kind: Kind, a: &Value) -> Result<Value> {
         let id = text(a, "request_id")?;
         let project = text(a, "project_id")?;
@@ -347,13 +354,29 @@ impl Gateway {
             });
         }
         if kind == Kind::Module
-            && fields.get("repository_url").is_none()
-            && let Some(repo) =
-                read_fields(p["content"].as_str().unwrap_or(""))?.get("repository_url")
+            || (kind == Kind::Atomic
+                && fields["work_type"] == "code"
+                && parent
+                    .and_then(|id| rules::find(&graph, id))
+                    .is_none_or(|w| w.meta.as_ref().is_none_or(|m| m.kind != Kind::Module)))
         {
-            fields["repository_url"] = repo.clone();
+            let project_fields = read_fields(p["content"].as_str().unwrap_or(""))?;
+            for key in ["repository_path", "repository_url"] {
+                if fields.get(key).is_none()
+                    && let Some(value) = project_fields.get(key)
+                    && self
+                        .catalog
+                        .validate_fields(kind, &json!({key:value}))
+                        .is_ok()
+                {
+                    fields[key] = value.clone();
+                }
+            }
         }
         self.catalog.validate_fields(kind, &fields)?;
+        if let Some(path) = fields["repository_path"].as_str() {
+            crate::git::validate_repository(path)?;
+        }
         Self::check_fields(kind, &fields, parent, &graph)?;
         let description = patch_description("", &fields);
         let native = if let Some(existing) = self.store.optional("QIssue", "issue", id).await? {
@@ -395,6 +418,7 @@ impl Gateway {
             revision: 1,
             frozen_modules: None,
             integration: BTreeMap::new(),
+            git_reports: vec![],
             review: None,
             completed_at: None,
             description: actual,
@@ -699,6 +723,7 @@ impl Gateway {
     }
     /// Apply one managed issue edit for `kind`; missing title normalizes the existing title, missing priority preserves it, and priority zero clears it.
     /// Empty or title/priority-only edits preserve native descriptions, stored fields and review identity in any status, without validating or adopting legacy content; requirement/parent edits validate content, invalidate review and require reopening reviewed work, except the existing Module merge-report allowance. Returns the confirmed issue outcome or a safe conflict/write fault.
+    /// Explicit repository_path edits validate the local Git checkout before preparing a write.
     async fn edit_work(&self, kind: Kind, a: &Value) -> Result<Value> {
         let (w, graph) = self.loaded(text(a, "id")?).await?;
         let m = w.managed()?;
@@ -782,6 +807,9 @@ impl Gateway {
             self.catalog.validate_fields(kind, &fields)?;
             Self::check_fields(kind, &fields, next.parent_id.as_deref(), &graph)?;
         }
+        if let Some(path) = patch["repository_path"].as_str() {
+            crate::git::validate_repository(path)?;
+        }
         next.fields = fields;
         if !presentation_only {
             next.description =
@@ -814,7 +842,119 @@ impl Gateway {
         )?;
         self.update(&w, next, input, request).await
     }
+    /// Import concrete commits for an active code Task/Atomic using its assigned checkout.
+    /// Resumes the exact pending request before reading Git. Validates every source before writing,
+    /// deduplicates current-round repository/SHA pairs, preserves history and fills result/checks.
+    /// Returns current reports without changing status; unknown native outcomes remain uncertain.
+    async fn record_commits(&self, a: &Value) -> Result<Value> {
+        let (w, graph) = self.loaded(text(a, "work_id")?).await?;
+        let request = Self::request("record_commits", a);
+        if let Some(mut outcome) = self.resume(&w, &request).await? {
+            let restored = self.store.work(w.id()).await.map_err(Fault::uncertain)?;
+            outcome["git_reports"] = json!(
+                restored
+                    .managed()?
+                    .current_git_reports()
+                    .collect::<Vec<_>>()
+            );
+            return Ok(outcome);
+        }
+        let m = w.managed()?;
+        require(
+            matches!(m.kind, Kind::Task | Kind::Atomic) && w.fields["work_type"] == "code",
+            "WRONG_KIND",
+            "Commit reports belong to code Tasks or Atomics",
+        )?;
+        require(
+            w.status()? == Status::InProgress,
+            "REOPEN_REQUIRED",
+            "Start or reopen this work before importing commits",
+        )?;
+        rules::enforce(rules::discrepancies(&w, &graph))?;
+        let owner = rules::parent(&w)
+            .and_then(|id| rules::find(&graph, id))
+            .filter(|p| p.meta.as_ref().is_some_and(|m| m.kind == Kind::Module))
+            .unwrap_or(&w);
+        rules::enforce(rules::discrepancies(owner, &graph))?;
+        let path = text(&owner.fields, "worktree")?;
+        let expected_repository = owner.fields["repository_path"]
+            .as_str()
+            .map(crate::git::repository_identity)
+            .transpose()?;
+        let mut next = m.clone();
+        for hash in a["commits"].as_array().unwrap() {
+            let commit = crate::git::read_commit(path, hash.as_str().unwrap())?;
+            require(
+                expected_repository
+                    .as_ref()
+                    .is_none_or(|id| *id == commit.repository_identity),
+                "REPOSITORY_MISMATCH",
+                "Assigned worktree belongs to a different repository",
+            )?;
+            if !next.current_git_reports().any(|r| {
+                r.commit.repository_identity == commit.repository_identity
+                    && r.commit.sha == commit.sha
+            }) {
+                next.git_reports.push(crate::model::LocalGitReport {
+                    round: m.round,
+                    commit,
+                });
+            }
+        }
+        let reports: Vec<_> = next.current_git_reports().collect();
+        let patch = json!({
+            "result":reports.iter().map(|r| format!("### {} {}\n\n{}", &r.commit.sha[..12], r.commit.subject, r.commit.result)).collect::<Vec<_>>().join("\n\n"),
+            "check_result":reports.iter().map(|r| format!("### {}\n\n{}", &r.commit.sha[..12], r.commit.checks)).collect::<Vec<_>>().join("\n\n")
+        });
+        let patch = patch
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(key, value)| {
+                // Native level-two headings delimit workflow fields, so source headings render deeper.
+                let body = value
+                    .as_str()
+                    .unwrap()
+                    .lines()
+                    .map(|line| {
+                        if line.starts_with("## ") {
+                            format!("#{line}")
+                        } else {
+                            line.to_owned()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (key.clone(), json!(body))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let patch = Value::Object(patch);
+        self.catalog.validate_fields(m.kind, &patch)?;
+        let changed = next.git_reports.len() != m.git_reports.len()
+            || patch
+                .as_object()
+                .unwrap()
+                .iter()
+                .any(|(key, value)| m.fields[key] != *value);
+        for (key, value) in patch.as_object().unwrap() {
+            next.fields[key] = value.clone();
+        }
+        next.description =
+            patch_description(w.native["description"].as_str().unwrap_or(""), &patch);
+        if changed {
+            next.revision += 1;
+            next.review = None;
+        }
+        let reports = json!(next.current_git_reports().collect::<Vec<_>>());
+        let input = json!({"description":next.description});
+        let mut outcome = self.update(&w, next, input, request).await?;
+        outcome["git_reports"] = reports;
+        Ok(outcome)
+    }
+
     /// Guard and explicitly move work; check_only never persists intent, labels or changes.
+    /// Module submission stores the same derived current-child result used by context/readiness,
+    /// preserving a real PR requirement and binding review to the resulting content revision.
     async fn move_status(&self, a: &Value) -> Result<Value> {
         let (w, graph) = self.loaded(text(a, "id")?).await?;
         let target: Status = serde_json::from_value(a["status"].clone()).unwrap();
@@ -843,6 +983,22 @@ impl Gateway {
         let mut next = m.clone();
         next.status = target;
         let mut input = json!({"stateId":state});
+        if target == Status::InReview && m.kind == Kind::Module {
+            let report = crate::reports::module_report(&w, &graph)?;
+            let patch = json!({"result":report.summary,"check_result":report.reported_checks});
+            self.catalog.validate_fields(Kind::Module, &patch)?;
+            if next.fields["result"] != patch["result"]
+                || next.fields["check_result"] != patch["check_result"]
+            {
+                next.fields["result"] = patch["result"].clone();
+                next.fields["check_result"] = patch["check_result"].clone();
+                next.description =
+                    patch_description(w.native["description"].as_str().unwrap_or(""), &patch);
+                next.revision += 1;
+                next.review = None;
+                input["description"] = json!(next.description);
+            }
+        }
         if target == Status::InProgress {
             next.round += 1;
             next.review = None;
@@ -949,7 +1105,8 @@ impl Gateway {
         Ok(json!({"review":next.review,"issue_id":w.id()}))
     }
     /// Read a Project, Issue or Document by validated type and UUID; issue context reuses its loaded Project graph for children, transition conditions and same Project/parent/type-label priority peers.
-    /// Reads do not mutate Linear; missing records, unmanaged issues and native/API failures propagate as safe faults.
+    /// Parent checkout includes its optional local path; Modules include a derived ModuleReport.
+    /// Readiness probes configured local Git. Missing records, report limits and API errors propagate.
     async fn context(&self, a: &Value) -> Result<Value> {
         let id = text(a, "id")?;
         match text(a, "type")? {
@@ -968,8 +1125,13 @@ impl Gateway {
             "document" => self.store.linear.object("QDocument", "document", id).await,
             _ => {
                 let (w, g) = self.loaded(id).await?;
-                let checkout=rules::parent(&w).and_then(|p|rules::find(&g,p)).filter(|p|p.meta.as_ref().is_some_and(|m|m.kind==Kind::Module)).map(|p|json!({"repository_url":p.fields["repository_url"],"branch":p.fields["branch"],"worktree":p.fields["worktree"],"lead":p.fields["lead"]}));
+                let checkout=rules::parent(&w).and_then(|p|rules::find(&g,p)).filter(|p|p.meta.as_ref().is_some_and(|m|m.kind==Kind::Module)).map(|p|json!({"repository_path":p.fields["repository_path"],"repository_url":p.fields["repository_url"],"branch":p.fields["branch"],"worktree":p.fields["worktree"],"lead":p.fields["lead"]}));
                 let m = w.managed()?;
+                let module_report = if m.kind == Kind::Module {
+                    Some(crate::reports::module_report(&w, &g)?)
+                } else {
+                    None
+                };
                 let peers: Vec<_> = g
                     .iter()
                     .filter(|peer| {
@@ -987,7 +1149,7 @@ impl Gateway {
                 peers.sort_by(|a, b| priority_cmp(&a.native, &b.native));
                 let priority_group = json!({"project_id":m.project_id,"parent_id":m.parent_id,"kind":m.kind,"peers":peers.iter().map(|p|json!({"id":p.id(),"identifier":p.native["identifier"],"title":p.native["title"],"status":p.native["state"]["name"],"priority":p.native["priority"],"priorityLabel":p.native["priorityLabel"]})).collect::<Vec<_>>()});
                 Ok(
-                    json!({"issue":w.native,"fields":w.fields,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":rules::discrepancies(&w,&g),"transitions":rules::actions(&w,&g)}),
+                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"module_report":module_report,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":rules::discrepancies(&w,&g),"transitions":rules::actions(&w,&g)}),
                 )
             }
         }

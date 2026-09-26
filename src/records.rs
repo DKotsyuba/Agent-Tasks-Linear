@@ -20,6 +20,7 @@ pub const FIELDS: &[(&str, &str)] = &[
     ("executor", "Исполнитель"),
     ("session_url", "Сессия"),
     ("repository_url", "Репозиторий"),
+    ("repository_path", "Локальный репозиторий"),
     ("branch", "Ветка"),
     ("worktree", "Рабочая копия"),
     ("pr_url", "Pull request"),

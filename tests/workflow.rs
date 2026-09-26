@@ -3,6 +3,448 @@ mod support;
 use serde_json::json;
 use support::{Fixture, id};
 
+/// Commit imports survive lost replies and unavailable Git, deduplicate linked checkouts, and
+/// require explicit current-round results before code closure while retaining native history.
+#[tokio::test]
+async fn local_commit_imports_are_durable_ordered_and_round_scoped() {
+    use std::{fs, path::Path, process::Command};
+    /// Execute literal Git fixture setup arguments and return trimmed stdout, requiring success.
+    fn git(path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+    let root = std::env::temp_dir().join(format!("commit import {}", id()));
+    let repo = root.join("repo");
+    let linked = root.join("linked");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    let mut hashes = vec![];
+    for name in ["first", "second"] {
+        let message = format!(
+            "feat(import): {name}\n\nResult:\n## Details\n{name} result\n\nChecks:\n{name} passed\n"
+        );
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                &message,
+            ],
+        );
+        hashes.push(git(&repo, &["rev-parse", "HEAD"]));
+    }
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.ok("edit_module", json!({"id":module,"fields":{"repository_path":repo,"repository_url":null,"worktree":repo}})).await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.ok(
+        "edit_task",
+        json!({"id":task,"fields":{"work_type":"code"}}),
+    )
+    .await;
+    f.mv(&task, "In Progress").await;
+    let request = json!({"request_id":id(),"work_id":task,"commits":[hashes[0]]});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("record_commits", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    fs::rename(&repo, root.join("offline")).unwrap();
+    f.restart();
+    let replayed = f.ok("record_commits", request.clone()).await;
+    assert_eq!(replayed["git_reports"].as_array().unwrap().len(), 1);
+    f.ok("record_commits", request).await;
+    let snapshot = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert_eq!(snapshot["issue"]["state"]["name"], "In Progress");
+    assert!(
+        snapshot["git_reports"][0]["original_message"]
+            .as_str()
+            .unwrap()
+            .contains("## Details")
+    );
+    assert!(
+        snapshot["fields"]["result"]
+            .as_str()
+            .unwrap()
+            .contains("### Details")
+    );
+    assert!(snapshot["discrepancies"].as_array().unwrap().is_empty());
+    fs::rename(root.join("offline"), &repo).unwrap();
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"worktree":linked}}),
+    )
+    .await;
+    let imported = f
+        .ok(
+            "record_commits",
+            json!({"work_id":task,"commits":[hashes[0],hashes[1],hashes[0]]}),
+        )
+        .await;
+    assert_eq!(imported["git_reports"].as_array().unwrap().len(), 2);
+    assert_eq!(imported["git_reports"][0]["sha"], hashes[0]);
+    assert_eq!(imported["git_reports"][1]["sha"], hashes[1]);
+    let before = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    f.ok(
+        "record_commits",
+        json!({"work_id":task,"commits":[hashes[0]]}),
+    )
+    .await;
+    assert_eq!(
+        f.call(
+            "record_commits",
+            json!({"work_id":task,"commits":[hashes[1],"deadbeefdeadbeef"]})
+        )
+        .await
+        .status,
+        "blocked"
+    );
+    let after = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert_eq!(
+        before["workflow"]["revision"],
+        after["workflow"]["revision"]
+    );
+    assert_eq!(before["git_reports"], after["git_reports"]);
+    assert!(after["fields"]["commit_url"].is_null());
+    f.mv(&task, "Done").await;
+    f.mv(&task, "In Progress").await;
+    let reopened = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert!(reopened["git_reports"].as_array().unwrap().is_empty());
+    assert_eq!(
+        reopened["workflow"]["git_reports"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        f.call(
+            "move_status",
+            json!({"id":task,"status":"Done","actor_role":"worker"})
+        )
+        .await
+        .status,
+        "blocked"
+    );
+    let new_round = f
+        .ok(
+            "record_commits",
+            json!({"work_id":task,"commits":[hashes[0]]}),
+        )
+        .await;
+    assert_eq!(new_round["git_reports"].as_array().unwrap().len(), 1);
+    assert_eq!(new_round["git_reports"][0]["round"], 2);
+    f.mv(&task, "Done").await;
+
+    let atomic = f.work("atomic", &project, Some(&module)).await;
+    assert_eq!(
+        f.call(
+            "record_commits",
+            json!({"work_id":atomic,"commits":[hashes[0]]})
+        )
+        .await
+        .status,
+        "blocked"
+    );
+    f.ok(
+        "edit_atomic",
+        json!({"id":atomic,"fields":{"work_type":"code"}}),
+    )
+    .await;
+    f.mv(&atomic, "In Progress").await;
+    f.ok(
+        "record_commits",
+        json!({"work_id":atomic,"commits":[hashes[1]]}),
+    )
+    .await;
+    f.mv(&atomic, "In Review").await;
+    f.review(&atomic, "accepted").await;
+    f.mv(&atomic, "Done").await;
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"pr_url":"https://example.test/pull/1"}}),
+    )
+    .await;
+    let ready = f
+        .ok("get_context", json!({"id":module,"type":"issue"}))
+        .await;
+    assert!(ready["fields"]["result"].is_null());
+    let guard = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"In Review","actor_role":"orchestrator","check_only":true}),
+        )
+        .await;
+    assert_eq!(guard["allowed"], true);
+    f.mv(&module, "In Review").await;
+    let submitted = f
+        .ok("get_context", json!({"id":module,"type":"issue"}))
+        .await;
+    assert_eq!(
+        submitted["fields"]["result"],
+        ready["module_report"]["summary"]
+    );
+    assert_eq!(
+        submitted["fields"]["check_result"],
+        ready["module_report"]["reported_checks"]
+    );
+    assert_eq!(submitted["module_report"], ready["module_report"]);
+    fs::remove_dir_all(root).unwrap();
+    f.restart();
+    let cold = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert_eq!(cold["git_reports"][0]["sha"], hashes[0]);
+    assert_eq!(cold["workflow"]["git_reports"].as_array().unwrap().len(), 3);
+}
+
+/// Local projects preserve prose/documents, inherit real checkouts, and keep PR/merge gates.
+/// Uses an isolated real Git repository and linked worktree; fixture writes never contact Linear.
+#[tokio::test]
+async fn local_repositories_preserve_content_and_support_linked_checkouts() {
+    use agent_tasks_linear::records::read_fields;
+    use std::{fs, path::Path, process::Command};
+
+    /// Run literal Git arguments in a disposable fixture repository, requiring success.
+    /// Returns stdout for before/after comparisons; only setup calls mutate this fixture.
+    fn git(path: &Path, args: &[&str]) -> Vec<u8> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}: {:?}", args, output);
+        output.stdout
+    }
+
+    let root = std::env::temp_dir().join(format!("local git {}", id()));
+    let repo = root.join("repository");
+    let linked = root.join("linked checkout");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "Fixture",
+        ],
+    );
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    fs::write(repo.join("untracked.txt"), "preserve").unwrap();
+    let before = git(&repo, &["status", "--porcelain=v1"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let linked_before = git(&linked, &["status", "--porcelain=v1"]);
+
+    let mut f = Fixture::new().await;
+    let request = json!({"request_id":id(),"team_id":f.team,"title":"Local product","description":"Native project description","repository_path":repo});
+    let created = f.ok("create_project", request.clone()).await;
+    let project = created["project"]["id"].as_str().unwrap().to_owned();
+    f.ok("create_project", request).await;
+    assert!(
+        read_fields(created["project"]["content"].as_str().unwrap()).unwrap()["repository_url"]
+            .is_null()
+    );
+    let prose = "## Репозиторий\n\nLocal sources only; hosting will be decided later.\n\n## Human notes\n\nKeep this paragraph.\n";
+    let content = format!("{}{prose}", created["project"]["content"].as_str().unwrap());
+    f.db.lock().await.projects.get_mut(&project).unwrap()["content"] = json!(content);
+    let documents = f.db.lock().await.documents.clone();
+    let unchanged = f
+        .ok("edit_project", json!({"id":project,"repository_path":repo}))
+        .await;
+    assert_eq!(unchanged["content"], content);
+
+    let module = f.work("module", &project, None).await;
+    let context = f
+        .ok("get_context", json!({"id":module,"type":"issue"}))
+        .await;
+    assert_eq!(context["fields"]["repository_path"], json!(repo));
+    assert!(context["fields"]["repository_url"].is_null());
+    let not_ready = f.ok("move_status", json!({"id":module,"status":"In Progress","actor_role":"orchestrator","check_only":true})).await;
+    assert_eq!(not_ready["allowed"], false);
+    assert!(
+        not_ready["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().unwrap().contains("INVALID_REPOSITORY"))
+    );
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"worktree":linked,"branch":"fixture"}}),
+    )
+    .await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.restart();
+    let context = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert_eq!(context["parent_checkout"]["repository_path"], json!(repo));
+    assert_eq!(context["parent_checkout"]["worktree"], json!(linked));
+    f.mv(&task, "In Progress").await;
+    f.result("task", &task).await;
+    f.mv(&task, "Done").await;
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"result":"Implemented","check_result":"Verified"}}),
+    )
+    .await;
+    let review = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"In Review","actor_role":"orchestrator","check_only":true}),
+        )
+        .await;
+    assert_eq!(review["conditions"], json!(["Required field: pr_url"]));
+    f.result("module", &module).await;
+    f.mv(&module, "In Review").await;
+    f.review(&module, "accepted").await;
+    let done = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"Done","actor_role":"orchestrator","check_only":true}),
+        )
+        .await;
+    assert_eq!(done["conditions"], json!(["Required field: merge_report"]));
+
+    let atomic = f.ok("create_atomic", json!({"project_id":project,"team_id":f.team,"title":"Local code","fields":{"work_type":"code","executor":"fixture","expected_result":"Build","acceptance_criteria":"Checks pass","local_check":"Run checks","branch":"fixture","worktree":repo}})).await;
+    let atomic_id = atomic["issue"]["id"].as_str().unwrap();
+    f.mv(atomic_id, "In Progress").await;
+    let context = f
+        .ok("get_context", json!({"id":atomic_id,"type":"issue"}))
+        .await;
+    assert_eq!(context["fields"]["repository_path"], json!(repo));
+
+    f.ok(
+        "edit_project",
+        json!({"id":project,"repository_url":"https://git.example.test/product"}),
+    )
+    .await;
+    let removed = f
+        .ok("edit_project", json!({"id":project,"repository_url":null}))
+        .await;
+    let fields = read_fields(removed["content"].as_str().unwrap()).unwrap();
+    assert_eq!(fields["repository_path"], json!(repo));
+    assert_eq!(fields["description"], "Native project description");
+    assert!(fields["repository_url"].is_null());
+    assert!(
+        removed["content"]
+            .as_str()
+            .unwrap()
+            .contains("## Human notes\n\nKeep this paragraph.")
+    );
+    assert_eq!(f.db.lock().await.documents, documents);
+    assert_eq!(f.db.lock().await.projects.len(), 1);
+    let cleared = f
+        .ok("edit_project", json!({"id":project,"repository_path":null}))
+        .await;
+    assert!(
+        read_fields(cleared["content"].as_str().unwrap()).unwrap()["repository_path"].is_null()
+    );
+    let existing = f
+        .ok("get_context", json!({"id":module,"type":"issue"}))
+        .await;
+    assert_eq!(existing["fields"]["repository_path"], json!(repo));
+    assert_eq!(git(&repo, &["status", "--porcelain=v1"]), before);
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&linked, &["status", "--porcelain=v1"]), linked_before);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Bad paths fail before writes; planning and non-code work need no repository, and legacy URLs work.
+#[tokio::test]
+async fn repository_validation_preserves_planning_and_legacy_projects() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let original = f.db.lock().await.projects[&project].clone();
+    for path in [
+        "relative/repository".to_owned(),
+        std::env::temp_dir().join(id()).to_str().unwrap().to_owned(),
+        std::env::temp_dir().to_str().unwrap().to_owned(),
+    ] {
+        let rejected = f
+            .call("edit_project", json!({"id":project,"repository_path":path}))
+            .await;
+        assert_eq!(rejected.status, "blocked");
+        assert_eq!(rejected.data["code"], "INVALID_REPOSITORY");
+        assert_eq!(f.db.lock().await.projects[&project], original);
+        assert_eq!(f.call("create_project", json!({"team_id":f.team,"title":"Invalid","description":"No writes","repository_path":path})).await.status, "blocked");
+    }
+    let planning = f
+        .ok(
+            "create_project",
+            json!({"team_id":f.team,"title":"Planning","description":"No repository yet"}),
+        )
+        .await;
+    let planning_id = planning["project"]["id"].as_str().unwrap();
+    let planned_module = f.work("module", planning_id, None).await;
+    let readiness = f.ok("move_status", json!({"id":planned_module,"status":"In Progress","actor_role":"orchestrator","check_only":true})).await;
+    assert_eq!(
+        readiness["conditions"],
+        json!(["Required field: repository_path or repository_url"])
+    );
+    let non_code = f.work("atomic", planning_id, None).await;
+    f.mv(&non_code, "In Progress").await;
+
+    let module = f.work("module", &project, None).await;
+    assert_eq!(
+        f.call(
+            "edit_module",
+            json!({"id":module,"fields":{"repository_path":"relative"}})
+        )
+        .await
+        .status,
+        "blocked"
+    );
+    f.mv(&module, "In Progress").await;
+    let context = f
+        .ok("get_context", json!({"id":module,"type":"issue"}))
+        .await;
+    assert_eq!(
+        context["fields"]["repository_url"],
+        "https://github.com/example/product"
+    );
+    assert!(context["fields"]["repository_path"].is_null());
+    assert_eq!(f.db.lock().await.projects.len(), 2);
+}
+
 /// Linear may change list markers, but code, literal markers, words and destinations remain significant.
 #[test]
 fn markdown_list_markers_preserve_content() {
