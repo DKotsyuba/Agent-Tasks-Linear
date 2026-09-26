@@ -1,12 +1,11 @@
 //! Pure, embedded MiniJinja presentation for every agent-facing MCP outcome.
 
-use crate::model::Outcome;
+use crate::{model::Outcome, records::patch_description};
 use minijinja::{AutoEscape, Environment, UndefinedBehavior};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
-/// Build the process-wide plain-text environment from trusted repository assets.
-/// Invalid templates disable rendering but never erase a completed operation.
+/// Load the closed set of embedded plain-text templates once; invalid assets trigger safe fallback.
 fn environment() -> Option<&'static Environment<'static>> {
     static ENVIRONMENT: OnceLock<Option<Environment>> = OnceLock::new();
     ENVIRONMENT
@@ -18,6 +17,7 @@ fn environment() -> Option<&'static Environment<'static>> {
             env.set_undefined_behavior(UndefinedBehavior::Strict);
             env.set_auto_escape_callback(|_| AutoEscape::None);
             for (name, source) in [
+                ("common", include_str!("../assets/mcp/common.txt.j2")),
                 ("ack", include_str!("../assets/mcp/ack.txt.j2")),
                 ("context", include_str!("../assets/mcp/context.txt.j2")),
                 ("overview", include_str!("../assets/mcp/overview.txt.j2")),
@@ -25,14 +25,16 @@ fn environment() -> Option<&'static Environment<'static>> {
                 ("comment", include_str!("../assets/mcp/comment.txt.j2")),
                 ("error", include_str!("../assets/mcp/error.txt.j2")),
             ] {
-                env.add_template(name, source).ok()?;
+                if env.add_template(name, source).is_err() {
+                    return None;
+                }
             }
             Some(env)
         })
         .as_ref()
 }
 
-/// Map the complete public tool catalog to repo-owned success templates.
+/// Map all 22 public tools to the template that owns their result layout.
 fn template_for(tool: &str) -> Option<&'static str> {
     Some(match tool {
         "create_project"
@@ -60,36 +62,32 @@ fn template_for(tool: &str) -> Option<&'static str> {
     })
 }
 
-/// Render a validated request and its existing outcome without changing either.
-/// A presentation defect preserves confirmed success or failure and the request identity;
-/// callers must inspect a confirmed mutation rather than submit a new one.
+/// Render one validated tool request and immutable Gateway outcome without I/O or mutation.
+/// Confirmed outcomes remain confirmed when projection or template rendering fails.
 pub fn render_outcome(tool: &str, request: &Value, outcome: &Outcome) -> String {
     let success = matches!(outcome.status.as_str(), "ok" | "committed" | "noop");
     if success && !valid_success_shape(tool, &outcome.data) {
         return presentation_fallback(tool, request, outcome);
     }
     let (template, context) = if success {
-        let page = match tool {
-            "get_context" => context_page(&outcome.data),
-            "get_overview" => overview_page(&outcome.data),
-            "list_items" | "search" => list_page(tool, request, &outcome.data),
-            "get_comment" => comment_page(&outcome.data),
-            _ => ack_page(tool, request, &outcome.data),
+        let projection = match tool {
+            "get_context" => context_projection(&outcome.data),
+            "get_overview" => overview_projection(&outcome.data),
+            "list_items" | "search" => list_projection(tool, request, &outcome.data),
+            "get_comment" => comment_projection(&outcome.data),
+            _ => ack_projection(tool, request, &outcome.data),
         };
-        (template_for(tool).unwrap_or("missing"), page)
+        (template_for(tool).unwrap_or("missing"), projection)
     } else {
         (
             "error",
             json!({
-                "status": outcome.status,
-                "code": outcome.data["code"].as_str().unwrap_or("TOOL_FAILED"),
-                "message": if outcome.data["code"] == "INVALID_COMMIT_MESSAGE" {
-                    format!("{}\nExpected commit message format:\nfeat(scope): summary\n\nResult:\nWhat changed.\n\nChecks:\nWhat passed.", outcome.data["message"].as_str().unwrap_or("Invalid commit message"))
-                } else {
-                    outcome.data["message"].as_str().unwrap_or("Request failed").to_owned()
-                },
-                "retry": outcome.data["retry"].as_str().unwrap_or(""),
-                "request_id": request["request_id"].as_str().unwrap_or("")
+                "status":outcome.status,
+                "code":outcome.data["code"].as_str().unwrap_or("TOOL_FAILED"),
+                "message":outcome.data["message"].as_str().unwrap_or("Request failed"),
+                "retry":outcome.data["retry"].as_str().unwrap_or(""),
+                "request_id":request["request_id"].as_str().unwrap_or(""),
+                "invalid_commit":outcome.data["code"] == "INVALID_COMMIT_MESSAGE"
             }),
         )
     };
@@ -97,7 +95,7 @@ pub fn render_outcome(tool: &str, request: &Value, outcome: &Outcome) -> String 
         .unwrap_or_else(|_| presentation_fallback(tool, request, outcome))
 }
 
-/// Reject missing essential read fields so a malformed success cannot look like an empty page.
+/// Reject essential missing read fields before an otherwise empty success page can be emitted.
 fn valid_success_shape(tool: &str, data: &Value) -> bool {
     match tool {
         "get_context" => {
@@ -117,7 +115,7 @@ fn valid_success_shape(tool: &str, data: &Value) -> bool {
     }
 }
 
-/// Render one embedded template, reporting registration and projection errors to the fallback.
+/// Resolve and execute one embedded template; the caller owns status-preserving fallback.
 fn render_template(name: &str, context: Value) -> Result<String, String> {
     environment()
         .ok_or("template registration failed")?
@@ -127,590 +125,244 @@ fn render_template(name: &str, context: Value) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Keep confirmed outcome and identity actionable when a presentation template fails.
+/// Keep confirmed status and the best known ID when the presentation layer fails.
 fn presentation_fallback(tool: &str, request: &Value, outcome: &Outcome) -> String {
-    let id = outcome.data["id"]
+    let target = outcome.data["id"]
         .as_str()
         .or_else(|| outcome.data["issue"]["id"].as_str())
         .or_else(|| outcome.data["project"]["id"].as_str())
         .or_else(|| outcome.data["project_update"]["id"].as_str())
         .or_else(|| outcome.data["comment"]["id"].as_str())
         .or_else(|| outcome.data["review"]["id"].as_str())
-        .or_else(|| request["request_id"].as_str())
+        .or_else(|| request["id"].as_str())
+        .or_else(|| request["work_id"].as_str())
+        .or_else(|| request["project_id"].as_str())
+        .or_else(|| request["target_id"].as_str())
+        .or_else(|| request["url"].as_str())
         .unwrap_or("");
+    let kind = request["type"]
+        .as_str()
+        .or_else(|| request["target_type"].as_str())
+        .unwrap_or_else(|| fallback_kind(tool));
+    let request_id = request["request_id"].as_str().unwrap_or("");
     if matches!(outcome.status.as_str(), "ok" | "committed" | "noop") {
         format!(
-            "{tool}: {}. id/request_id: {id}. Presentation failed; inspect context before retrying a mutation.\n",
+            "{tool}: {}. target_type: {kind}; target: {target}; request_id: {request_id}. Presentation failed after the operation; inspect context before retrying a mutation.",
             outcome.status
         )
     } else {
         format!(
-            "{}: {}. request_id: {id}. Presentation failed; inspect context before retrying.\n",
+            "{}: {}. target_type: {kind}; target: {target}; request_id: {request_id}. Presentation failed; inspect context before retrying.",
             outcome.status,
             outcome.data["code"].as_str().unwrap_or("TOOL_FAILED")
         )
     }
 }
 
-/// Read a nonempty scalar while retaining meaningful false and zero values.
-fn scalar(value: &Value) -> Option<String> {
-    match value {
-        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        _ => None,
+/// Infer the public entity type for retry guidance when a mutation request has no type field.
+fn fallback_kind(tool: &str) -> &'static str {
+    match tool {
+        "create_project" | "edit_project" | "get_overview" => "project",
+        "save_document" => "document",
+        "get_comment" | "resolve_comment" => "comment",
+        "save_project_update" => "project_update",
+        "add_comment" => "",
+        _ => "issue",
     }
 }
 
-/// Add one labelled scalar without shortening user-provided content.
-fn field(lines: &mut Vec<String>, label: &str, value: &Value) {
-    if let Some(value) = scalar(value) {
-        lines.push(format!("{label}: {value}"));
-    }
+/// Select native identity fields as values; templates own their labels and order.
+fn identity(item: &Value) -> Value {
+    json!({
+        "id":item["id"],"identifier":item["identifier"],
+        "title":if item["title"].is_string() {&item["title"]} else {&item["name"]},
+        "url":item["url"],"status":item["state"]["name"],
+        "priority":item["priority"],"health":item["health"],
+        "updated_at":item["updatedAt"],"resolved":item["resolvedAt"].is_string(),
+        "project_id":item["project"]["id"],"team_id":item["team"]["id"],
+        "parent_id":item["parent"]["id"]
+    })
 }
 
-/// Add a titled Markdown section only when its body exists.
-fn section(lines: &mut Vec<String>, label: &str, value: &Value) {
-    if let Some(value) = scalar(value) {
-        lines.push(format!("\n## {label}\n{value}"));
-    }
-}
-
-/// Identify one native entity using a readable title plus actionable UUID and URL.
-fn identity(lines: &mut Vec<String>, item: &Value) {
-    if item["title"].is_string() {
-        field(lines, "Title", &item["title"]);
-    } else {
-        field(lines, "Title", &item["name"]);
-    }
-    field(lines, "Identifier", &item["identifier"]);
-    field(lines, "ID", &item["id"]);
-    field(lines, "URL", &item["url"]);
-}
-
-/// Build a short confirmation without echoing submitted descriptions or report bodies.
-fn ack_page(tool: &str, request: &Value, data: &Value) -> Value {
-    let mut lines = vec![];
-    if tool == "move_status" && data.get("allowed").is_some() {
-        field(&mut lines, "Allowed", &data["allowed"]);
-        field(&mut lines, "Target", &data["status"]);
-        for condition in data["conditions"].as_array().into_iter().flatten() {
-            field(&mut lines, "Condition", condition);
-        }
-    } else {
-        let native = ["issue", "project", "project_update", "comment", "review"]
-            .iter()
-            .find_map(|key| data.get(*key))
-            .unwrap_or(data);
-        identity(&mut lines, native);
-        field(&mut lines, "Status", &native["state"]["name"]);
-        field(&mut lines, "Health", &native["health"]);
-        if tool == "save_project_update" {
-            field(&mut lines, "Updated at", &native["updatedAt"]);
-        }
-        if tool == "resolve_comment" {
-            lines.push(format!("Resolved: {}", native["resolvedAt"].is_string()));
-        }
-        if tool == "record_review" {
-            field(&mut lines, "Verdict", &request["verdict"]);
-            if native["url"].is_null() {
-                field(&mut lines, "URL", &data["url"]);
-            }
-        }
-        if tool == "record_commits" {
-            for report in data["git_reports"].as_array().into_iter().flatten() {
-                let commit = if report["commit"].is_object() {
-                    &report["commit"]
-                } else {
-                    report
-                };
-                lines.push(format!(
-                    "Commit: {} {}",
-                    scalar(&commit["sha"]).unwrap_or_default(),
-                    scalar(&commit["subject"]).unwrap_or_default()
-                ));
-            }
-            for comment in data["journal"].as_array().into_iter().flatten() {
-                field(&mut lines, "Report URL", &comment["url"]);
-            }
-        }
-        if tool == "create_project" {
-            for document in data["documents"].as_array().into_iter().flatten() {
-                lines.push(format!(
-                    "Document: {} — {} (ID {})",
-                    scalar(&document["title"]).unwrap_or_default(),
-                    scalar(&document["url"]).unwrap_or_default(),
-                    scalar(&document["id"]).unwrap_or_default()
-                ));
-            }
-        }
-        field(&mut lines, "Replayed", &data["replayed"]);
-        field(&mut lines, "Unchanged", &data["unchanged"]);
-        if lines.is_empty() {
-            field(&mut lines, "ID", &request["id"]);
-        }
-    }
-    json!({"heading":format!("{tool}: confirmed"),"lines":lines})
-}
-
-/// Present native content once and add only distinct context needed for follow-up actions.
-fn context_page(data: &Value) -> Value {
-    let mut lines = vec![];
-    let heading = if let Some(issue) = data.get("issue") {
-        identity(&mut lines, issue);
-        field(&mut lines, "Project ID", &issue["project"]["id"]);
-        field(&mut lines, "Team ID", &issue["team"]["id"]);
-        field(&mut lines, "Parent ID", &issue["parent"]["id"]);
-        field(&mut lines, "Status", &issue["state"]["name"]);
-        field(&mut lines, "Priority", &issue["priority"]);
-        section(&mut lines, "Description", &issue["description"]);
-        let agent = &data["agent_context"];
-        let checkout = if agent["checkout"].is_object() {
-            &agent["checkout"]
-        } else {
-            &data["parent_checkout"]
-        };
-        if checkout.is_object() {
-            lines.push("\n## Checkout".into());
-            for (label, key) in [
-                ("Repository", "repository_path"),
-                ("Repository URL", "repository_url"),
-                ("Branch", "branch"),
-                ("Worktree", "worktree"),
-                ("Lead", "lead"),
-            ] {
-                field(&mut lines, label, &checkout[key]);
-            }
-        }
-        if agent["epic"].is_object() {
-            lines.push("\n## Parent Epic".into());
-            field(&mut lines, "URL", &agent["epic"]["url"]);
-            section(
-                &mut lines,
-                "Business requirements",
-                &agent["epic"]["business_requirements"],
-            );
-            section(
-                &mut lines,
-                "Acceptance criteria",
-                &agent["epic"]["acceptance_criteria"],
-            );
-        }
-        if !data["fields"]["required_contract"].is_string() {
-            section(&mut lines, "Required contract", &agent["required_contract"]);
-        }
-        if !data["fields"]["provided_contract"].is_string() {
-            section(&mut lines, "Provided contract", &agent["provided_contract"]);
-        }
-        let report = &data["module_report"];
-        if report.is_object() {
-            lines.push(format!(
-                "\n## Module progress\n{}/{} Tasks Done",
-                report["tasks_done"], report["tasks_total"]
-            ));
-            if data["fields"]["result"].is_null() {
-                section(&mut lines, "PR draft", &report["pr_draft"]);
-            }
-            for item in report["unfinished"].as_array().into_iter().flatten() {
-                lines.push(format!(
-                    "Unfinished: {} — {}",
-                    scalar(&item["url"]).unwrap_or_default(),
-                    scalar(&item["status"]).unwrap_or_default()
-                ));
-            }
-        }
-        let tasks = if agent["tasks"].is_array() {
-            &agent["tasks"]
-        } else {
-            &data["children"]
-        };
-        for task in tasks.as_array().into_iter().flatten() {
-            let status = scalar(&task["status"])
-                .or_else(|| scalar(&task["state"]["name"]))
-                .unwrap_or_default();
-            lines.push(format!(
-                "\nChild: {} — {} ({status})",
-                scalar(&task["identifier"]).unwrap_or_default(),
-                scalar(&task["title"]).unwrap_or_default()
-            ));
-            field(&mut lines, "ID", &task["id"]);
-            field(&mut lines, "URL", &task["url"]);
-            if report.is_null() {
-                section(&mut lines, "Result", &task["result"]);
-                section(&mut lines, "Checks", &task["reported_checks"]);
-            }
-        }
-        if report.is_null() {
-            for git in data["git_reports"].as_array().into_iter().flatten() {
-                let commit = if git["commit"].is_object() {
-                    &git["commit"]
-                } else {
-                    git
-                };
-                lines.push(format!(
-                    "\nCommit: {} {}",
-                    scalar(&commit["sha"]).unwrap_or_default(),
-                    scalar(&commit["subject"]).unwrap_or_default()
-                ));
-            }
-        }
-        if agent["latest_review"].is_object() {
-            let review = &agent["latest_review"];
-            lines.push("\n## Latest review".into());
-            field(&mut lines, "URL", &review["url"]);
-            field(&mut lines, "Verdict", &review["verdict"]);
-            section(&mut lines, "Summary", &review["summary"]);
-            section(&mut lines, "Findings", &review["findings"]);
-        }
-        for question in agent["open_questions"].as_array().into_iter().flatten() {
-            lines.push("\n## Open question".into());
-            field(&mut lines, "URL", &question["url"]);
-            field(&mut lines, "Recipient", &question["recipient"]);
-            section(&mut lines, "Body", &question["body"]);
-        }
-        for document in agent["documents"].as_array().into_iter().flatten() {
-            lines.push(format!(
-                "Document: {} — {} (ID {})",
-                scalar(&document["title"]).unwrap_or_default(),
-                scalar(&document["url"]).unwrap_or_default(),
-                scalar(&document["id"]).unwrap_or_default()
-            ));
-        }
-        for peer in data["priority_group"]["peers"]
-            .as_array()
-            .into_iter()
-            .flatten()
-        {
-            lines.push(format!(
-                "Priority peer: {} — {} ({})",
-                scalar(&peer["identifier"]).unwrap_or_default(),
-                scalar(&peer["url"]).unwrap_or_default(),
-                scalar(&peer["status"]).unwrap_or_default()
-            ));
-        }
-        if data["workflow"]["pending"].is_object() {
-            let pending = &data["workflow"]["pending"]["request"];
-            let call = json!({"tool":pending["tool"],"arguments":pending["arguments"]});
-            lines.push(format!("\n## Pending mutation recovery\nRetry the same tool with these exact argument values after inspecting the native state:\n```json\n{}\n```", serde_json::to_string_pretty(&call).unwrap_or_default()));
-        }
-        for problem in data["discrepancies"].as_array().into_iter().flatten() {
-            field(&mut lines, "Discrepancy", problem);
-        }
-        for transition in data["transitions"].as_array().into_iter().flatten() {
-            let conditions = transition["conditions"]
-                .as_array()
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(scalar)
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                })
-                .unwrap_or_default();
-            lines.push(format!(
-                "Transition {}: {}{}",
-                scalar(&transition["status"]).unwrap_or_default(),
-                if transition["allowed"] == true {
-                    "allowed"
-                } else {
-                    "blocked"
-                },
-                if conditions.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — {conditions}")
-                }
-            ));
-        }
-        "Issue"
-    } else if let Some(project) = data.get("project") {
-        identity(&mut lines, project);
-        for team in project["teams"]["nodes"].as_array().into_iter().flatten() {
-            field(&mut lines, "Team ID", &team["id"]);
-        }
-        section(&mut lines, "Project content", &project["content"]);
-        for document in data["documents"].as_array().into_iter().flatten() {
-            lines.push(format!(
-                "Document: {} — {} (ID {})",
-                scalar(&document["title"]).unwrap_or_default(),
-                scalar(&document["url"]).unwrap_or_default(),
-                scalar(&document["id"]).unwrap_or_default()
-            ));
-        }
-        "Project"
-    } else if let Some(update) = data.get("project_update") {
-        identity(&mut lines, update);
-        field(&mut lines, "Health", &update["health"]);
-        field(&mut lines, "Updated at", &update["updatedAt"]);
-        field(&mut lines, "Author", &data["activity"]["actor"]);
-        field(&mut lines, "Reason", &data["activity"]["reason"]);
-        if data["activity"]["body"].is_string() {
-            section(&mut lines, "Body", &data["activity"]["body"]);
-        } else {
-            section(&mut lines, "Body", &update["body"]);
-        }
-        "Project update"
-    } else {
-        identity(&mut lines, data);
-        section(&mut lines, "Content", &data["content"]);
-        "Document"
-    };
-    json!({"heading":heading,"lines":lines})
-}
-
-/// Present one full project overview or changed fields from a valid cursor.
-fn overview_page(data: &Value) -> Value {
-    let mut lines = vec![];
-    field(&mut lines, "Project", &data["project_title"]);
-    field(&mut lines, "Project ID", &data["project_id"]);
-    field(&mut lines, "Project URL", &data["project_url"]);
-    field(&mut lines, "Cursor", &data["cursor"]);
-    if data["baseline_expired"] == true {
-        lines.push("Previous cursor expired; this is a full overview.".into());
-    }
-    if let Some(changes) = data["changes"].as_array() {
-        if changes.is_empty() {
-            lines.push("No changes since the supplied cursor.".into());
-        }
-        for change in changes {
-            let before = &change["before"];
-            let after = &change["after"];
-            let current = if after.is_null() { before } else { after };
-            let label = scalar(&current["identifier"])
-                .or_else(|| scalar(&current["url"]))
-                .or_else(|| scalar(&change["key"]))
-                .unwrap_or_default();
-            lines.push(format!(
-                "\nChange: {label}{}",
-                if after.is_null() {
-                    " (removed)"
-                } else if before.is_null() {
-                    " (added)"
-                } else {
-                    ""
-                }
-            ));
-            field(&mut lines, "URL", &current["url"]);
-            if after.is_null() {
-                continue;
-            }
-            for (name, key) in [
-                ("Status", "status"),
-                ("Title", "title"),
-                ("Name", "name"),
-                ("Kind", "kind"),
-                ("Parent ID", "parent_id"),
-                ("Lead", "lead"),
-                ("Priority", "priority"),
-                ("Result", "result_preview"),
-                ("Comment", "body_preview"),
-                ("Verdict", "verdict"),
-                ("Health", "health"),
-                ("Reason", "reason"),
-                ("Resolved", "resolved_at"),
-            ] {
-                if before[key] != after[key] {
-                    if after[key].is_null() {
-                        lines.push(format!("{name}: cleared"));
-                    } else {
-                        field(&mut lines, name, &after[key]);
-                    }
-                }
-            }
-            if before["result_hash"] != after["result_hash"]
-                && before["result_preview"] == after["result_preview"]
-            {
-                lines.push(
-                    "Result changed beyond its preview; read the Issue for full text.".into(),
-                );
-            }
-            if before["body_hash"] != after["body_hash"]
-                && before["body_preview"] == after["body_preview"]
-            {
-                lines.push(
-                    "Comment changed beyond its preview; read the thread for full text.".into(),
-                );
-            }
-            if before["fields_hash"] != after["fields_hash"] {
-                lines.push("Issue fields changed; read the Issue for full text.".into());
-            }
-            if before["checks_hash"] != after["checks_hash"] {
-                lines.push("Reported checks changed; read the Issue for full text.".into());
-            }
-            if before["source_commits"] != after["source_commits"]
-                && (!before["source_commits"].is_null() || !after["source_commits"].is_null())
-            {
-                lines.push("Commit sources changed; read the Issue for full text.".into());
-            }
-            if before["review"] != after["review"]
-                && (!before["review"].is_null() || !after["review"].is_null())
-            {
-                lines.push("Review changed; read the Issue for full text.".into());
-            }
-        }
-    } else {
-        for epic in data["active_epics"].as_array().into_iter().flatten() {
-            lines.push(format!(
-                "\nEpic: {} — {} ({})",
-                scalar(&epic["identifier"]).unwrap_or_default(),
-                scalar(&epic["title"]).unwrap_or_default(),
-                scalar(&epic["status"]).unwrap_or_default()
-            ));
-            field(&mut lines, "URL", &epic["url"]);
-            field(&mut lines, "ID", &epic["id"]);
-            section(
-                &mut lines,
-                "Business requirements",
-                &epic["business_requirements"],
-            );
-            section(&mut lines, "Expected result", &epic["expected_result"]);
-            section(&mut lines, "Result", &epic["result"]);
-            for module in epic["modules"].as_array().into_iter().flatten() {
-                overview_module(&mut lines, module);
-            }
-        }
-        for module in data["standalone_modules"].as_array().into_iter().flatten() {
-            overview_module(&mut lines, module);
-        }
-        for atomic in data["atomics"].as_array().into_iter().flatten() {
-            lines.push(format!(
-                "\nAtomic: {} — {} ({})",
-                scalar(&atomic["identifier"]).unwrap_or_default(),
-                scalar(&atomic["title"]).unwrap_or_default(),
-                scalar(&atomic["status"]).unwrap_or_default()
-            ));
-            field(&mut lines, "URL", &atomic["url"]);
-            section(&mut lines, "Result", &atomic["result"]);
-            section(&mut lines, "Reported checks", &atomic["reported_checks"]);
-        }
-        for question in data["open_questions"].as_array().into_iter().flatten() {
-            lines.push("\nOpen question".into());
-            field(&mut lines, "URL", &question["url"]);
-            field(&mut lines, "Recipient", &question["recipient"]);
-            section(&mut lines, "Body", &question["body"]);
-        }
-        for item in data["awaiting_review"].as_array().into_iter().flatten() {
-            lines.push(format!(
-                "Awaiting review: {} — {}",
-                scalar(&item["identifier"]).unwrap_or_default(),
-                scalar(&item["url"]).unwrap_or_default()
-            ));
-        }
-        for item in data["excluded"].as_array().into_iter().flatten() {
-            lines.push(format!(
-                "Excluded: {} — {}",
-                scalar(&item["identifier"]).unwrap_or_default(),
-                scalar(&item["url"]).unwrap_or_default()
-            ));
-            field(&mut lines, "Reason", &item["reason"]);
-        }
-    }
-    json!({"heading":"Project overview","lines":lines})
-}
-
-/// Summarize one Module's progress without repeating its derived report body.
-fn overview_module(lines: &mut Vec<String>, module: &Value) {
-    lines.push(format!(
-        "\nModule: {} — {} ({})",
-        scalar(&module["identifier"]).unwrap_or_default(),
-        scalar(&module["title"]).unwrap_or_default(),
-        scalar(&module["status"]).unwrap_or_default()
-    ));
-    field(lines, "URL", &module["url"]);
-    field(lines, "ID", &module["id"]);
-    field(lines, "Lead", &module["lead"]);
-    section(lines, "Expected result", &module["expected_result"]);
-    lines.push(format!(
-        "Tasks: {}/{} Done",
-        module["report"]["tasks_done"], module["report"]["tasks_total"]
-    ));
-    section(lines, "Result", &module["report"]["summary"]);
-    section(
-        lines,
-        "Reported checks",
-        &module["report"]["reported_checks"],
-    );
-    for item in module["report"]["unfinished"]
+/// Select mutation confirmation data without mirroring the submitted body.
+fn ack_projection(tool: &str, request: &Value, data: &Value) -> Value {
+    let native = ["issue", "project", "project_update", "comment", "review"]
+        .iter()
+        .find_map(|key| data.get(*key))
+        .unwrap_or(data);
+    let commits: Vec<Value> = data["git_reports"]
         .as_array()
         .into_iter()
         .flatten()
+        .map(|report| {
+            let commit = if report["commit"].is_object() {
+                &report["commit"]
+            } else {
+                report
+            };
+            json!({"sha":commit["sha"],"subject":commit["subject"]})
+        })
+        .collect();
+    json!({"tool":tool,"request":request,"data":data,"item":identity(native),
+        "commits":commits,"documents":data["documents"].as_array().cloned().unwrap_or_default(),
+        "journal":data["journal"].as_array().cloned().unwrap_or_default(),
+        "check_only":tool=="move_status" && data.get("allowed").is_some(),
+        "review_url":data["url"]})
+}
+
+/// Select authoritative native content and distinct relationship/recovery fields for one read.
+fn context_projection(data: &Value) -> Value {
+    let kind = if data.get("issue").is_some() {
+        "issue"
+    } else if data.get("project").is_some() {
+        "project"
+    } else if data.get("project_update").is_some() {
+        "project_update"
+    } else {
+        "document"
+    };
+    let item = match kind {
+        "issue" => &data["issue"],
+        "project" => &data["project"],
+        "project_update" => &data["project_update"],
+        _ => data,
+    };
+    let agent = &data["agent_context"];
+    let mut checkout = if agent["checkout"].is_object() {
+        agent["checkout"].clone()
+    } else {
+        data["parent_checkout"].clone()
+    };
+    if checkout.is_object() && checkout["repository_url"].is_null() {
+        checkout["repository_url"] = data["parent_checkout"]["repository_url"].clone();
+    }
+    let children = if agent["tasks"].is_array() {
+        &agent["tasks"]
+    } else {
+        &data["children"]
+    };
+    let children: Vec<Value> = children
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|child| {
+            let mut item = identity(child);
+            item["status"] = if child["status"].is_string() {
+                child["status"].clone()
+            } else {
+                child["state"]["name"].clone()
+            };
+            json!({"item":item,"result":child["result"],"checks":child["reported_checks"]})
+        })
+        .collect();
+    let commits: Vec<Value> = data["git_reports"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|report| {
+            let commit = if report["commit"].is_object() {
+                &report["commit"]
+            } else {
+                report
+            };
+            json!({"sha":commit["sha"],"subject":commit["subject"]})
+        })
+        .collect();
+    let pending_call = data["workflow"]["pending"]["request"]
+        .as_object()
+        .map(|pending| {
+            serde_json::to_string_pretty(
+                &json!({"tool":pending.get("tool"),"arguments":pending.get("arguments")}),
+            )
+            .expect("JSON values serialize")
+        });
+    let body = if data["activity"]["body"].is_string() {
+        &data["activity"]["body"]
+    } else {
+        &item["body"]
+    };
+    let report = &data["module_report"];
+    let description = item["description"].as_str().unwrap_or("");
+    let description = if report.is_object()
+        && data["fields"]["result"].is_string()
+        && data["fields"]["result"] == report["summary"]
+        && data["fields"]["check_result"] == report["reported_checks"]
     {
-        lines.push(format!(
-            "Unfinished: {} — {}",
-            scalar(&item["url"]).unwrap_or_default(),
-            scalar(&item["status"]).unwrap_or_default()
-        ));
-    }
+        patch_description(description, &json!({"result":null,"check_result":null}))
+    } else {
+        description.to_owned()
+    };
+    json!({"kind":kind,"item":identity(item),"description":description,"content":item["content"],
+        "body_text":body,"agent":agent,"checkout":checkout,"children":children,"commits":commits,
+        "report":report,
+        "epic":agent["epic"],"required_contract":if data["fields"]["required_contract"].is_string(){&Value::Null}else{&agent["required_contract"]},
+        "provided_contract":if data["fields"]["provided_contract"].is_string(){&Value::Null}else{&agent["provided_contract"]},
+        "review":agent["latest_review"],"questions":agent["open_questions"].as_array().cloned().unwrap_or_default(),
+        "documents":if kind=="project" {data["documents"].as_array().cloned().unwrap_or_default()} else {agent["documents"].as_array().cloned().unwrap_or_default()},
+        "teams":item["teams"]["nodes"].as_array().cloned().unwrap_or_default(),
+        "peers":data["priority_group"]["peers"].as_array().cloned().unwrap_or_default(),
+        "pending_call":pending_call,
+        "discrepancies":data["discrepancies"].as_array().cloned().unwrap_or_default(),
+        "transitions":data["transitions"].as_array().cloned().unwrap_or_default(),
+        "actor":data["activity"]["actor"],"reason":data["activity"]["reason"]})
 }
 
-/// Present all native page items once and preserve the opaque cursor unchanged.
-fn list_page(tool: &str, request: &Value, data: &Value) -> Value {
-    let mut lines = vec![];
-    let records = data["activity_records"].as_array();
-    for (index, item) in data["nodes"].as_array().into_iter().flatten().enumerate() {
-        let record = records.and_then(|records| records.get(index));
-        lines.push("\nItem".into());
-        identity(&mut lines, item);
-        field(&mut lines, "Status", &item["state"]["name"]);
-        field(&mut lines, "Priority", &item["priority"]);
-        field(&mut lines, "Health", &item["health"]);
-        if request["type"] == "project_update" {
-            field(&mut lines, "Updated at", &item["updatedAt"]);
-        }
-        if let Some(record) = record {
-            field(&mut lines, "Kind", &record["kind"]);
-            field(&mut lines, "Actor", &record["actor"]);
-            field(&mut lines, "Recipient", &record["recipient"]);
-            field(&mut lines, "Reason", &record["reason"]);
-            section(&mut lines, "Body", &record["body"]);
-        }
-    }
-    if data["nodes"].as_array().is_some_and(Vec::is_empty) {
-        lines.push("No items on this page.".into());
-    }
-    field(
-        &mut lines,
-        "Has next page",
-        &data["pageInfo"]["hasNextPage"],
-    );
-    field(&mut lines, "Next cursor", &data["pageInfo"]["endCursor"]);
-    json!({"heading":format!("{tool}: {}", scalar(&request["type"]).unwrap_or_else(|| "items".into())),"lines":lines})
+/// Select project cards and delta source values without printing internal hashes.
+fn overview_projection(data: &Value) -> Value {
+    let changes: Vec<Value> = data["changes"].as_array().into_iter().flatten().map(|change| {
+        let current = if change["after"].is_null() {&change["before"]} else {&change["after"]};
+        let label = current["identifier"].as_str().or_else(||current["url"].as_str()).or_else(||change["key"].as_str()).unwrap_or("");
+        json!({"label":label,"url":current["url"],
+            "before":snapshot_projection(&change["before"]),"after":snapshot_projection(&change["after"]),
+            "removed":change["after"].is_null(),"added":change["before"].is_null()})
+    }).collect();
+    json!({"project_id":data["project_id"],"project_title":data["project_title"],"project_url":data["project_url"],
+        "cursor":data["cursor"],"baseline_expired":data["baseline_expired"],
+        "is_delta":data["changes"].is_array(),"changes":changes,
+        "epics":data["active_epics"].as_array().cloned().unwrap_or_default(),
+        "modules":data["standalone_modules"].as_array().cloned().unwrap_or_default(),
+        "atomics":data["atomics"].as_array().cloned().unwrap_or_default(),
+        "questions":data["open_questions"].as_array().cloned().unwrap_or_default(),
+        "awaiting_review":data["awaiting_review"].as_array().cloned().unwrap_or_default(),
+        "excluded":data["excluded"].as_array().cloned().unwrap_or_default(),
+        "project_update_draft":data["project_update_draft"]})
 }
 
-/// Present the explicitly requested comment body and every returned reply in full.
-fn comment_page(data: &Value) -> Value {
-    let mut lines = vec![];
-    let record = &data["activity"];
-    identity(&mut lines, &data["comment"]);
-    field(&mut lines, "Kind", &record["kind"]);
-    field(&mut lines, "Actor", &record["actor"]);
-    field(&mut lines, "Recipient", &record["recipient"]);
-    field(&mut lines, "Verdict", &record["verdict"]);
-    section(&mut lines, "Body", &record["body"]);
-    section(&mut lines, "Findings", &record["findings"]);
-    if data["root"]["id"] != data["comment"]["id"] && data["root"].is_object() {
-        lines.push("\nRoot comment".into());
-        identity(&mut lines, &data["root"]);
-        section(&mut lines, "Body", &data["root"]["body"]);
-    }
-    for reply in data["replies"]["nodes"].as_array().into_iter().flatten() {
-        lines.push("\nReply".into());
-        identity(&mut lines, reply);
-        section(&mut lines, "Body", &reply["body"]);
-    }
-    field(
-        &mut lines,
-        "Has next page",
-        &data["replies"]["pageInfo"]["hasNextPage"],
-    );
-    field(
-        &mut lines,
-        "Next cursor",
-        &data["replies"]["pageInfo"]["endCursor"],
-    );
-    json!({"heading":"Comment thread","lines":lines})
+/// Select comparable public fields and private comparison markers without formatting either.
+fn snapshot_projection(snapshot: &Value) -> Value {
+    json!({"status":snapshot["status"],"title":snapshot["title"],"name":snapshot["name"],
+        "kind":snapshot["kind"],"parent_id":snapshot["parent_id"],"lead":snapshot["lead"],
+        "priority":snapshot["priority"],"result_preview":snapshot["result_preview"],
+        "body_preview":snapshot["body_preview"],"verdict":snapshot["verdict"],
+        "health":snapshot["health"],"reason":snapshot["reason"],"resolved_at":snapshot["resolved_at"],
+        "result_hash":snapshot["result_hash"],"body_hash":snapshot["body_hash"],
+        "fields_hash":snapshot["fields_hash"],"checks_hash":snapshot["checks_hash"],
+        "source_commits":snapshot["source_commits"],"review":snapshot["review"]})
 }
 
+/// Pair each native page item with its typed activity and retain native pagination verbatim.
+fn list_projection(tool: &str, request: &Value, data: &Value) -> Value {
+    let items: Vec<Value> = data["nodes"].as_array().into_iter().flatten().enumerate().map(|(i,item)| {
+        json!({"item":identity(item),"activity":data["activity_records"].get(i).unwrap_or(&Value::Null)})
+    }).collect();
+    json!({"tool":tool,"entity_type":request["type"],"items":items,
+        "has_next":data["pageInfo"]["hasNextPage"],"cursor":data["pageInfo"]["endCursor"]})
+}
+
+/// Select one explicitly read comment, root and reply page without shortening their bodies.
+fn comment_projection(data: &Value) -> Value {
+    let replies: Vec<Value> = data["replies"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|reply| json!({"item":identity(reply),"body":reply["body"]}))
+        .collect();
+    json!({"item":identity(&data["comment"]),"activity":data["activity"],
+        "root":identity(&data["root"]),"root_body":data["root"]["body"],
+        "root_distinct":data["root"].is_object() && data["root"]["id"] != data["comment"]["id"],
+        "replies":replies,"has_next":data["replies"]["pageInfo"]["hasNextPage"],
+        "cursor":data["replies"]["pageInfo"]["endCursor"]})
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,6 +449,13 @@ mod tests {
         assert!(text.contains("\"unset\": null"));
         assert!(text.contains("Line 1\\n  line 2"));
         assert!(!text.contains("\"before\""));
+        let checkout = json!({"issue":{"id":"task-1","title":"Task","description":"Human instructions"},"agent_context":{"checkout":{"repository_path":"/repo","branch":"main","worktree":"/worktree"}},"parent_checkout":{"repository_url":"https://example.com/repo"}});
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"issue","id":"task-1"}),
+            &Outcome::ok(checkout),
+        );
+        assert!(text.contains("Repository URL: https://example.com/repo"));
         let document = json!({"id":"doc-1","title":"Plan","url":"https://linear.app/doc-1","content":"First line\n".to_owned()+&"Long body. ".repeat(2000)});
         let body = document["content"].as_str().unwrap();
         let rendered = render_outcome(
@@ -806,6 +465,13 @@ mod tests {
         );
         assert!(rendered.contains(body));
         assert!(rendered.len() < serde_json::to_string(&Outcome::ok(document)).unwrap().len());
+        let exact = "Привет 🌍\n{\"legitimate\":true}\n{{ do_not_evaluate }}\nEND-OF-DOCUMENT";
+        let rendered = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"doc-2"}),
+            &Outcome::ok(json!({"id":"doc-2","title":"Unicode","content":exact})),
+        );
+        assert!(rendered.contains(exact));
         let update = json!({"project_update":{"id":"update-1","url":"https://linear.app/update-1","health":"atRisk","updatedAt":"2026-09-26T20:00:00Z"},"activity":{"actor":"codex:lead","reason":"Blocked upstream","body":"The full update body."}});
         let text = render_outcome(
             "get_context",
@@ -814,7 +480,7 @@ mod tests {
         );
         assert!(text.contains("Updated at: 2026-09-26T20:00:00Z"));
         assert!(text.contains("Reason: Blocked upstream"));
-        assert!(text.contains("The full update body."));
+        assert!(text.contains("The full update body."), "{text}");
     }
 
     /// List and overview cursors stay exact while deltas show changed values instead of hashes.
@@ -824,7 +490,7 @@ mod tests {
         let page = json!({"nodes":[{"id":"issue-1","identifier":"MYT-1","title":"First","url":"https://linear.app/issue-1","priority":0}],"pageInfo":{"hasNextPage":true,"endCursor":cursor}});
         let text = render_outcome("list_items", &json!({"type":"issue"}), &Outcome::ok(page));
         assert!(text.contains(cursor));
-        assert!(text.contains("Has next page: true"));
+        assert!(text.contains("Has next page: true"), "{text}");
         assert!(text.contains("Priority: 0"));
         let delta = json!({"project_id":"project-1","cursor":"next-1","changes":[{"key":"work:issue-1","before":{"status":"Todo","result_hash":"abc","result_preview":"Old"},"after":{"id":"issue-1","identifier":"MYT-1","url":"https://linear.app/issue-1","status":"Done","result_hash":"def","result_preview":"New"}}]});
         let text = render_outcome(
@@ -856,10 +522,19 @@ mod tests {
         ] {
             assert!(text.contains(expected));
         }
-        let page = json!({"nodes":[{"id":"root-1","url":"https://linear.app/root-1"}],"activity_records":[{"kind":"question","actor":"codex:lead","body":"Unclipped list body"}],"pageInfo":{"hasNextPage":false}});
+        let page = json!({"nodes":[{"id":"root-1","url":"https://linear.app/root-1"}],"activity_records":[{"kind":"question","actor":"codex:lead","role":"reviewer","session":"https://example.com/session","source_links":["https://example.com/source"],"resolved_at":"2026-09-26T00:00:00Z","resolving_comment_id":"reply-1","body":"Unclipped list body"}],"pageInfo":{"hasNextPage":false}});
         let text = render_outcome("list_items", &json!({"type":"comment"}), &Outcome::ok(page));
         assert!(text.contains("Unclipped list body"));
-        assert!(text.contains("Has next page: false"));
+        assert!(text.contains("Has next page: false"), "{text}");
+        for expected in [
+            "Role: reviewer",
+            "Session: https://example.com/session",
+            "Source: https://example.com/source",
+            "Resolved: true",
+            "Resolving comment ID: reply-1",
+        ] {
+            assert!(text.contains(expected), "{text}");
+        }
     }
 
     /// Invalid commit reports get a concrete format example without altering failure status.
@@ -890,7 +565,7 @@ mod tests {
         let success = Outcome::ok(json!({"id":"item-1","count":0,"replayed":false}));
         let text = render_outcome("create_task", &request, &success);
         assert!(text.contains("ID: item-1"));
-        assert!(text.contains("Replayed: false"));
+        assert!(text.contains("Replayed: false"), "{text}");
         assert!(!text.contains("count"));
     }
 
@@ -913,5 +588,122 @@ mod tests {
         );
         assert!(malformed.contains("get_context: ok"));
         assert!(malformed.contains("Presentation failed"));
+    }
+
+    /// Module reads keep the usable PR draft, notes and full source IDs without duplicating derived fields.
+    #[test]
+    fn module_report_keeps_draft_and_manual_prose_once() {
+        let sha = "a".repeat(40);
+        let description = "## Результат\nDerived summary\n\n## Результаты проверок\ncheck one\n\n## Manual notes\nKeep this human note.\n";
+        let report = json!({"tasks_done":1,"tasks_total":1,"summary":"Derived summary","reported_checks":"check one","pr_draft":"## Summary\nDerived summary\n\n## Checks\ncheck one","notes":"Known risk","source_commits":[{"sha":sha,"subject":"feat: deliver","work_ids":["task-1"]}],"unfinished":[],"excluded":[]});
+        let data = json!({"issue":{"id":"module-1","identifier":"MYT-1","title":"Module","url":"https://linear.app/module-1","description":description},"fields":{"result":"Derived summary","check_result":"check one"},"module_report":report,"children":[]});
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"issue","id":"module-1"}),
+            &Outcome::ok(data),
+        );
+        assert!(text.contains("## PR draft"), "{text}");
+        assert!(text.contains("Known risk"));
+        assert!(text.contains(&sha));
+        assert!(text.contains("Keep this human note."));
+        assert_eq!(text.matches("Derived summary").count(), 1);
+        assert_eq!(text.matches("check one").count(), 1);
+    }
+
+    /// Overview pages retain the one reusable update draft, Epic totals and Module session link.
+    #[test]
+    fn overview_preserves_draft_counts_and_session() {
+        let card = json!({"id":"module-1","identifier":"MYT-1","title":"Module","url":"https://linear.app/module-1","status":"In Progress","lead":"codex:lead","session_url":"https://example.com/session","report":{"tasks_done":1,"tasks_total":2,"summary":"Module result","reported_checks":"Build passed","unfinished":[]}});
+        let full = json!({"project_id":"project-1","cursor":"cursor-1","project_update_draft":"## Draft body\nOne reusable update.","active_epics":[{"id":"epic-1","identifier":"MYT-2","title":"Epic","url":"https://linear.app/epic-1","status":"In Progress","tasks_done":1,"tasks_total":2,"modules":[card]}]});
+        let text = render_outcome(
+            "get_overview",
+            &json!({"project_id":"project-1"}),
+            &Outcome::ok(full),
+        );
+        for expected in [
+            "Tasks Done: 1",
+            "Tasks Total: 2",
+            "Session URL: https://example.com/session",
+            "## Draft body\nOne reusable update.",
+        ] {
+            assert!(text.contains(expected), "{text}");
+        }
+        assert_eq!(text.matches("One reusable update.").count(), 1);
+        let delta = json!({"project_id":"project-1","cursor":"cursor-2","changes":[],"project_update_draft":"## Delta draft\nKeep me."});
+        let text = render_outcome(
+            "get_overview",
+            &json!({"project_id":"project-1","cursor":"cursor-1"}),
+            &Outcome::ok(delta),
+        );
+        assert!(text.contains("No changes since the supplied cursor."));
+        assert!(text.contains("## Delta draft\nKeep me."));
+    }
+
+    /// Comment reads retain attribution and thread state; status checks identify a preview.
+    #[test]
+    fn activity_preview_and_fallback_keep_action_handles() {
+        let comment = json!({"comment":{"id":"reply-1","url":"https://linear.app/reply-1","parent":{"id":"root-1"}},"activity":{"kind":"question","actor":"codex:lead","role":"reviewer","session":"https://example.com/session","source_links":["https://example.com/source"],"parent_id":"root-1","resolved_at":"2026-09-26T00:00:00Z","resolving_comment_id":"reply-2","body":"Question"},"root":{"id":"root-1","url":"https://linear.app/root-1","body":"Root"},"replies":{"nodes":[],"pageInfo":{"hasNextPage":false}}});
+        let text = render_outcome(
+            "get_comment",
+            &json!({"id":"reply-1"}),
+            &Outcome::ok(comment),
+        );
+        for expected in [
+            "Role: reviewer",
+            "Session: https://example.com/session",
+            "Source: https://example.com/source",
+            "Parent ID: root-1",
+            "Resolved: true",
+            "Resolving comment ID: reply-2",
+        ] {
+            assert!(text.contains(expected), "{text}");
+        }
+        assert_eq!(text.matches("Parent ID: root-1").count(), 1);
+        let preview = render_outcome(
+            "move_status",
+            &json!({"id":"issue-1","request_id":"req-1"}),
+            &Outcome::ok(json!({"allowed":false,"conditions":["Need checks"],"status":"Done"})),
+        );
+        assert!(
+            preview.contains("preview (check_only; no mutation)"),
+            "{preview}"
+        );
+        assert!(preview.contains("Allowed: false"));
+        assert!(!preview.contains("confirmed"));
+        let fallback = presentation_fallback(
+            "record_commits",
+            &json!({"work_id":"task-1","request_id":"req-1"}),
+            &Outcome {
+                status: "blocked".into(),
+                data: json!({"code":"INVALID_INPUT"}),
+            },
+        );
+        assert!(fallback.contains("target_type: issue; target: task-1; request_id: req-1"));
+        let issue = json!({"id":"issue-1","identifier":"MYT-1","title":"Task","url":"https://linear.app/issue-1","project":{"id":"project-1"},"team":{"id":"team-1"},"parent":{"id":"module-1"}});
+        let ack = render_outcome(
+            "create_task",
+            &json!({"request_id":"req-1"}),
+            &Outcome::ok(json!({"issue":issue})),
+        );
+        for handle in [
+            "Project ID: project-1",
+            "Team ID: team-1",
+            "Parent ID: module-1",
+            "Request ID: req-1",
+        ] {
+            assert!(ack.contains(handle), "{ack}");
+        }
+        let list = render_outcome(
+            "list_items",
+            &json!({"type":"issue"}),
+            &Outcome::ok(json!({"nodes":[issue],"pageInfo":{"hasNextPage":false}})),
+        );
+        for handle in [
+            "Project ID: project-1",
+            "Team ID: team-1",
+            "Parent ID: module-1",
+        ] {
+            assert!(list.contains(handle), "{list}");
+        }
     }
 }

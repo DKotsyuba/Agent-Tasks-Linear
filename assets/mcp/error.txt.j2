@@ -1,3 +1,4 @@
-{{ status }}: {{ code }} — {{ message }}{% if request_id %}
-request_id: {{ request_id }}{% endif %}{% if retry %}
-Next: {{ retry }}{% endif %}
+{% from "common" import line %}
+{{ status }}: {{ code }} — {{ message }}{{ "\n" }}
+{% if invalid_commit %}Expected commit message format:{{ "\n" }}feat(scope): summary{{ "\n" }}{{ "\n" }}Result:{{ "\n" }}What changed.{{ "\n" }}{{ "\n" }}Checks:{{ "\n" }}What passed.{{ "\n" }}{% endif %}
+{{ line("request_id", request_id) }}{{ line("Next", retry) }}

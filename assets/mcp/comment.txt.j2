@@ -1,1 +1,9 @@
-{{ heading }}{% for line in lines %}{{ "\n" }}{{ line }}{% endfor %}
+{% from "common" import line, body, heading, entity %}
+Comment thread{{ "\n" }}{{ entity(item) }}{{ line("Kind", activity.kind|default(none)) }}{{ line("Actor", activity.actor|default(none)) }}{{ line("Role", activity.role|default(none)) }}{{ line("Session", activity.session|default(none)) }}{{ line("Recipient", activity.recipient|default(none)) }}{{ line("Verdict", activity.verdict|default(none)) }}
+{% if not item.parent_id %}{{ line("Parent ID", activity.parent_id|default(none)) }}{% endif %}
+{{ line("Resolved", (activity.resolved_at|default(none)) is not none) }}{{ line("Resolving comment ID", activity.resolving_comment_id|default(none)) }}
+{% for source in activity.source_links|default([]) %}{{ line("Source", source) }}{% endfor %}
+{{ body("Body", activity.body|default(none)) }}{{ body("Findings", activity.findings|default(none)) }}
+{% if root_distinct %}{{ heading("Root comment") }}{{ entity(root) }}{{ body("Body", root_body) }}{% endif %}
+{% for reply in replies %}{{ heading("Reply") }}{{ entity(reply.item) }}{{ line("Resolved", reply.item.resolved) }}{{ body("Body", reply.body) }}{% endfor %}
+{{ line("Has next page", has_next) }}{{ line("Next cursor", cursor) }}

@@ -1,1 +1,25 @@
-{{ heading }}{% for line in lines %}{{ "\n" }}{{ line }}{% endfor %}
+{% from "common" import line, body, heading, change, module_card %}
+Project overview{{ "\n" }}{{ line("Project", project_title) }}{{ line("Project ID", project_id) }}{{ line("Project URL", project_url) }}{{ line("Cursor", cursor) }}
+{% if baseline_expired %}Previous cursor expired; this is a full overview.{{ "\n" }}{% endif %}
+{% if is_delta %}
+{% if not changes %}No changes since the supplied cursor.{{ "\n" }}{% endif %}
+{% for item in changes %}{{ heading("Change") }}{{ line("Item", item.label) }}{% if item.removed %}Removed{{ "\n" }}{% elif item.added %}Added{{ "\n" }}{% endif %}{{ line("URL", item.url) }}
+{% if not item.removed %}
+{{ change("Status", item.before.status, item.after.status) }}{{ change("Title", item.before.title, item.after.title) }}{{ change("Name", item.before.name, item.after.name) }}{{ change("Kind", item.before.kind, item.after.kind) }}{{ change("Parent ID", item.before.parent_id, item.after.parent_id) }}{{ change("Lead", item.before.lead, item.after.lead) }}{{ change("Priority", item.before.priority, item.after.priority) }}{{ change("Result", item.before.result_preview, item.after.result_preview) }}{{ change("Comment", item.before.body_preview, item.after.body_preview) }}{{ change("Verdict", item.before.verdict, item.after.verdict) }}{{ change("Health", item.before.health, item.after.health) }}{{ change("Reason", item.before.reason, item.after.reason) }}{{ change("Resolved", item.before.resolved_at, item.after.resolved_at) }}
+{% if item.before.result_hash != item.after.result_hash and item.before.result_preview == item.after.result_preview %}Result changed beyond its preview; read the Issue for full text.{{ "\n" }}{% endif %}
+{% if item.before.body_hash != item.after.body_hash and item.before.body_preview == item.after.body_preview %}Comment changed beyond its preview; read the thread for full text.{{ "\n" }}{% endif %}
+{% if item.before.fields_hash != item.after.fields_hash %}Issue fields changed; read the Issue for full text.{{ "\n" }}{% endif %}
+{% if item.before.checks_hash != item.after.checks_hash %}Reported checks changed; read the Issue for full text.{{ "\n" }}{% endif %}
+{% if item.before.source_commits != item.after.source_commits %}Commit sources changed; read the Issue for full text.{{ "\n" }}{% endif %}
+{% if item.before.review != item.after.review %}Review changed; read the Issue for full text.{{ "\n" }}{% endif %}
+{% endif %}
+{% endfor %}
+{% else %}
+{% for epic in epics %}{{ heading("Epic") }}{{ line("Identifier", epic.identifier) }}{{ line("Title", epic.title) }}{{ line("ID", epic.id) }}{{ line("URL", epic.url) }}{{ line("Status", epic.status) }}{{ line("Tasks Done", epic.tasks_done) }}{{ line("Tasks Total", epic.tasks_total) }}{{ body("Business requirements", epic.business_requirements|default(none)) }}{{ body("Expected result", epic.expected_result|default(none)) }}{{ body("Result", epic.result|default(none)) }}{% for card in epic.modules|default([]) %}{{ module_card(card) }}{% endfor %}{% endfor %}
+{% for card in modules %}{{ module_card(card) }}{% endfor %}
+{% for atomic in atomics %}{{ heading("Atomic") }}{{ line("Identifier", atomic.identifier) }}{{ line("Title", atomic.title) }}{{ line("ID", atomic.id) }}{{ line("URL", atomic.url) }}{{ line("Status", atomic.status) }}{{ body("Result", atomic.result|default(none)) }}{{ body("Reported checks", atomic.reported_checks|default(none)) }}{% endfor %}
+{% for question in questions %}{{ body("Open question", question.body) }}{{ line("URL", question.url) }}{{ line("Recipient", question.recipient|default(none)) }}{% endfor %}
+{% for item in awaiting_review %}{{ line("Awaiting review", item.identifier) }}{{ line("URL", item.url) }}{% endfor %}
+{% for item in excluded %}{{ line("Excluded", item.identifier) }}{{ line("URL", item.url) }}{{ line("Reason", item.reason|default(none)) }}{% endfor %}
+{% endif %}
+{{ body("ProjectUpdate draft", project_update_draft) }}

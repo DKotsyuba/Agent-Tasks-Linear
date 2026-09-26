@@ -1,0 +1,17 @@
+{% macro line(label, value) -%}
+{% if value is defined and value is not none and value != "" %}{{ label }}: {{ value|lower if value is boolean else value }}{{ "\n" }}{% endif %}
+{%- endmacro %}
+{% macro body(label, value) -%}
+{% if value is defined and value is not none and value != "" %}{{ "\n" }}## {{ label }}{{ "\n" }}{{ value }}{{ "\n" }}{% endif %}
+{%- endmacro %}
+{% macro heading(label) -%}{{ "\n" }}## {{ label }}{{ "\n" }}{%- endmacro %}
+{% macro change(label, before, after) -%}
+{% if before != after %}{% if after is none %}{{ label }}: cleared{{ "\n" }}{% else %}{{ line(label, after) }}{% endif %}{% endif %}
+{%- endmacro %}
+{% macro entity(item) -%}
+{{ line("Title", item.title) }}{{ line("Identifier", item.identifier) }}{{ line("ID", item.id) }}{{ line("URL", item.url) }}{{ line("Project ID", item.project_id) }}{{ line("Team ID", item.team_id) }}{{ line("Parent ID", item.parent_id) }}{{ line("Status", item.status) }}{{ line("Priority", item.priority) }}
+{%- endmacro %}
+{% macro module_card(card) -%}
+{{ heading("Module") }}{{ line("Identifier", card.identifier) }}{{ line("Title", card.title) }}{{ line("ID", card.id) }}{{ line("URL", card.url) }}{{ line("Status", card.status) }}{{ line("Lead", card.lead|default(none)) }}{{ line("Session URL", card.session_url|default(none)) }}{{ body("Expected result", card.expected_result|default(none)) }}Tasks: {{ card.report.tasks_done }} / {{ card.report.tasks_total }} Done{{ "\n" }}{{ body("Result", card.report.summary|default(none)) }}{{ body("Reported checks", card.report.reported_checks|default(none)) }}
+{% for work in card.report.unfinished|default([]) %}{{ line("Unfinished", work.identifier) }}{{ line("URL", work.url) }}{{ line("Status", work.status) }}{% endfor %}
+{%- endmacro %}
