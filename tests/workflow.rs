@@ -82,13 +82,16 @@ async fn markdown_list_pending_retry_preserves_manual_changes() {
     assert_eq!(context["issue"]["description"], native);
 }
 
-/// Duplicate uses a native relation; a lost response resumes once without changing the original issue.
+/// Duplicate transfers attachments with native provenance; lost responses recover without altering the original's record.
 #[tokio::test]
 async fn duplicate_transition_recovers_relation_write() {
     let mut f = Fixture::new().await;
     let project = f.project().await;
     let original = f.work("atomic", &project, None).await;
     let duplicate = f.work("atomic", &project, None).await;
+    let original_aid = agent_tasks_linear::records::child_id(&original, "state");
+    let duplicate_aid = agent_tasks_linear::records::child_id(&duplicate, "state");
+    let original_record = f.db.lock().await.attachments[&original_aid].clone();
     let url = format!(
         "https://linear.app/workspace/issue/{}/original",
         f.db.lock().await.issues[&original]["identifier"]
@@ -121,12 +124,63 @@ async fn duplicate_transition_recovers_relation_write() {
     assert_eq!(context["discrepancies"], json!([]));
     assert_eq!(context["fields"]["duplicate_of"], url);
     assert_eq!(context["fields"]["reason"], "Same request");
+    let original_context = f
+        .ok("get_context", json!({"type":"issue","id":original}))
+        .await;
+    assert_eq!(original_context["discrepancies"], json!([]));
+    assert_eq!(
+        original_context["workflow"],
+        original_record["metadata"]["workflow"]
+    );
     let db = f.db.lock().await;
     assert_eq!(db.relations.len(), 1);
     let relation = db.relations.values().next().unwrap();
     assert_eq!(relation["issue"]["id"], duplicate);
     assert_eq!(relation["relatedIssue"]["id"], original);
     assert_eq!(db.issues[&original]["state"]["name"], "Backlog");
+    assert_eq!(db.attachments[&original_aid], original_record);
+    assert_eq!(db.attachments[&duplicate_aid]["issue"]["id"], original);
+    assert_eq!(
+        db.attachments[&duplicate_aid]["originalIssue"]["id"],
+        duplicate
+    );
+}
+
+/// Canonical attachment IDs never authorize reading or overwriting another issue's native provenance.
+#[tokio::test]
+async fn state_attachment_rejects_foreign_provenance_on_read_and_write() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let source = f.work("atomic", &project, None).await;
+    let foreign = f.work("atomic", &project, None).await;
+    let work = f.gateway.store.work(&source).await.unwrap();
+    let aid = agent_tasks_linear::records::child_id(&source, "state");
+    for (current, original) in [
+        (foreign.as_str(), serde_json::Value::Null),
+        (source.as_str(), json!({"id":foreign})),
+    ] {
+        {
+            let mut db = f.db.lock().await;
+            let attachment = db.attachments.get_mut(&aid).unwrap();
+            attachment["issue"] = json!({"id":current});
+            attachment["originalIssue"] = original;
+        }
+        let before = f.db.lock().await.attachments.clone();
+        assert_eq!(
+            f.gateway.store.meta(&source).await.unwrap_err().code,
+            "STATE_INVALID"
+        );
+        assert_eq!(
+            f.gateway
+                .store
+                .save(&work.native, work.managed().unwrap())
+                .await
+                .unwrap_err()
+                .code,
+            "STATE_INVALID"
+        );
+        assert_eq!(f.db.lock().await.attachments, before);
+    }
 }
 
 /// Exercise two modules, local task completion, module review, merge, integration and epic closure.

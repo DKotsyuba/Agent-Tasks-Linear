@@ -91,6 +91,23 @@ pub struct Store {
     /// Shared protected Linear API client.
     pub linear: Linear,
 }
+
+/// Validate the originating issue of a canonical state attachment before reading or updating it.
+/// Native duplicate merges move attachments; `originalIssue` remains their owner when present.
+/// Missing or foreign provenance fails closed without modifying the record.
+fn validate_state_owner(attachment: &Value, id: &str) -> Result<()> {
+    let owner = if attachment["originalIssue"].is_null() {
+        &attachment["issue"]
+    } else {
+        &attachment["originalIssue"]
+    };
+    require(
+        owner["id"] == id,
+        "STATE_INVALID",
+        "State attachment belongs to another issue",
+    )
+}
+
 impl Store {
     /// Read a native object, distinguishing absence from authentication and partial errors.
     pub async fn optional(&self, query: &str, field: &str, id: &str) -> Result<Option<Value>> {
@@ -100,7 +117,8 @@ impl Store {
             Err(e) => Err(e),
         }
     }
-    /// Read the deterministic metadata attachment for one issue; unmanaged issues stay unmanaged.
+    /// Read the deterministic metadata attachment for one originating issue, including native duplicate transfers.
+    /// Foreign provenance is rejected; missing records remain unmanaged and reads never relocate attachments.
     pub async fn meta(&self, id: &str) -> Result<Option<Meta>> {
         let Some(a) = self
             .optional("QAttachmentById", "attachment", &child_id(id, "state"))
@@ -108,11 +126,7 @@ impl Store {
         else {
             return Ok(None);
         };
-        require(
-            a["issue"]["id"] == id,
-            "STATE_INVALID",
-            "State attachment belongs to another issue",
-        )?;
+        validate_state_owner(&a, id)?;
         let m: Meta = serde_json::from_value(a["metadata"]["workflow"].clone())
             .map_err(|_| Fault::new("STATE_INVALID", "Invalid workflow metadata"))?;
         require(
@@ -133,16 +147,15 @@ impl Store {
             fields,
         })
     }
-    /// Create or update the single state attachment; mutation uncertainty propagates to caller.
+    /// Create or update the canonical state attachment after validating its originating issue.
+    /// A native transfer changes physical placement only; other issue records are never adopted or overwritten.
+    /// Mutation uncertainty propagates to the caller.
     pub async fn save(&self, work: &Value, meta: &Meta) -> Result<()> {
         let id = work["id"].as_str().unwrap();
         let aid = child_id(id, "state");
         let metadata = json!({"workflow":meta});
-        if self
-            .optional("QAttachmentById", "attachment", &aid)
-            .await?
-            .is_some()
-        {
+        if let Some(attachment) = self.optional("QAttachmentById", "attachment", &aid).await? {
+            validate_state_owner(&attachment, id)?;
             self.linear
                 .call(
                     "MUpdateAttachment",

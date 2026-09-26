@@ -18,7 +18,7 @@ query QIssue($id:String!) { issue(id:$id) {id identifier title description url u
 
 query QIssues($filter:IssueFilter,$first:Int!,$after:String,$includeArchived:Boolean!) { issues(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id identifier title description url updatedAt archivedAt startedAt completedAt priority priorityLabel prioritySortOrder team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }} pageInfo { hasNextPage endCursor }} }
 
-query QAttachmentById($id:String!) {attachment(id:$id) {id title url metadata issue {id}}}
+query QAttachmentById($id:String!) {attachment(id:$id) {id title url metadata issue {id} originalIssue {id}}}
 
 query QWorkAttachments($id:String!,$first:Int!,$after:String) {issue(id:$id) {attachments(first:$first,after:$after,includeArchived:true) {nodes {id title url metadata} pageInfo { hasNextPage endCursor }}}}
 

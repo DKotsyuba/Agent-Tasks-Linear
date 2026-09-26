@@ -250,6 +250,16 @@ async fn graphql(
             db.relations
                 .insert(input["id"].as_str().unwrap().into(), relation.clone());
             db.issues.get_mut(source).unwrap()["state"] = state("Duplicate");
+            for attachment in db
+                .attachments
+                .values_mut()
+                .filter(|a| a["issue"]["id"] == source)
+            {
+                if attachment["originalIssue"].is_null() {
+                    attachment["originalIssue"] = attachment["issue"].clone();
+                }
+                attachment["issue"] = json!({"id":target});
+            }
             Some((
                 "issueRelationCreate",
                 json!({"success":true,"issueRelation":relation}),
