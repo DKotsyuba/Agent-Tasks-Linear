@@ -69,12 +69,12 @@ fn template_for(tool: &str) -> Option<&'static str> {
 /// Confirmed outcomes remain confirmed when projection or template rendering fails.
 pub fn render_outcome(tool: &str, request: &Value, outcome: &Outcome) -> String {
     let success = matches!(outcome.status.as_str(), "ok" | "committed" | "noop");
-    if success && !valid_success_shape(tool, &outcome.data) {
+    if success && !valid_success_shape(tool, request, &outcome.data) {
         return presentation_fallback(tool, request, outcome);
     }
     let (template, context) = if success {
         let projection = match tool {
-            "get_context" => context_projection(&outcome.data),
+            "get_context" => context_projection(request, &outcome.data),
             "get_overview" => overview_projection(&outcome.data),
             "list_items" | "search" => list_projection(tool, request, &outcome.data),
             "get_comment" => comment_projection(&outcome.data),
@@ -99,14 +99,15 @@ pub fn render_outcome(tool: &str, request: &Value, outcome: &Outcome) -> String 
 }
 
 /// Reject essential missing read fields before an otherwise empty success page can be emitted.
-fn valid_success_shape(tool: &str, data: &Value) -> bool {
+fn valid_success_shape(tool: &str, request: &Value, data: &Value) -> bool {
     match tool {
-        "get_context" => {
-            data["issue"]["id"].is_string()
-                || data["project"]["id"].is_string()
-                || data["project_update"]["id"].is_string()
-                || data["id"].is_string()
-        }
+        "get_context" => match request["type"].as_str() {
+            Some("document") => data["id"].is_string() && data["content"].is_string(),
+            Some("project") => data["project"]["id"].is_string(),
+            Some("project_update") => data["project_update"]["id"].is_string(),
+            Some("issue") => data["issue"]["id"].is_string(),
+            _ => data["issue"]["id"].is_string() || data["id"].is_string(),
+        },
         "get_overview" => data["project_id"].is_string() && data["cursor"].is_string(),
         "list_items" | "search" => data["nodes"].is_array() && data["pageInfo"].is_object(),
         "get_comment" => {
@@ -189,10 +190,14 @@ fn identity(item: &Value) -> Value {
 
 /// Select mutation confirmation data without mirroring the submitted body.
 fn ack_projection(tool: &str, request: &Value, data: &Value) -> Value {
-    let native = ["issue", "project", "project_update", "comment", "review"]
-        .iter()
-        .find_map(|key| data.get(*key))
-        .unwrap_or(data);
+    let native = if tool == "save_document" {
+        data
+    } else {
+        ["issue", "project", "project_update", "comment", "review"]
+            .iter()
+            .find_map(|key| data.get(*key))
+            .unwrap_or(data)
+    };
     let commits: Vec<Value> = data["git_reports"]
         .as_array()
         .into_iter()
@@ -213,9 +218,11 @@ fn ack_projection(tool: &str, request: &Value, data: &Value) -> Value {
         "review_url":data["url"]})
 }
 
-/// Select authoritative native content and distinct relationship/recovery fields for one read.
-fn context_projection(data: &Value) -> Value {
-    let kind = if data.get("issue").is_some() {
+/// Select the requested entity before inspecting its native relationship objects.
+fn context_projection(request: &Value, data: &Value) -> Value {
+    let kind = if request["type"] == "document" || data["id"].is_string() {
+        "document"
+    } else if data.get("issue").is_some() {
         "issue"
     } else if data.get("project").is_some() {
         "project"
@@ -361,6 +368,7 @@ fn comment_projection(data: &Value) -> Value {
         .as_array()
         .into_iter()
         .flatten()
+        .filter(|reply| reply["id"] != data["comment"]["id"])
         .map(|reply| json!({"item":identity(reply),"body":reply["body"]}))
         .collect();
     let thread = if data["root"].is_object() {
@@ -496,6 +504,45 @@ mod tests {
         assert!(text.contains("The full update body."), "{text}");
     }
 
+    /// Native Document ownership links cannot replace the requested document or its full body.
+    #[test]
+    fn attached_documents_render_their_own_identity_and_content() {
+        let content = format!(
+            "Привет 🌍\n{{{{ do_not_evaluate }}}}\n{{\"valid\":true}}\n{}END-OF-DOCUMENT",
+            "Long body. ".repeat(600)
+        );
+        for relation in [
+            json!({"issue":{"id":"issue-parent"}}),
+            json!({"project":{"id":"project-parent"}}),
+        ] {
+            let mut document = json!({"id":"document-1","title":"Pilot plan","url":"https://linear.app/document-1","content":content});
+            document
+                .as_object_mut()
+                .unwrap()
+                .extend(relation.as_object().unwrap().clone());
+            let text = render_outcome(
+                "get_context",
+                &json!({"type":"document","id":"document-1"}),
+                &Outcome::ok(document.clone()),
+            );
+            assert!(text.starts_with("Document\n"), "{text}");
+            assert!(text.contains("ID: document-1"));
+            assert!(text.contains(&content));
+            assert!(!text.starts_with("Issue\n") && !text.starts_with("Project\n"));
+            let ack = render_outcome(
+                "save_document",
+                &json!({"request_id":"document-1"}),
+                &Outcome::ok(document),
+            );
+            assert!(ack.contains("ID: document-1"), "{ack}");
+            assert!(
+                !ack.lines()
+                    .any(|line| line == "ID: issue-parent" || line == "ID: project-parent")
+            );
+            assert!(!ack.contains("END-OF-DOCUMENT"));
+        }
+    }
+
     /// List and overview cursors stay exact while deltas show changed values instead of hashes.
     #[test]
     fn pages_and_deltas_are_actionable() {
@@ -548,6 +595,26 @@ mod tests {
         ] {
             assert!(text.contains(expected), "{text}");
         }
+    }
+
+    /// A selected reply is shown once even if the native sibling page includes it.
+    #[test]
+    fn selected_reply_and_stale_terminal_cursors_are_not_repeated() {
+        let thread = json!({"comment":{"id":"reply-1","url":"https://linear.app/reply-1","parent":{"id":"root-1"}},"activity":{"kind":"note","body":"Selected reply body"},"root":{"id":"root-1","url":"https://linear.app/root-1","body":"Root body"},"replies":{"nodes":[{"id":"reply-1","url":"https://linear.app/reply-1","body":"Selected reply body"},{"id":"reply-2","url":"https://linear.app/reply-2","body":"Other reply body"}],"pageInfo":{"hasNextPage":false,"endCursor":"stale-comment-cursor"}}});
+        let text = render_outcome(
+            "get_comment",
+            &json!({"id":"reply-1"}),
+            &Outcome::ok(thread),
+        );
+        assert_eq!(text.matches("ID: reply-1").count(), 1, "{text}");
+        assert_eq!(text.matches("Selected reply body").count(), 1, "{text}");
+        assert!(text.contains("Root body") && text.contains("Other reply body"));
+        assert!(text.contains("Has next page: false"));
+        assert!(!text.contains("Next cursor:") && !text.contains("stale-comment-cursor"));
+        let page = json!({"nodes":[{"id":"item-1","title":"One"}],"pageInfo":{"hasNextPage":false,"endCursor":"stale-list-cursor"}});
+        let text = render_outcome("list_items", &json!({"type":"issue"}), &Outcome::ok(page));
+        assert!(text.contains("Has next page: false"));
+        assert!(!text.contains("Next cursor:") && !text.contains("stale-list-cursor"));
     }
 
     /// Invalid commit reports get a concrete format example without altering failure status.

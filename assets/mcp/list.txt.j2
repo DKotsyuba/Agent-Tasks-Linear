@@ -7,4 +7,4 @@
 {% if entity_type == "comment" %}{% if not row.item.parent_id %}{{ line("Parent ID", row.activity.parent_id|default(none)) }}{% endif %}{{ line("Resolved", (row.activity.resolved_at|default(none)) is not none) }}{{ line("Resolving comment ID", row.activity.resolving_comment_id|default(none)) }}{% endif %}
 {{ body("Body", row.activity.body|default(none)) }}{% endif %}
 {% endfor %}
-{{ line("Has next page", has_next) }}{{ line("Next cursor", cursor) }}
+{{ line("Has next page", has_next) }}{% if has_next %}{{ line("Next cursor", cursor) }}{% endif %}

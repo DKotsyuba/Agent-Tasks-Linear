@@ -6,4 +6,4 @@ Comment thread{{ "\n" }}{{ entity(item) }}{{ line("Kind", activity.kind|default(
 {{ body("Body", activity.body|default(none)) }}{{ body("Findings", activity.findings|default(none)) }}
 {% if root_distinct %}{{ heading("Root comment") }}{{ entity(root) }}{{ body("Body", root_body) }}{% endif %}
 {% for reply in replies %}{{ heading("Reply") }}{{ entity(reply.item) }}{{ body("Body", reply.body) }}{% endfor %}
-{{ line("Has next page", has_next) }}{{ line("Next cursor", cursor) }}
+{{ line("Has next page", has_next) }}{% if has_next %}{{ line("Next cursor", cursor) }}{% endif %}
