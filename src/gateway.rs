@@ -102,6 +102,9 @@ impl Gateway {
             "move_status" => self.move_status(&args).await,
             "record_review" => self.review(&args).await,
             "record_commits" => self.record_commits(&args).await,
+            "add_comment" => self.add_comment(&args).await,
+            "get_comment" => self.get_comment(&args).await,
+            "resolve_comment" => self.resolve_comment(&args).await,
             _ => {
                 let (action, kind) = name
                     .split_once('_')
@@ -1035,6 +1038,235 @@ impl Gateway {
         }
         self.update(&w, next, input, request).await
     }
+
+    /// Read the one native target for a comment, rejecting missing or ambiguous ownership.
+    fn comment_target(comment: &Value) -> Result<(&'static str, &str)> {
+        let targets: Vec<_> = [
+            ("issue", "issue"),
+            ("project", "project"),
+            ("project_update", "projectUpdate"),
+        ]
+        .into_iter()
+        .filter_map(|(kind, key)| comment[key]["id"].as_str().map(|id| (kind, id)))
+        .collect();
+        require(
+            targets.len() == 1,
+            "NATIVE_STATE_MISMATCH",
+            "Comment must have exactly one supported target",
+        )?;
+        Ok(targets[0])
+    }
+
+    /// Create a comment with caller-allocated native ID, checking the target and reply parent
+    /// before writing; exact same-ID replay returns the existing native permalink.
+    async fn add_comment(&self, a: &Value) -> Result<Value> {
+        let id = text(a, "request_id")?;
+        let target_id = text(a, "target_id")?;
+        let target_type = text(a, "target_type")?;
+        match target_type {
+            "issue" => {
+                self.store
+                    .linear
+                    .object("QIssue", "issue", target_id)
+                    .await?;
+            }
+            "project" => {
+                self.project(target_id).await?;
+            }
+            _ => {
+                self.store
+                    .linear
+                    .object("QProjectUpdate", "projectUpdate", target_id)
+                    .await?;
+            }
+        }
+        if let Some(parent_id) = a["parent_id"].as_str() {
+            let parent = self
+                .store
+                .linear
+                .object("QComment", "comment", parent_id)
+                .await?;
+            require(
+                parent["parent"].is_null()
+                    && Self::comment_target(&parent)? == (target_type, target_id),
+                "INVALID_PARENT",
+                "Reply parent must be a root comment on the same target",
+            )?;
+        }
+        let body = text(a, "body")?;
+        if let Some(comment) = self.store.optional("QComment", "comment", id).await? {
+            require(
+                Self::comment_target(&comment)? == (target_type, target_id)
+                    && comment["parent"]["id"] == a["parent_id"]
+                    && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(body),
+                "REQUEST_CONFLICT",
+                "Comment request_id already names different content",
+            )?;
+            return Ok(json!({"comment":comment,"replayed":true}));
+        }
+        let mut input = json!({"id":id,"body":body});
+        let key = match target_type {
+            "issue" => "issueId",
+            "project" => "projectId",
+            _ => "projectUpdateId",
+        };
+        input[key] = json!(target_id);
+        if let Some(parent_id) = a["parent_id"].as_str() {
+            input["parentId"] = json!(parent_id);
+        }
+        let comment = self
+            .store
+            .linear
+            .call("MCreateComment", json!({"input":input}))
+            .await?["commentCreate"]["comment"]
+            .clone();
+        require(
+            Self::comment_target(&comment).map_err(Fault::uncertain)? == (target_type, target_id)
+                && comment["parent"]["id"] == a["parent_id"],
+            "NATIVE_STATE_MISMATCH",
+            "Linear did not confirm comment ownership",
+        )
+        .map_err(Fault::uncertain)?;
+        Ok(json!({"comment":comment,"replayed":false}))
+    }
+
+    /// Read a comment by UUID or exact native permalink and return one native reply page.
+    /// ponytail: unscoped links scan at most 20,000 comments; add a native hash lookup if that ceiling matters.
+    async fn get_comment(&self, a: &Value) -> Result<Value> {
+        let supplied = text(a, "id")?;
+        let id = if uuid::Uuid::parse_str(supplied).is_ok() {
+            supplied.to_owned()
+        } else {
+            let url = reqwest::Url::parse(supplied)
+                .map_err(|_| Fault::new("INVALID_LINK", "Expected a native Linear comment URL"))?;
+            let fragment = url
+                .fragment()
+                .and_then(|f| f.strip_prefix("comment-"))
+                .unwrap_or("");
+            require(
+                url.scheme() == "https"
+                    && url.host_str() == Some("linear.app")
+                    && fragment.len() == 8
+                    && fragment.bytes().all(|b| b.is_ascii_hexdigit()),
+                "INVALID_LINK",
+                "Expected an observed Linear comment permalink",
+            )?;
+            let segments: Vec<_> = url.path_segments().map(|s| s.collect()).unwrap_or_default();
+            let mut filter = json!({});
+            if let Some(pos) = segments.iter().position(|s| *s == "issue")
+                && let Some(identifier) = segments.get(pos + 1)
+            {
+                let issue = self
+                    .store
+                    .linear
+                    .object("QIssue", "issue", identifier)
+                    .await?;
+                filter["issue"] = json!({"id":{"eq":issue["id"]}});
+            }
+            let comments = self
+                .store
+                .pages(
+                    "QComments",
+                    "comments",
+                    json!({"filter":filter,"includeArchived":true}),
+                )
+                .await?;
+            comments
+                .into_iter()
+                .find(|c| c["url"] == supplied)
+                .and_then(|c| c["id"].as_str().map(str::to_owned))
+                .ok_or_else(|| {
+                    Fault::new("RECORD_MISSING", "Native comment permalink was not found")
+                })?
+        };
+        let comment = self.store.linear.object("QComment", "comment", &id).await?;
+        let root_id = comment["parent"]["id"].as_str().unwrap_or(&id);
+        let root = if root_id == id {
+            comment.clone()
+        } else {
+            self.store
+                .linear
+                .object("QComment", "comment", root_id)
+                .await?
+        };
+        let replies = self
+            .store
+            .linear
+            .call(
+                "QCommentChildren",
+                json!({
+                    "id":root_id,
+                    "first":a.get("first").and_then(Value::as_u64).unwrap_or(50),
+                    "after":a.get("after").unwrap_or(&Value::Null)
+                }),
+            )
+            .await?["comment"]["children"]
+            .clone();
+        require(
+            replies["nodes"].is_array(),
+            "INCOMPLETE_DATA",
+            "Comment thread page is missing",
+        )?;
+        Ok(json!({"comment":comment,"root":root,"replies":replies}))
+    }
+
+    /// Resolve or reopen a native top-level thread; checking current state makes retry safe.
+    async fn resolve_comment(&self, a: &Value) -> Result<Value> {
+        let id = text(a, "id")?;
+        let comment = self.store.linear.object("QComment", "comment", id).await?;
+        require(
+            comment["parent"].is_null(),
+            "INVALID_PARENT",
+            "Resolve the root comment",
+        )?;
+        if let Some(reply_id) = a["resolving_comment_id"].as_str() {
+            require(
+                a["resolved"] == true,
+                "INVALID_INPUT",
+                "A resolving reply requires resolved=true",
+            )?;
+            let reply = self
+                .store
+                .linear
+                .object("QComment", "comment", reply_id)
+                .await?;
+            require(
+                reply["parent"]["id"] == id
+                    && Self::comment_target(&reply)? == Self::comment_target(&comment)?,
+                "INVALID_PARENT",
+                "Resolving reply must belong to this thread",
+            )?;
+        }
+        let resolved = a["resolved"] == true;
+        if comment["resolvedAt"].is_string() == resolved {
+            require(
+                !resolved
+                    || a["resolving_comment_id"].is_null()
+                    || comment["resolvingCommentId"] == a["resolving_comment_id"],
+                "REQUEST_CONFLICT",
+                "Thread was resolved with another reply",
+            )?;
+            return Ok(json!({"comment":comment,"replayed":true}));
+        }
+        let (operation, variables, field) = if resolved {
+            (
+                "MResolveComment",
+                json!({"id":id,"resolvingCommentId":a["resolving_comment_id"]}),
+                "commentResolve",
+            )
+        } else {
+            ("MUnresolveComment", json!({"id":id}), "commentUnresolve")
+        };
+        let changed = self.store.linear.call(operation, variables).await?[field]["comment"].clone();
+        require(
+            changed["resolvedAt"].is_string() == resolved,
+            "NATIVE_STATE_MISMATCH",
+            "Linear did not confirm thread resolution",
+        )
+        .map_err(Fault::uncertain)?;
+        Ok(json!({"comment":changed,"replayed":false}))
+    }
+
     /// Persist a native comment and current-round review decision; never transition work implicitly.
     async fn review(&self, a: &Value) -> Result<Value> {
         let (w, graph) = self.loaded(text(a, "id")?).await?;
@@ -1154,10 +1386,67 @@ impl Gateway {
             }
         }
     }
-    /// List or search one entity type; `search` selects native search and `a` supplies the accepted filters/page cursor.
-    /// Default lists and searches forward native cursors unchanged. Priority ordering loads the complete filtered Issue group within the Store page budget, validates parent scope, sorts before slicing, and binds JSON cursors to every group filter; malformed, changed-scope or missing-anchor cursors fail with `INVALID_CURSOR`.
+
+    /// List native comments for one optional target and parent with untouched cursor semantics.
+    /// A missing target lists workspace comments; unsupported Issue filters are rejected.
+    async fn list_comments(&self, a: &Value) -> Result<Value> {
+        require(
+            a["target_type"].is_string() == a["target_id"].is_string(),
+            "INVALID_INPUT",
+            "Comment target_type and target_id must be supplied together",
+        )?;
+        require(
+            [
+                "kind",
+                "status",
+                "priority",
+                "team_id",
+                "project_id",
+                "order_by",
+            ]
+            .iter()
+            .all(|key| a.get(*key).is_none()),
+            "INVALID_INPUT",
+            "Issue filters do not apply to comments",
+        )?;
+        let mut filter = json!({});
+        if let Some(target_type) = a["target_type"].as_str() {
+            let key = match target_type {
+                "issue" => "issue",
+                "project" => "project",
+                _ => "projectUpdate",
+            };
+            filter[key] = json!({"id":{"eq":a["target_id"]}});
+        }
+        if let Some(parent) = a.get("parent_id") {
+            filter["parent"] = if parent.is_null() {
+                json!({"null":true})
+            } else {
+                json!({"id":{"eq":parent}})
+            };
+        }
+        let page = self.store.linear.call("QComments", json!({
+            "filter":filter,
+            "first":a.get("first").and_then(Value::as_u64).unwrap_or(50),
+            "after":a.get("after").unwrap_or(&Value::Null),
+            "includeArchived":a.get("include_archived").and_then(Value::as_bool).unwrap_or(false)
+        })).await?["comments"].clone();
+        require(
+            page["nodes"].is_array(),
+            "INCOMPLETE_DATA",
+            "Comment page is missing",
+        )?;
+        Ok(page)
+    }
+
+    /// List or search one entity type with native cursors. Comments use their target/parent filters;
+    /// Issue priority order loads its complete bounded group, sorts, then slices with a scoped cursor.
     async fn list(&self, a: &Value, search: bool) -> Result<Value> {
         let kind = text(a, "type")?;
+        if kind == "comment" {
+            require(!search, "INVALID_INPUT", "Comment search is unavailable")?;
+            return self.list_comments(a).await;
+        }
         let (query, field) = match (search, kind) {
             (true, "issue") => ("QSearchIssues", "searchIssues"),
             (true, "project") => ("QSearchProjects", "searchProjects"),

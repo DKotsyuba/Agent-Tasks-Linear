@@ -21,7 +21,9 @@ pub struct Database {
     pub attachments: BTreeMap<String, Value>,
     /// Native documents by UUID.
     pub documents: BTreeMap<String, Value>,
-    /// Review comments by caller UUID.
+    /// Native project updates by UUID.
+    pub project_updates: BTreeMap<String, Value>,
+    /// Native comments by caller UUID.
     pub comments: BTreeMap<String, Value>,
     /// Native workflow labels by UUID.
     pub labels: BTreeMap<String, Value>,
@@ -109,6 +111,44 @@ async fn graphql(
         "QAttachmentById" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
         "QDocument" => db.documents.get(id).cloned().map(|v| ("document", v)),
         "QComment" => db.comments.get(id).cloned().map(|v| ("comment", v)),
+        "QProjectUpdate" => db
+            .project_updates
+            .get(id)
+            .cloned()
+            .map(|v| ("projectUpdate", v)),
+        "QCommentChildren" => db.comments.get(id).map(|_| {
+            (
+                "comment",
+                json!({"children":issue_page(
+                    db.comments.values().filter(|c| c["parent"]["id"] == id).cloned().collect(),
+                    v
+                )}),
+            )
+        }),
+        "QComments" => Some((
+            "comments",
+            issue_page(
+                db.comments
+                    .values()
+                    .filter(|c| {
+                        ["issue", "project", "projectUpdate"].iter().all(|key| {
+                            v["filter"][key].is_null()
+                                || c[*key]["id"] == v["filter"][key]["id"]["eq"]
+                        })
+                    })
+                    .filter(|c| {
+                        if v["filter"]["parent"]["null"] == true {
+                            c["parent"].is_null()
+                        } else {
+                            v["filter"]["parent"].is_null()
+                                || c["parent"]["id"] == v["filter"]["parent"]["id"]["eq"]
+                        }
+                    })
+                    .cloned()
+                    .collect(),
+                v,
+            ),
+        )),
         "QIssues" => Some((
             "issues",
             issue_page(
@@ -300,9 +340,52 @@ async fn graphql(
         "MCreateComment" => {
             let id = input["id"].as_str().unwrap();
             assert!(!db.comments.contains_key(id));
-            let item = json!({"id":id,"body":input["body"],"issue":{"id":input["issueId"]}});
+            let target = if let Some(target) = input["issueId"].as_str() {
+                db.issues[target]["url"].as_str().unwrap()
+            } else if let Some(target) = input["projectId"].as_str() {
+                db.projects[target]["url"].as_str().unwrap()
+            } else {
+                db.project_updates[input["projectUpdateId"].as_str().unwrap()]["url"]
+                    .as_str()
+                    .unwrap()
+            }
+            .to_owned();
+            db.tick += 1;
+            let item = json!({
+                "id":id,"url":format!("{target}#comment-{}",&id[..8]),"body":input["body"],
+                "issue":input.get("issueId").map(|id|json!({"id":id})),
+                "project":input.get("projectId").map(|id|json!({"id":id})),
+                "projectUpdate":input.get("projectUpdateId").map(|id|json!({"id":id})),
+                "parent":input.get("parentId").map(|id|json!({"id":id})),
+                "createdAt":format!("2026-09-25T00:00:{:02}Z",db.tick),
+                "updatedAt":format!("2026-09-25T00:00:{:02}Z",db.tick),
+                "resolvedAt":null,"resolvingCommentId":null,"user":{"id":"fixture","name":"Fixture"}
+            });
             db.comments.insert(id.into(), item.clone());
             Some(("commentCreate", json!({"success":true,"comment":item})))
+        }
+        "MResolveComment" | "MUnresolveComment" => {
+            db.tick += 1;
+            let tick = db.tick;
+            let item = db.comments.get_mut(id).unwrap();
+            item["resolvedAt"] = if op == "MResolveComment" {
+                json!(format!("2026-09-25T00:00:{tick:02}Z"))
+            } else {
+                Value::Null
+            };
+            item["resolvingCommentId"] = if op == "MResolveComment" {
+                v["resolvingCommentId"].clone()
+            } else {
+                Value::Null
+            };
+            Some((
+                if op == "MResolveComment" {
+                    "commentResolve"
+                } else {
+                    "commentUnresolve"
+                },
+                json!({"success":true,"comment":item}),
+            ))
         }
         _ => panic!("Unimplemented fixture operation: {op}"),
     };
@@ -356,7 +439,10 @@ impl Fixture {
     }
     /// Call a public tool, supplying stable attribution and a new request ID if absent.
     pub async fn call(&self, name: &str, mut args: Value) -> Outcome {
-        if !matches!(name, "get_context" | "list_items" | "search") {
+        if !matches!(
+            name,
+            "get_context" | "get_comment" | "list_items" | "search"
+        ) {
             if args.get("request_id").is_none() {
                 args["request_id"] = json!(id())
             }

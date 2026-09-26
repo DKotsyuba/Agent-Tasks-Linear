@@ -24,9 +24,15 @@ query QWorkAttachments($id:String!,$first:Int!,$after:String) {issue(id:$id) {at
 
 query QDocument($id:String!) {document(id:$id) {id title content url updatedAt archivedAt project {id} issue {id}}}
 
+query QProjectUpdate($id:String!) {projectUpdate(id:$id) {id url body health createdAt updatedAt archivedAt project {id} user {id name}}}
+
 query QDocuments($filter:DocumentFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {documents(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id title url project {id} issue {id}} pageInfo { hasNextPage endCursor }}}
 
-query QComment($id:String!) {comment(id:$id) {id body issue {id} createdAt}}
+query QComment($id:String!) {comment(id:$id) {id url body createdAt updatedAt resolvedAt resolvingCommentId parent {id} issue {id} project {id} projectUpdate {id} user {id name}}}
+
+query QComments($filter:CommentFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {comments(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id url body createdAt updatedAt resolvedAt resolvingCommentId parent {id} issue {id} project {id} projectUpdate {id} user {id name}} pageInfo {hasNextPage endCursor}}}
+
+query QCommentChildren($id:String!,$first:Int!,$after:String) {comment(id:$id) {children(first:$first,after:$after) {nodes {id url body createdAt updatedAt resolvedAt resolvingCommentId parent {id} issue {id} project {id} projectUpdate {id} user {id name}} pageInfo {hasNextPage endCursor}}}}
 
 query QIssueRelations($id:String!,$first:Int!,$after:String) {issue(id:$id) {relations(first:$first,after:$after) {nodes {id type archivedAt issue {id} relatedIssue {id}} pageInfo {hasNextPage endCursor}}}}
 
@@ -56,6 +62,10 @@ mutation MCreateDocument($input:DocumentCreateInput!) {documentCreate(input:$inp
 
 mutation MUpdateDocument($id:String!,$input:DocumentUpdateInput!) {documentUpdate(id:$id,input:$input) {success document {id title content url}}}
 
-mutation MCreateComment($input:CommentCreateInput!) {commentCreate(input:$input) {success comment {id body}}}
+mutation MCreateComment($input:CommentCreateInput!) {commentCreate(input:$input) {success comment {id url body createdAt updatedAt resolvedAt resolvingCommentId parent {id} issue {id} project {id} projectUpdate {id} user {id name}}}}
+
+mutation MResolveComment($id:String!,$resolvingCommentId:String) {commentResolve(id:$id,resolvingCommentId:$resolvingCommentId) {success comment {id url body createdAt updatedAt resolvedAt resolvingCommentId parent {id} issue {id} project {id} projectUpdate {id} user {id name}}}}
+
+mutation MUnresolveComment($id:String!) {commentUnresolve(id:$id) {success comment {id url body createdAt updatedAt resolvedAt resolvingCommentId parent {id} issue {id} project {id} projectUpdate {id} user {id name}}}}
 
 mutation MCreateIssueLabel($input:IssueLabelCreateInput!) {issueLabelCreate(input:$input) {success issueLabel {id name}}}

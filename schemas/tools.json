@@ -2840,7 +2840,7 @@
   },
   {
     "name": "list_items",
-    "description": "List native items; native order keeps native pagination. For order_by=priority, require type=issue, project_id and kind; absent/null parent_id is the Project root. A supplied parent must be in that Project and have a compatible kind. Fetch the complete live sibling group within the page budget, then sort by priority 1,2,3,4,0, native prioritySortOrder, then UUID; page only after sorting. The scope-bound cursor includes Project, parent, kind, team, status, archived setting and priority filter. Priority is advisory and never starts or gates work. The optional 0–4 priority filter applies only to issues.",
+    "description": "List native Projects, Issues, Documents or Comments with opaque pagination. Comment lists accept target_type+target_id and optional parent_id; Issue priority ordering requires project_id and kind, fetching the bounded sibling group before sorting. Priority is advisory and does not gate work.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2848,7 +2848,8 @@
           "enum": [
             "project",
             "issue",
-            "document"
+            "document",
+            "comment"
           ]
         },
         "project_id": {
@@ -2867,6 +2868,18 @@
               "type": "null"
             }
           ]
+        },
+        "target_type": {
+          "enum": [
+            "issue",
+            "project",
+            "project_update"
+          ]
+        },
+        "target_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
         },
         "team_id": {
           "type": "string",
@@ -3202,6 +3215,145 @@
         "actor",
         "work_id",
         "commits"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "add_comment",
+    "description": "Create a native comment on an Issue, Project or ProjectUpdate, optionally replying to a comment on that same target. request_id is the native comment ID; reuse it and identical arguments after an unknown outcome.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "target_type": {
+          "enum": [
+            "issue",
+            "project",
+            "project_update"
+          ]
+        },
+        "target_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "parent_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "request_id",
+        "actor",
+        "target_type",
+        "target_id",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "get_comment",
+    "description": "Read a native comment by UUID or observed Linear permalink, with one native page of replies. Follow pageInfo.endCursor for later replies.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "first": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "after": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "resolve_comment",
+    "description": "Resolve or reopen a top-level native comment thread. An optional child comment may mark the resolving reply. Reuse request_id after an unknown outcome.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "resolved": {
+          "type": "boolean"
+        },
+        "resolving_comment_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        }
+      },
+      "required": [
+        "request_id",
+        "actor",
+        "id",
+        "resolved"
       ],
       "additionalProperties": false
     },

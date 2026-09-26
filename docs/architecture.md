@@ -86,6 +86,8 @@ Duplicate is a [system-managed Linear status](https://linear.app/docs/configurin
 
 ## Review and rework
 
+`add_comment` writes a native Linear Comment on an Issue, Project or ProjectUpdate. Its `request_id` is the native comment ID, so an identical retry reads the created comment after an uncertain response. A reply's `parent_id` must belong to the same target. `get_comment` accepts a full UUID or a native Linear permalink and returns the comment, root and one native page of replies; it compares the complete returned URL because Linear permalinks contain only a short comment hash. `list_items(type: comment)` supports native cursors and target/parent filters. `resolve_comment` resolves or reopens a root thread through Linear's native operations. Comments do not change work status or act as review approval.
+
 `record_review` requires In Review and a Module, Atomic or Epic. It records a native comment with reviewer, summary, findings, artifact links and `accepted`/`changes_requested`. It never changes status. A Task is reviewed only within its Module.
 
 The orchestrator returns work to In Progress after changes are requested. A new work round clears its current results/checks/artifacts and current review. Earlier native reports and history remain. New outputs and a new review are required. Editing reviewed content requires reopening; a Module's `merge_report` can be added after positive review without invalidating it.
