@@ -20,7 +20,9 @@ Rust MCP for an explicit agent workflow using native Linear Projects, Issues and
 | `add_comment`, `get_comment`, `resolve_comment` | Role-tagged activity, native direct links, replies and thread resolution |
 | `save_project_update` | Explicit native ProjectUpdate with health, reason and body |
 
-Twenty-one tools. Issue titles use one leading `[EPIC]`, `[MODULE]`, `[TASK]` or `[ATOMIC]` marker; project titles are unchanged. Issue priority uses Linear's 0–4 scale. `edit_*` never changes status. Discovery contains the complete input schemas; [the workflow reference](docs/architecture.md) explains the fields and conditions.
+Twenty-two tools. Issue titles use one leading `[EPIC]`, `[MODULE]`, `[TASK]` or `[ATOMIC]` marker; project titles are unchanged. Issue priority uses Linear's 0–4 scale. `edit_*` never changes status. Discovery contains the complete input schemas; [the workflow reference](docs/architecture.md) explains the fields and conditions.
+
+MCP tool calls return one concise plain-text block rendered from embedded MiniJinja templates. The agent-facing response has no duplicate `structuredContent`; `isError` reflects the operation outcome. Internal Gateway outcomes and input schemas remain structured. See [the output contract](docs/architecture.md#mcp-result-presentation).
 
 ## Cycle
 

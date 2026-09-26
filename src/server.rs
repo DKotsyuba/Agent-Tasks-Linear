@@ -4,6 +4,7 @@ use crate::{
     config::Config,
     gateway::Gateway,
     model::{Fault, Result},
+    render::render_outcome,
 };
 use axum::{
     Router,
@@ -60,22 +61,17 @@ impl ServerHandler for Handler {
             ..Default::default()
         })
     }
-    /// Execute a shape-validated workflow intent and retain structured failure information.
+    /// Execute a shape-validated workflow intent and return one plain-text MCP result.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResponse, McpError> {
-        let result = self
-            .gateway
-            .call(
-                &request.name,
-                Value::Object(request.arguments.unwrap_or_default()),
-            )
-            .await;
+        let arguments = Value::Object(request.arguments.unwrap_or_default());
+        let result = self.gateway.call(&request.name, arguments.clone()).await;
         let failed = !matches!(result.status.as_str(), "ok" | "committed" | "noop");
-        let value = serde_json::to_value(result).unwrap();
-        let mut response = CallToolResult::structured(value);
+        let text = render_outcome(&request.name, &arguments, &result);
+        let mut response = CallToolResult::success(vec![ContentBlock::text(text)]);
         response.is_error = Some(failed);
         Ok(response.into())
     }

@@ -1,5 +1,11 @@
 # Native Linear workflow
 
+## MCP result presentation
+
+All 22 public tool calls share one presentation boundary after the structured Gateway outcome. HTTP and the stdio bridge expose the same single plain-text result block, with no `structuredContent` mirror. `isError` marks blocked, unavailable and uncertain outcomes; it does not mark a confirmed mutation as failed if presentation breaks. Templates are embedded at build time, initialize once, use strict undefined values and disable HTML escaping. No user template files or raw-output mode are loaded.
+
+Mutation responses confirm the native ID or URL, status and replay state without echoing submitted descriptions and reports. Reads retain actionable UUIDs and URLs, exact pagination and overview cursors, transition conditions, unresolved questions and current evidence. Issue context prints the native description once so unknown human prose survives, then adds distinct checkout, parent, child, document and review details. A pending write includes the exact original tool and arguments needed for safe replay, without the internal before/next snapshots. Explicit document and comment reads preserve requested bodies in full. Overview deltas describe changed fields and direct the reader to full context when a change extends beyond a preview; no raw hashes are printed. A rendering defect produces a short status-preserving recovery line and advises inspection before another mutation.
+
 ## Data model
 
 A native Project is a permanent product container. Epic, Module, Task and Atomic are native Issues distinguished by `EPIC`, `MODULE`, `TASK`, `ATOMIC` labels. Existing exact team/workspace labels are reused; missing labels are created. No custom workflow statuses, control Issues, companion Issues or Initiatives are created.
