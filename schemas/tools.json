@@ -2808,7 +2808,7 @@
   },
   {
     "name": "get_context",
-    "description": "Read native Project, Issue, Document or ProjectUpdate. ProjectUpdate includes native health and normalized activity. Issues include children, priority peers, parent checkout, current-round git_reports, discrepancies and guarded transitions. Modules also expose module_report and an unpublished PR draft. Reads never repair Linear.",
+    "description": "Read a native Project, Issue, Document or ProjectUpdate by type and ID; a native Linear Issue URL alone also selects the Issue. Optional view=lead/reviewer adds assignment, current reports, review, questions and document links. Existing ID/type calls keep their fields. Reads never repair Linear.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2821,15 +2821,34 @@
           ]
         },
         "id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://",
+              "maxLength": 4000
+            }
+          ]
+        },
+        "url": {
           "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "format": "uri",
+          "pattern": "^https?://",
+          "maxLength": 4000
+        },
+        "view": {
+          "enum": [
+            "lead",
+            "reviewer"
+          ]
         }
       },
-      "required": [
-        "type",
-        "id"
-      ],
+      "required": [],
       "additionalProperties": false
     },
     "annotations": {

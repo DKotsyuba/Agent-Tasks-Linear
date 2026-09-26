@@ -39,7 +39,7 @@ fn same_native(a: &Value, b: &Value) -> bool {
 }
 
 /// Order native Issue objects by priority 1–4 then 0, ascending `prioritySortOrder`, and ascending UUID; missing or unknown priorities rank with 0 and missing tie order follows known values.
-fn priority_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+pub(crate) fn priority_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     /// Map native priority zero/unknown to the final advisory bucket.
     fn rank(v: &Value) -> u64 {
         match native_priority(&v["priority"]).unwrap_or(0) {
@@ -1531,12 +1531,49 @@ impl Gateway {
             json!({"review":next.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":false}),
         )
     }
-    /// Read a Project, Issue or Document by validated type and UUID; issue context reuses its loaded Project graph for children, transition conditions and same Project/parent/type-label priority peers.
-    /// Parent checkout includes its optional local path; Modules include a derived ModuleReport.
-    /// Readiness probes configured local Git. Missing records, report limits and API errors propagate.
+    /// Read native work by UUID or a native Issue link. Legacy type/ID calls keep their original
+    /// response; optional lead/reviewer views add a bounded assignment and evidence projection.
+    /// Derived counts are withheld when native membership differs from the recorded graph.
     async fn context(&self, a: &Value) -> Result<Value> {
-        let id = text(a, "id")?;
-        match text(a, "type")? {
+        require(
+            !(a["id"].is_string() && a["url"].is_string()),
+            "INVALID_INPUT",
+            "Supply id or url, not both",
+        )?;
+        let reference = a["url"]
+            .as_str()
+            .or_else(|| a["id"].as_str())
+            .ok_or_else(|| Fault::new("INVALID_INPUT", "Supply id or url"))?;
+        let linked = reference.starts_with("https://") || a["url"].is_string();
+        let kind = if linked {
+            require(
+                a["type"].is_null() || a["type"] == "issue",
+                "INVALID_LINK",
+                "Issue URLs require type issue",
+            )?;
+            "issue"
+        } else {
+            text(a, "type")?
+        };
+        let resolved;
+        let id = if linked {
+            let identifier = crate::context::issue_identifier(reference)?;
+            let issue = self
+                .store
+                .linear
+                .object("QIssue", "issue", &identifier)
+                .await?;
+            require(
+                issue["identifier"] == identifier,
+                "INVALID_LINK",
+                "Issue URL resolved to another item",
+            )?;
+            resolved = issue["id"].as_str().unwrap_or("").to_owned();
+            resolved.as_str()
+        } else {
+            reference
+        };
+        match kind {
             "project" => {
                 let p = self.project(id).await?;
                 let docs = self
@@ -1563,8 +1600,37 @@ impl Gateway {
                 let (w, g) = self.loaded(id).await?;
                 let checkout=rules::parent(&w).and_then(|p|rules::find(&g,p)).filter(|p|p.meta.as_ref().is_some_and(|m|m.kind==Kind::Module)).map(|p|json!({"repository_path":p.fields["repository_path"],"repository_url":p.fields["repository_url"],"branch":p.fields["branch"],"worktree":p.fields["worktree"],"lead":p.fields["lead"]}));
                 let m = w.managed()?;
-                let module_report = if m.kind == Kind::Module {
+                let discrepancies = rules::discrepancies(&w, &g);
+                let module_report = if m.kind == Kind::Module && discrepancies.is_empty() {
                     Some(crate::reports::module_report(&w, &g)?)
+                } else {
+                    None
+                };
+                let agent_view = if let Some(view) = a["view"].as_str().or(linked.then_some("lead"))
+                {
+                    let children = rules::children(&g, w.id());
+                    require(
+                        children.len() <= 200,
+                        "INCOMPLETE_DATA",
+                        "Agent context has more than 200 direct children",
+                    )?;
+                    let mut activity = BTreeMap::new();
+                    for target in std::iter::once(&w).chain(children) {
+                        activity.insert(
+                            target.id().to_owned(),
+                            crate::activity::read_activity(&self.store, "issue", target.id())
+                                .await?,
+                        );
+                    }
+                    let documents = self.store.pages("QDocuments", "documents", json!({"filter":{"project":{"id":{"eq":m.project_id}}},"includeArchived":false})).await?;
+                    Some(crate::context::agent_context(
+                        &w,
+                        &g,
+                        view,
+                        &activity,
+                        &documents,
+                        module_report.as_ref(),
+                    )?)
                 } else {
                     None
                 };
@@ -1585,7 +1651,7 @@ impl Gateway {
                 peers.sort_by(|a, b| priority_cmp(&a.native, &b.native));
                 let priority_group = json!({"project_id":m.project_id,"parent_id":m.parent_id,"kind":m.kind,"peers":peers.iter().map(|p|json!({"id":p.id(),"identifier":p.native["identifier"],"title":p.native["title"],"status":p.native["state"]["name"],"priority":p.native["priority"],"priorityLabel":p.native["priorityLabel"]})).collect::<Vec<_>>()});
                 Ok(
-                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"module_report":module_report,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":rules::discrepancies(&w,&g),"transitions":rules::actions(&w,&g)}),
+                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"module_report":module_report,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":discrepancies,"transitions":rules::actions(&w,&g),"agent_context":agent_view}),
                 )
             }
         }
