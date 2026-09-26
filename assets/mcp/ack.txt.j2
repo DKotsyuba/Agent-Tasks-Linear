@@ -1,0 +1,18 @@
+{% from "common" import line, entity %}
+{{ tool }}: {{ "preview (check_only; no mutation)" if check_only else "confirmed" }}{{ "\n" }}
+{% if check_only %}
+{{ line("Target ID", request.id|default(none)) }}{{ line("Target status", data.status|default(none)) }}{{ line("Allowed", data.allowed|default(none)) }}
+{% for condition in data.conditions|default([]) %}{{ line("Condition", condition) }}{% endfor %}
+{% else %}
+{{ entity(item) }}{{ line("Health", item.health) }}
+{% if tool == "save_project_update" %}{{ line("Updated at", item.updated_at) }}{% endif %}
+{% if tool == "resolve_comment" %}{{ line("Resolved", item.resolved) }}{% endif %}
+{% if tool == "record_review" and not item.url %}{{ line("URL", review_url) }}{% endif %}
+{% if tool == "record_review" %}{{ line("Verdict", request.verdict|default(none)) }}{% endif %}
+{% for commit in commits %}{{ line("Commit", commit.sha) }}{{ line("Subject", commit.subject) }}{% endfor %}
+{% for comment in journal %}{{ line("Report URL", comment.url|default(none)) }}{% endfor %}
+{% for document in documents %}{{ line("Document", document.title|default(none)) }}{{ line("Document ID", document.id|default(none)) }}{{ line("Document URL", document.url|default(none)) }}{% endfor %}
+{{ line("Replayed", data.replayed|default(none)) }}{{ line("Unchanged", data.unchanged|default(none)) }}
+{% if not item.id %}{{ line("Target ID", request.id|default(request.work_id|default(none))) }}{% endif %}
+{% endif %}
+{% if request.request_id is defined and request.request_id != item.id %}{{ line("Request ID", request.request_id) }}{% endif %}

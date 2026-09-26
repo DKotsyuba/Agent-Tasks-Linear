@@ -1,0 +1,27 @@
+{% from "common" import line, body, entity, heading %}
+{% if kind == "issue" %}
+Issue{{ "\n" }}{{ entity(item) }}{{ body("Description", description) }}
+{% if checkout %}{{ heading("Checkout") }}{{ line("Repository", checkout.repository_path|default(none)) }}{{ line("Repository URL", checkout.repository_url|default(none)) }}{{ line("Branch", checkout.branch|default(none)) }}{{ line("Worktree", checkout.worktree|default(none)) }}{{ line("Lead", checkout.lead|default(none)) }}{% endif %}
+{% if epic %}{{ heading("Parent Epic") }}{{ line("URL", epic.url|default(none)) }}{{ body("Business requirements", epic.business_requirements|default(none)) }}{{ body("Acceptance criteria", epic.acceptance_criteria|default(none)) }}{% endif %}
+{{ body("Required contract", required_contract) }}{{ body("Provided contract", provided_contract) }}
+{% if report %}{{ "\n" }}## Module progress{{ "\n" }}{{ report.tasks_done }} / {{ report.tasks_total }} Tasks Done{{ "\n" }}{{ body("PR draft", report.pr_draft|default(none)) }}{{ body("Notes", report.notes|default(none)) }}
+{% for source in report.source_commits|default([]) %}{{ line("Source commit", source.sha) }}{{ line("Subject", source.subject) }}{% for work_id in source.work_ids|default([]) %}{{ line("Source work ID", work_id) }}{% endfor %}{% endfor %}
+{% for work in report.unfinished|default([]) %}{{ line("Unfinished", work.identifier) }}{{ line("URL", work.url) }}{{ line("Status", work.status) }}{% endfor %}
+{% for work in report.excluded|default([]) %}{{ line("Excluded", work.identifier) }}{{ line("URL", work.url) }}{{ line("Status", work.status) }}{% endfor %}
+{% endif %}
+{% for child in children %}{{ "\n" }}## Child{{ "\n" }}{{ entity(child.item) }}{% if not report %}{{ body("Result", child.result) }}{{ body("Checks", child.checks) }}{% endif %}{% endfor %}
+{% if not report %}{% for commit in commits %}{{ line("Commit", commit.sha) }}{{ line("Subject", commit.subject) }}{% endfor %}{% endif %}
+{% if review %}{{ heading("Latest review") }}{{ line("URL", review.url|default(none)) }}{{ line("Verdict", review.verdict|default(none)) }}{{ body("Summary", review.summary|default(none)) }}{{ body("Findings", review.findings|default(none)) }}{% endif %}
+{% for question in questions %}{{ body("Open question", question.body) }}{{ line("URL", question.url) }}{{ line("Recipient", question.recipient|default(none)) }}{% endfor %}
+{% for document in documents %}{{ line("Document", document.title) }}{{ line("Document ID", document.id) }}{{ line("Document URL", document.url) }}{% endfor %}
+{% for peer in peers %}{{ line("Priority peer", peer.identifier) }}{{ line("Peer ID", peer.id) }}{{ line("Peer status", peer.status) }}{% endfor %}
+{% if pending_call %}{{ "\n" }}## Pending mutation recovery{{ "\n" }}Retry the same tool with these exact argument values after inspecting native state:{{ "\n" }}```json{{ "\n" }}{{ pending_call }}{{ "\n" }}```{{ "\n" }}{% endif %}
+{% for problem in discrepancies %}{{ line("Discrepancy", problem) }}{% endfor %}
+{% for transition in transitions %}Transition {{ transition.status }}: {{ "allowed" if transition.allowed else "blocked" }}{% if transition.conditions %} — {{ transition.conditions|join("; ") }}{% endif %}{{ "\n" }}{% endfor %}
+{% elif kind == "project" %}
+Project{{ "\n" }}{{ entity(item) }}{% for team in teams %}{{ line("Team ID", team.id) }}{% endfor %}{{ body("Project content", content) }}{% for document in documents %}{{ line("Document", document.title) }}{{ line("Document ID", document.id) }}{{ line("Document URL", document.url) }}{% endfor %}
+{% elif kind == "project_update" %}
+Project update{{ "\n" }}{{ entity(item) }}{{ line("Health", item.health) }}{{ line("Updated at", item.updated_at) }}{{ line("Author", actor) }}{{ line("Reason", reason) }}{{ body("Body", body_text) }}
+{% else %}
+Document{{ "\n" }}{{ entity(item) }}{{ body("Content", content) }}
+{% endif %}

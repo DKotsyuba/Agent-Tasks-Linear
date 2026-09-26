@@ -1,0 +1,4 @@
+{% from "common" import line %}
+{{ status }}: {{ code }} — {{ message }}{{ "\n" }}
+{% if invalid_commit %}Expected commit message format:{{ "\n" }}feat(scope): summary{{ "\n" }}{{ "\n" }}Result:{{ "\n" }}What changed.{{ "\n" }}{{ "\n" }}Checks:{{ "\n" }}What passed.{{ "\n" }}{% endif %}
+{{ line("request_id", request_id) }}{{ line("Next", retry) }}
