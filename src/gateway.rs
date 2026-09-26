@@ -1166,8 +1166,8 @@ impl Gateway {
         self.update(&w, next, input, request).await
     }
 
-    /// Create a comment with caller-allocated native ID, checking the target and reply parent
-    /// before writing; exact same-ID replay returns the existing native permalink.
+    /// Create a comment with caller-allocated native ID, checking target and reply parent first,
+    /// then confirming returned target, parent and normalized body. Identical replay returns its permalink.
     async fn add_comment(&self, a: &Value) -> Result<Value> {
         let id = text(a, "request_id")?;
         let target_id = text(a, "target_id")?;
@@ -1247,9 +1247,10 @@ impl Gateway {
         require(
             crate::activity::target(&comment).map_err(Fault::uncertain)?
                 == (target_type, target_id)
-                && comment["parent"]["id"] == a["parent_id"],
+                && comment["parent"]["id"] == a["parent_id"]
+                && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(&body),
             "NATIVE_STATE_MISMATCH",
-            "Linear did not confirm comment ownership",
+            "Linear did not confirm comment content and ownership",
         )
         .map_err(Fault::uncertain)?;
         Ok(json!({"comment":comment,"replayed":false}))

@@ -33,9 +33,11 @@ pub struct Database {
     pub tick: u64,
     /// Mutation operation whose response should be lost after applying its write.
     pub lose: Option<String>,
+    /// Override only the next created Comment payload body, leaving native storage intact.
+    pub comment_response_body: Option<String>,
     /// Return one successful issueUpdate payload without applying its fields.
     pub stale_update: bool,
-    /// Serialize unordered list markers like Linear after issue description writes.
+    /// Serialize unordered list markers like Linear after issue description/comment writes.
     pub normalize_lists: bool,
 }
 /// Native standard workflow names in the fixture.
@@ -396,8 +398,23 @@ async fn graphql(
             }
             .to_owned();
             db.tick += 1;
+            let body = if db.normalize_lists {
+                input["body"]
+                    .as_str()
+                    .unwrap()
+                    .lines()
+                    .map(|line| {
+                        line.strip_prefix("- ")
+                            .map(|body| format!("* {body}"))
+                            .unwrap_or_else(|| line.to_owned())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                input["body"].as_str().unwrap().to_owned()
+            };
             let item = json!({
-                "id":id,"url":format!("{target}#comment-{}",&id[..8]),"body":input["body"],
+                "id":id,"url":format!("{target}#comment-{}",&id[..8]),"body":body,
                 "issue":input.get("issueId").map(|id|json!({"id":id})),
                 "project":input.get("projectId").map(|id|json!({"id":id})),
                 "projectUpdate":input.get("projectUpdateId").map(|id|json!({"id":id})),
@@ -407,7 +424,11 @@ async fn graphql(
                 "resolvedAt":null,"resolvingCommentId":null,"user":{"id":"fixture","name":"Fixture"}
             });
             db.comments.insert(id.into(), item.clone());
-            Some(("commentCreate", json!({"success":true,"comment":item})))
+            let mut returned = item;
+            if let Some(body) = db.comment_response_body.take() {
+                returned["body"] = json!(body);
+            }
+            Some(("commentCreate", json!({"success":true,"comment":returned})))
         }
         "MResolveComment" | "MUnresolveComment" => {
             db.tick += 1;

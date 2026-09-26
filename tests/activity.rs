@@ -101,6 +101,48 @@ async fn comments_replay_resolve_and_page_by_real_native_url_shape() {
     );
 }
 
+/// A changed or empty native create payload is uncertain even when target and parent match;
+/// identical replay recovers the stored comment, while equivalent list-marker normalization passes.
+#[tokio::test]
+async fn comment_create_confirms_rendered_body() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let issue = f.work("module", &project, None).await;
+    for returned_body in ["Changed by provider", ""] {
+        let request = json!({"request_id":id(),"target_type":"issue","target_id":issue,
+            "body":"Expected content\n\n- one item"});
+        f.db.lock().await.comment_response_body = Some(returned_body.into());
+        let result = f.call("add_comment", request.clone()).await;
+        assert_eq!(result.status, "outcome_unknown");
+        assert_eq!(result.data["code"], "NATIVE_STATE_MISMATCH");
+        f.restart();
+        let replayed = f.ok("add_comment", request).await;
+        assert_eq!(replayed["replayed"], true);
+        assert!(
+            replayed["comment"]["body"]
+                .as_str()
+                .unwrap()
+                .contains("Expected content")
+        );
+    }
+    f.db.lock().await.normalize_lists = true;
+    let normalized = f
+        .ok(
+            "add_comment",
+            json!({
+                "target_type":"issue","target_id":issue,"body":"Expected content\n\n- one item"
+            }),
+        )
+        .await;
+    assert_eq!(normalized["replayed"], false);
+    assert!(
+        normalized["comment"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("* one item")
+    );
+}
+
 /// Project and ProjectUpdate comments retain separate native targets and direct links.
 #[tokio::test]
 async fn comments_cover_project_and_update_targets() {
