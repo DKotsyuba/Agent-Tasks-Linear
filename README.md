@@ -15,9 +15,9 @@ Rust MCP for an explicit agent workflow using native Linear Projects, Issues and
 | `list_items`, `search` | Native lists/search with opaque pagination; optional priority ordering for one issue sibling group |
 | `save_document` | Native documents attached to a Project or Issue |
 | `move_status` | Explicit guarded transition or `check_only` validation |
-| `record_review` | Reviewer report, findings, artifacts and verdict |
-| `record_commits` | Local Git snapshots and current-round results for code Tasks/Atomics |
-| `add_comment`, `get_comment`, `resolve_comment` | Native issue/project/update comments, direct links, replies and thread resolution |
+| `record_review` | Reviewer report, findings, verdict and direct native permalink |
+| `record_commits` | Local Git snapshots, current-round results and one progress comment per report |
+| `add_comment`, `get_comment`, `resolve_comment` | Role-tagged activity, native direct links, replies and thread resolution |
 
 Twenty tools. Issue titles use one leading `[EPIC]`, `[MODULE]`, `[TASK]` or `[ATOMIC]` marker; project titles are unchanged. Issue priority uses Linear's 0–4 scale. `edit_*` never changes status. Discovery contains the complete input schemas; [the workflow reference](docs/architecture.md) explains the fields and conditions.
 

@@ -845,21 +845,55 @@ impl Gateway {
         )?;
         self.update(&w, next, input, request).await
     }
+    /// Publish each persisted current-round Git report once through the normal comment writer.
+    /// Deterministic native IDs make lost comment replies recoverable without rereading Git.
+    async fn ensure_commit_comments(
+        &self,
+        work_id: &str,
+        reports: &[crate::model::LocalGitReport],
+    ) -> Result<Vec<Value>> {
+        let mut comments = Vec::with_capacity(reports.len());
+        for report in reports {
+            let commit = &report.commit;
+            let id = child_id(
+                work_id,
+                &format!(
+                    "git-report:{}:{}:{}",
+                    report.round, commit.repository_identity, commit.sha
+                ),
+            );
+            let mut body = format!(
+                "{}\nCommit: {}\n\n### Result\n{}\n\n### Checks reported by author\n{}",
+                commit.subject, commit.sha, commit.result, commit.checks
+            );
+            if let Some(notes) = &commit.notes {
+                body.push_str(&format!("\n\n### Notes\n{notes}"));
+            }
+            let actor = commit.author.replace(['\n', '\r'], " ");
+            let value = self
+                .add_comment(&json!({
+                    "request_id":id,"actor":actor,"target_type":"issue","target_id":work_id,
+                    "kind":"progress","role":"git author","body":body
+                }))
+                .await?;
+            comments.push(value["comment"].clone());
+        }
+        Ok(comments)
+    }
+
     /// Import concrete commits for an active code Task/Atomic using its assigned checkout.
     /// Resumes the exact pending request before reading Git. Validates every source before writing,
     /// deduplicates current-round repository/SHA pairs, preserves history and fills result/checks.
-    /// Returns current reports without changing status; unknown native outcomes remain uncertain.
+    /// Journals persisted reports through native comments, then returns reports and permalinks
+    /// without changing status; uncertain native outcomes retry from the same snapshot.
     async fn record_commits(&self, a: &Value) -> Result<Value> {
         let (w, graph) = self.loaded(text(a, "work_id")?).await?;
         let request = Self::request("record_commits", a);
         if let Some(mut outcome) = self.resume(&w, &request).await? {
             let restored = self.store.work(w.id()).await.map_err(Fault::uncertain)?;
-            outcome["git_reports"] = json!(
-                restored
-                    .managed()?
-                    .current_git_reports()
-                    .collect::<Vec<_>>()
-            );
+            let reports: Vec<_> = restored.managed()?.current_git_reports().cloned().collect();
+            outcome["journal"] = json!(self.ensure_commit_comments(w.id(), &reports).await?);
+            outcome["git_reports"] = json!(reports);
             return Ok(outcome);
         }
         let m = w.managed()?;
@@ -948,10 +982,11 @@ impl Gateway {
             next.revision += 1;
             next.review = None;
         }
-        let reports = json!(next.current_git_reports().collect::<Vec<_>>());
+        let reports: Vec<_> = next.current_git_reports().cloned().collect();
         let input = json!({"description":next.description});
         let mut outcome = self.update(&w, next, input, request).await?;
-        outcome["git_reports"] = reports;
+        outcome["journal"] = json!(self.ensure_commit_comments(w.id(), &reports).await?);
+        outcome["git_reports"] = json!(reports);
         Ok(outcome)
     }
 
@@ -1039,24 +1074,6 @@ impl Gateway {
         self.update(&w, next, input, request).await
     }
 
-    /// Read the one native target for a comment, rejecting missing or ambiguous ownership.
-    fn comment_target(comment: &Value) -> Result<(&'static str, &str)> {
-        let targets: Vec<_> = [
-            ("issue", "issue"),
-            ("project", "project"),
-            ("project_update", "projectUpdate"),
-        ]
-        .into_iter()
-        .filter_map(|(kind, key)| comment[key]["id"].as_str().map(|id| (kind, id)))
-        .collect();
-        require(
-            targets.len() == 1,
-            "NATIVE_STATE_MISMATCH",
-            "Comment must have exactly one supported target",
-        )?;
-        Ok(targets[0])
-    }
-
     /// Create a comment with caller-allocated native ID, checking the target and reply parent
     /// before writing; exact same-ID replay returns the existing native permalink.
     async fn add_comment(&self, a: &Value) -> Result<Value> {
@@ -1088,17 +1105,32 @@ impl Gateway {
                 .await?;
             require(
                 parent["parent"].is_null()
-                    && Self::comment_target(&parent)? == (target_type, target_id),
+                    && crate::activity::target(&parent)? == (target_type, target_id),
                 "INVALID_PARENT",
                 "Reply parent must be a root comment on the same target",
             )?;
         }
-        let body = text(a, "body")?;
+        let kind = a["kind"].as_str().unwrap_or("note");
+        require(
+            kind != "question"
+                || a["recipient"]
+                    .as_str()
+                    .is_some_and(|v| !v.trim().is_empty()),
+            "INVALID_INPUT",
+            "Questions require a recipient",
+        )?;
+        let body = crate::activity::render(
+            kind,
+            a["role"].as_str().unwrap_or("participant"),
+            text(a, "actor")?,
+            text(a, "body")?,
+            a,
+        )?;
         if let Some(comment) = self.store.optional("QComment", "comment", id).await? {
             require(
-                Self::comment_target(&comment)? == (target_type, target_id)
+                crate::activity::target(&comment)? == (target_type, target_id)
                     && comment["parent"]["id"] == a["parent_id"]
-                    && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(body),
+                    && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(&body),
                 "REQUEST_CONFLICT",
                 "Comment request_id already names different content",
             )?;
@@ -1121,7 +1153,8 @@ impl Gateway {
             .await?["commentCreate"]["comment"]
             .clone();
         require(
-            Self::comment_target(&comment).map_err(Fault::uncertain)? == (target_type, target_id)
+            crate::activity::target(&comment).map_err(Fault::uncertain)?
+                == (target_type, target_id)
                 && comment["parent"]["id"] == a["parent_id"],
             "NATIVE_STATE_MISMATCH",
             "Linear did not confirm comment ownership",
@@ -1207,7 +1240,14 @@ impl Gateway {
             "INCOMPLETE_DATA",
             "Comment thread page is missing",
         )?;
-        Ok(json!({"comment":comment,"root":root,"replies":replies}))
+        let (kind, target_id) = crate::activity::target(&comment)?;
+        let current = if kind == "issue" {
+            self.store.meta(target_id).await?.and_then(|m| m.review)
+        } else {
+            None
+        };
+        let activity = crate::activity::record(&comment, current.as_ref())?;
+        Ok(json!({"comment":comment,"activity":activity,"root":root,"replies":replies}))
     }
 
     /// Resolve or reopen a native top-level thread; checking current state makes retry safe.
@@ -1232,7 +1272,7 @@ impl Gateway {
                 .await?;
             require(
                 reply["parent"]["id"] == id
-                    && Self::comment_target(&reply)? == Self::comment_target(&comment)?,
+                    && crate::activity::target(&reply)? == crate::activity::target(&comment)?,
                 "INVALID_PARENT",
                 "Resolving reply must belong to this thread",
             )?;
@@ -1267,13 +1307,23 @@ impl Gateway {
         Ok(json!({"comment":changed,"replayed":false}))
     }
 
-    /// Persist a native comment and current-round review decision; never transition work implicitly.
+    /// Persist a native review activity comment and current-round decision, returning its
+    /// permalink without implicitly transitioning work or adding Task review.
     async fn review(&self, a: &Value) -> Result<Value> {
         let (w, graph) = self.loaded(text(a, "id")?).await?;
         let m = w.managed()?;
         let request = Self::request("record_review", a);
-        if let Some(v) = self.resume(&w, &request).await? {
-            return Ok(v);
+        if self.resume(&w, &request).await?.is_some() {
+            let restored = self.store.work(w.id()).await.map_err(Fault::uncertain)?;
+            let comment = self
+                .store
+                .linear
+                .object("QComment", "comment", text(a, "request_id")?)
+                .await
+                .map_err(Fault::uncertain)?;
+            return Ok(
+                json!({"review":restored.managed()?.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":true}),
+            );
         }
         rules::enforce(rules::discrepancies(&w, &graph))?;
         require(
@@ -1287,25 +1337,22 @@ impl Gateway {
             "Move this work to In Review first",
         )?;
         let id = text(a, "request_id")?;
-        let body = format!(
-            "## Ревью\n\nПроверяющий: {}\n\nВердикт: {}\n\n{}\n\n### Замечания\n{}\n\n### Артефакты\n{}\n",
-            text(a, "reviewer")?,
-            if a["verdict"] == "accepted" {
-                "Принято"
-            } else {
-                "Нужны изменения"
-            },
+        let content = format!(
+            "{}\n\n### Findings\n{}",
             text(a, "summary")?,
-            a["findings"].as_str().unwrap(),
-            a["artifacts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| format!("- {}", v.as_str().unwrap()))
-                .collect::<Vec<_>>()
-                .join("\n")
+            a["findings"]
+                .as_str()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or("None")
         );
-        let body = format!("Раунд: {} · Редакция: {}\n\n{}", m.round, m.revision, body);
+        let body = crate::activity::render(
+            "review",
+            "reviewer",
+            text(a, "actor")?,
+            &content,
+            &json!({"reviewer":a["reviewer"],"session":a["session"],"verdict":a["verdict"],
+                "round":m.round,"revision":m.revision,"source_links":a["artifacts"]}),
+        )?;
         if let Some(comment) = self.store.optional("QComment", "comment", id).await? {
             require(
                 comment["issue"]["id"] == w.id()
@@ -1322,6 +1369,12 @@ impl Gateway {
                 )
                 .await?;
         }
+        let comment = self
+            .store
+            .linear
+            .object("QComment", "comment", id)
+            .await
+            .map_err(Fault::uncertain)?;
         let mut next = m.clone();
         next.review = Some(Review {
             id: id.into(),
@@ -1334,7 +1387,9 @@ impl Gateway {
             .save(&w.native, &next)
             .await
             .map_err(Fault::uncertain)?;
-        Ok(json!({"review":next.review,"issue_id":w.id()}))
+        Ok(
+            json!({"review":next.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":false}),
+        )
     }
     /// Read a Project, Issue or Document by validated type and UUID; issue context reuses its loaded Project graph for children, transition conditions and same Project/parent/type-label priority peers.
     /// Parent checkout includes its optional local path; Modules include a derived ModuleReport.
@@ -1425,7 +1480,7 @@ impl Gateway {
                 json!({"id":{"eq":parent}})
             };
         }
-        let page = self.store.linear.call("QComments", json!({
+        let mut page = self.store.linear.call("QComments", json!({
             "filter":filter,
             "first":a.get("first").and_then(Value::as_u64).unwrap_or(50),
             "after":a.get("after").unwrap_or(&Value::Null),
@@ -1436,6 +1491,22 @@ impl Gateway {
             "INCOMPLETE_DATA",
             "Comment page is missing",
         )?;
+        let current = if a["target_type"] == "issue" {
+            self.store
+                .meta(text(a, "target_id")?)
+                .await?
+                .and_then(|m| m.review)
+        } else {
+            None
+        };
+        page["activity_records"] = json!(
+            page["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|comment| crate::activity::record(comment, current.as_ref()))
+                .collect::<Result<Vec<_>>>()?
+        );
         Ok(page)
     }
 

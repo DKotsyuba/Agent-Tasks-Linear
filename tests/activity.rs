@@ -143,3 +143,31 @@ async fn comments_cover_project_and_update_targets() {
         );
     }
 }
+
+/// A question requires an addressee and its role/session/source data reaches the normalized reader.
+#[tokio::test]
+async fn question_activity_is_addressed_and_readable() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let issue = f.work("module", &project, None).await;
+    assert_eq!(
+        f.call("add_comment",json!({"target_type":"issue","target_id":issue,"kind":"question","body":"Who can review?"})).await.data["code"],
+        "INVALID_INPUT"
+    );
+    let created = f.ok("add_comment",json!({
+        "target_type":"issue","target_id":issue,"kind":"question","role":"lead",
+        "session":"codex:current","recipient":"reviewer","source_links":["https://example.com/evidence"],
+        "body":"Who can review?"
+    })).await;
+    let record = f
+        .ok("get_comment", json!({"id":created["comment"]["id"]}))
+        .await["activity"]
+        .clone();
+    assert_eq!(record["kind"], "question");
+    assert_eq!(record["role"], "lead");
+    assert_eq!(record["session"], "codex:current");
+    assert_eq!(record["recipient"], "reviewer");
+    assert_eq!(record["source_links"][0], "https://example.com/evidence");
+    assert_eq!(record["body"], "Who can review?");
+    assert_eq!(record["formal_review"], false);
+}
