@@ -148,6 +148,10 @@ async fn comment_create_confirms_rendered_body() {
 async fn comments_cover_project_and_update_targets() {
     let f = Fixture::new().await;
     let project = f.project().await;
+    let project_slug = "sample-project-a1b2c3d4";
+    f.db.lock().await.projects.get_mut(&project).unwrap()["url"] = json!(format!(
+        "https://linear.app/my4tasks/project/{project_slug}"
+    ));
     let update_id = id();
     f.db.lock().await.project_updates.insert(update_id.clone(), json!({
         "id":update_id,"url":format!("https://linear.app/project/{project}/updates/{update_id}"),
@@ -173,17 +177,19 @@ async fn comments_cover_project_and_update_targets() {
         if kind == "project_update" {
             let url = item["url"].as_str().unwrap();
             assert!(url.contains(&format!(
-                "#project-update-{update_id}&comment-{}",
+                "#project-update-{}&comment-{}",
+                &update_id[..8],
                 &item["id"].as_str().unwrap()[..8]
             )));
             let wrong_project = url.replacen(
-                &format!("/project/{project}/"),
-                &format!("/project/{}/", id()),
+                &format!("/project/{project_slug}/"),
+                "/project/another-project-e5f6a7b8/",
                 1,
             );
+            let unrelated_update = id();
             let wrong_update = url.replacen(
-                &format!("project-update-{update_id}"),
-                &format!("project-update-{}", id()),
+                &format!("project-update-{}", &update_id[..8]),
+                &format!("project-update-{}", &unrelated_update[..8]),
                 1,
             );
             for wrong in [wrong_project, wrong_update] {

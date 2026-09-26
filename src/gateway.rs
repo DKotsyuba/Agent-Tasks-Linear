@@ -1256,8 +1256,8 @@ impl Gateway {
         Ok(json!({"comment":comment,"replayed":false}))
     }
 
-    /// Read a comment by UUID or exact native permalink, including ProjectUpdate composite
-    /// fragments, and return one native reply page after matching the full Linear URL.
+    /// Read a comment by UUID or exact native permalink. Resolve ProjectUpdate short tokens
+    /// within the URL's Project before matching the full returned URL and reading one reply page.
     /// ponytail: unscoped links scan at most 20,000 comments; add a native hash lookup if that ceiling matters.
     async fn get_comment(&self, a: &Value) -> Result<Value> {
         let supplied = text(a, "id")?;
@@ -1267,18 +1267,20 @@ impl Gateway {
             let url = reqwest::Url::parse(supplied)
                 .map_err(|_| Fault::new("INVALID_LINK", "Expected a native Linear comment URL"))?;
             let fragment = url.fragment().unwrap_or("");
-            let (update_id, comment_part) = if let Some((prefix, suffix)) = fragment.split_once('&')
-            {
-                (prefix.strip_prefix("project-update-"), suffix)
-            } else {
-                (None, fragment)
-            };
+            let (update_short, comment_part) =
+                if let Some((prefix, suffix)) = fragment.split_once('&') {
+                    (prefix.strip_prefix("project-update-"), suffix)
+                } else {
+                    (None, fragment)
+                };
             let hash = comment_part.strip_prefix("comment-").unwrap_or("");
             require(
                 url.scheme() == "https"
                     && url.host_str() == Some("linear.app")
                     && (!fragment.contains('&')
-                        || update_id.is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()))
+                        || update_short.is_some_and(|id| {
+                            id.len() == 8 && id.bytes().all(|b| b.is_ascii_hexdigit())
+                        }))
                     && hash.len() == 8
                     && hash.bytes().all(|b| b.is_ascii_hexdigit()),
                 "INVALID_LINK",
@@ -1286,8 +1288,42 @@ impl Gateway {
             )?;
             let segments: Vec<_> = url.path_segments().map(|s| s.collect()).unwrap_or_default();
             let mut filter = json!({});
-            if let Some(update_id) = update_id {
-                filter["projectUpdate"] = json!({"id":{"eq":update_id}});
+            if let Some(update_short) = update_short {
+                let project_slug = segments
+                    .windows(2)
+                    .find_map(|pair| (pair[0] == "project").then_some(pair[1]))
+                    .ok_or_else(|| {
+                        Fault::new("INVALID_LINK", "ProjectUpdate link has no Project")
+                    })?;
+                let project = self
+                    .store
+                    .linear
+                    .object("QProject", "project", project_slug)
+                    .await?;
+                let updates = self.store.pages(
+                    "QProjectUpdates", "projectUpdates",
+                    json!({"filter":{"project":{"id":{"eq":project["id"]}}},"includeArchived":true}),
+                ).await?;
+                let matches: Vec<_> = updates
+                    .iter()
+                    .filter(|update| {
+                        update["id"]
+                            .as_str()
+                            .and_then(|id| id.get(..8))
+                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(update_short))
+                    })
+                    .collect();
+                require(
+                    !matches.is_empty(),
+                    "RECORD_MISSING",
+                    "ProjectUpdate link target was not found",
+                )?;
+                require(
+                    matches.len() == 1,
+                    "INVALID_LINK",
+                    "ProjectUpdate short token is ambiguous",
+                )?;
+                filter["projectUpdate"] = json!({"id":{"eq":matches[0]["id"]}});
             } else if let Some(pos) = segments.iter().position(|s| *s == "issue")
                 && let Some(identifier) = segments.get(pos + 1)
             {

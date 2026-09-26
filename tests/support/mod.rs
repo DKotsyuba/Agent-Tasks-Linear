@@ -99,7 +99,18 @@ async fn graphql(
             page(STATES.iter().map(|s| state(s)).collect()),
         )),
         "QLabels" => Some(("issueLabels", page(db.labels.values().cloned().collect()))),
-        "QProject" => db.projects.get(id).cloned().map(|v| ("project", v)),
+        "QProject" => db
+            .projects
+            .get(id)
+            .or_else(|| {
+                db.projects.values().find(|p| {
+                    p["url"]
+                        .as_str()
+                        .is_some_and(|url| url.rsplit('/').next() == Some(id))
+                })
+            })
+            .cloned()
+            .map(|v| ("project", v)),
         "QIssue" => db
             .issues
             .values()
@@ -419,7 +430,8 @@ async fn graphql(
                     .unwrap();
                 let project_url = db.projects[project_id]["url"].as_str().unwrap();
                 format!(
-                    "{project_url}/activity#project-update-{update_id}&comment-{}",
+                    "{project_url}/activity#project-update-{}&comment-{}",
+                    &update_id[..8],
                     &id[..8]
                 )
             } else {
