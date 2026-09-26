@@ -292,8 +292,9 @@ pub fn markdown_key(value: &str) -> String {
 }
 
 /// Compare requested Markdown with Linear's native rendering without losing intentional labels.
-/// Only a bare HTTP(S) URL in the request may become a titled link at the same text position;
-/// explicitly labeled links, different destinations, code, extra prose and list boundaries still differ.
+/// A bare HTTP(S) URL may gain a native title; a prose domain may become the same-label
+/// `http://` link at its original word boundary. Different destinations or labels, code,
+/// extra prose and list boundaries still differ.
 /// The comparison is directional and never rewrites either source.
 pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
     let expected_key = markdown_key(expected);
@@ -320,29 +321,66 @@ pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
             .all(|(expected, actual)| same_text_with_native_link_title(expected, actual))
 }
 
-/// Compare normalized text while consuming only a native titled link aligned to a requested
-/// bare URL with the same destination. Its first brackets must form that link, and the URL
-/// must end at whitespace/end, so extra prefix prose and destination prefixes remain visible.
+/// Compare normalized text while consuming only a native link aligned to a requested bare URL
+/// or a same-label prose domain. URL destinations and domain word boundaries must match exactly;
+/// explicit labels, changed destinations and surrounding prose remain visible.
 fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> bool {
+    let mut previous = None;
     while !expected.is_empty() && !actual.is_empty() {
-        if (expected.starts_with("https://") || expected.starts_with("http://"))
-            && actual.starts_with('[')
+        if actual.starts_with('[')
             && let Some(middle) = actual.find("](")
             && !actual[1..middle].bytes().any(|b| b == b'[' || b == b']')
             && let Some(close) = link_end(actual, middle + 2)
         {
+            let label = &actual[1..middle];
             let destination = actual[middle + 2..close]
                 .trim()
                 .trim_start_matches('<')
                 .trim_end_matches('>');
-            if expected.starts_with(destination)
+            let bare_url = expected.starts_with(destination)
                 && (destination.starts_with("https://") || destination.starts_with("http://"))
                 && expected[destination.len()..]
                     .chars()
                     .next()
-                    .is_none_or(char::is_whitespace)
-            {
-                expected = &expected[destination.len()..];
+                    .is_none_or(char::is_whitespace);
+            let bare_domain = previous.is_none_or(|c: char| {
+                c.is_whitespace() || matches!(c, '(' | '[' | '{' | '"' | '\'')
+            }) && label.contains('.')
+                && label.split('.').all(|part| {
+                    !part.is_empty()
+                        && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                        && part
+                            .as_bytes()
+                            .first()
+                            .is_some_and(u8::is_ascii_alphanumeric)
+                        && part
+                            .as_bytes()
+                            .last()
+                            .is_some_and(u8::is_ascii_alphanumeric)
+                })
+                && label.rsplit('.').next().is_some_and(|part| {
+                    part.len() >= 2 && part.bytes().all(|b| b.is_ascii_alphabetic())
+                })
+                && destination == format!("http://{label}")
+                && expected.starts_with(label)
+                && expected[label.len()..].chars().next().is_none_or(|c| {
+                    let rest = &expected[label.len()..];
+                    c.is_whitespace()
+                        || matches!(c, ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}')
+                        || (c == '.'
+                            && rest[1..]
+                                .chars()
+                                .next()
+                                .is_none_or(|next| !next.is_ascii_alphanumeric()))
+                });
+            if bare_url || bare_domain {
+                let consumed = if bare_url {
+                    destination.len()
+                } else {
+                    label.len()
+                };
+                previous = expected[..consumed].chars().last();
+                expected = &expected[consumed..];
                 actual = &actual[close + 1..];
                 continue;
             }
@@ -354,6 +392,7 @@ fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> boo
         }
         expected = &expected[left.len_utf8()..];
         actual = &actual[right.len_utf8()..];
+        previous = Some(left);
     }
     expected.is_empty() && actual.is_empty()
 }

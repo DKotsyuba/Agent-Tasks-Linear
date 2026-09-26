@@ -50,8 +50,9 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
         .unwrap()
         .unwrap();
     let list = client.peer().list_tools(None).await.unwrap();
-    assert_eq!(list.tools.len(), 21);
+    assert_eq!(list.tools.len(), 22);
     assert!(list.tools.iter().any(|t| t.name == "record_review"));
+    assert!(list.tools.iter().any(|t| t.name == "get_overview"));
     let request = CallToolRequestParams::new("get_context").with_arguments(
         json!({"type":"project","id":Uuid::new_v4().to_string()})
             .as_object()
@@ -73,7 +74,7 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
         .unwrap();
     assert_eq!(
         bridge.peer().list_tools(None).await.unwrap().tools.len(),
-        21
+        22
     );
     bridge.cancel().await.unwrap();
     std::fs::remove_file(path).unwrap();

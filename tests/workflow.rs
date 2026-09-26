@@ -27,7 +27,7 @@ async fn local_commit_imports_are_durable_ordered_and_round_scoped() {
     let mut hashes = vec![];
     for name in ["first", "second"] {
         let message = format!(
-            "feat(import): {name}\n\nResult:\n## Details\n{name} result\n\nChecks:\n{name} passed\n"
+            "feat(import): {name}\n\nResult:\n## Details\n{name} result\n\nChecks:\n{name} passed\nPinned Linear DocumentFilter supports or, issue.id.in, and project.id.eq.\n"
         );
         git(
             &repo,
@@ -73,6 +73,13 @@ async fn local_commit_imports_are_durable_ordered_and_round_scoped() {
         f.call("record_commits", request.clone()).await.status,
         "outcome_unknown"
     );
+    {
+        let mut db = f.db.lock().await;
+        let description = db.issues[&task]["description"].as_str().unwrap();
+        assert!(description.contains("issue.id.in"));
+        db.issues.get_mut(&task).unwrap()["description"] =
+            json!(description.replace("issue.id.in", "[issue.id.in](<http://issue.id.in>)"));
+    }
     fs::rename(&repo, root.join("offline")).unwrap();
     f.restart();
     let replayed = f.ok("record_commits", request.clone()).await;
@@ -532,6 +539,36 @@ fn markdown_list_markers_preserve_content() {
     ] {
         assert_ne!(markdown_key(before), markdown_key(after), "{before}");
     }
+}
+
+/// A native same-label HTTP link may represent a bare domain in prose, but altered links cannot.
+#[test]
+fn markdown_bare_domain_autolink_preserves_meaning() {
+    use agent_tasks_linear::records::markdown_equivalent;
+    let expected =
+        "## Checks\n\n- Pinned Linear DocumentFilter supports or, issue.id.in, and project.id.eq.";
+    let native = "## Checks\n\n* Pinned Linear DocumentFilter supports or, [issue.id.in](<http://issue.id.in>), and project.id.eq.";
+    assert!(markdown_equivalent(expected, native));
+    for changed in [
+        native.replace("http://issue.id.in", "http://different.id.in"),
+        native.replace("[issue.id.in]", "[different label]"),
+        native.replace(", and", ", unexpectedly and"),
+        native.replace("[issue.id.in]", "[issue.id.out]"),
+    ] {
+        assert!(!markdown_equivalent(expected, &changed), "{changed}");
+    }
+    assert!(!markdown_equivalent(
+        "`issue.id.in`",
+        "[issue.id.in](<http://issue.id.in>)"
+    ));
+    assert!(!markdown_equivalent(
+        "prefixissue.id.in",
+        "prefix[issue.id.in](<http://issue.id.in>)"
+    ));
+    assert!(!markdown_equivalent(
+        "issue.id.in.foo",
+        "[issue.id.in](<http://issue.id.in>).foo"
+    ));
 }
 
 /// A legacy pending edit finalizes after native list serialization while manual content edits still block.

@@ -3,6 +3,7 @@
 pub mod activity;
 pub mod catalog;
 pub mod config;
+pub mod context;
 pub mod gateway;
 pub mod git;
 pub mod linear;

@@ -2808,7 +2808,7 @@
   },
   {
     "name": "get_context",
-    "description": "Read native Project, Issue, Document or ProjectUpdate. ProjectUpdate includes native health and normalized activity. Issues include children, priority peers, parent checkout, current-round git_reports, discrepancies and guarded transitions. Modules also expose module_report and an unpublished PR draft. Reads never repair Linear.",
+    "description": "Read a native Project, Issue, Document or ProjectUpdate by type and ID; a native Linear Issue URL alone also selects the Issue. Optional view=lead/reviewer adds assignment, current reports, review, questions and Project/current/ancestor Issue document links. Child pending/status drift withholds exact Module counts. Existing ID/type calls keep their fields. Reads never repair Linear.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2821,14 +2821,62 @@
           ]
         },
         "id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://",
+              "maxLength": 4000
+            }
+          ]
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://",
+          "maxLength": 4000
+        },
+        "view": {
+          "enum": [
+            "lead",
+            "reviewer"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "get_overview",
+    "description": "Read a full Project overview with no cursor, or changes since a valid same-Project cursor. A lost, expired or foreign cursor returns the full overview with baseline_expired=true. Every call returns a fresh cursor and unpublished ProjectUpdate draft. Incomplete membership fails explicitly. Reads never publish or launch work.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
           "type": "string",
           "format": "uuid",
           "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "required": [
-        "type",
-        "id"
+        "project_id"
       ],
       "additionalProperties": false
     },
@@ -3410,7 +3458,7 @@
   },
   {
     "name": "save_project_update",
-    "description": "Create or edit a native ProjectUpdate for one Project with explicit onTrack/atRisk/offTrack health, author, explanation and body. New updates use request_id as native ID; edits need id and expected_updated_at from a prior read. Same arguments recover unknown outcomes. Does not change Issue status or publish on reads.",
+    "description": "Create or edit a native ProjectUpdate for one Project with explicit onTrack/atRisk/offTrack health, author and explanation. Omit body on creation to compose the current overview draft; edits need an explicit body, id and expected_updated_at for exact retries. New updates use request_id as native ID. Does not change Issue status or publish on reads.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3466,8 +3514,7 @@
         "actor",
         "project_id",
         "health",
-        "reason",
-        "body"
+        "reason"
       ],
       "additionalProperties": false
     },

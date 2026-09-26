@@ -7,7 +7,11 @@ use crate::{
     rules,
 };
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex as StdMutex},
+    time::Instant,
+};
 use tokio::sync::Mutex;
 
 /// Read a native priority that is represented as an integral JSON number from 0 through 4.
@@ -39,7 +43,7 @@ fn same_native(a: &Value, b: &Value) -> bool {
 }
 
 /// Order native Issue objects by priority 1–4 then 0, ascending `prioritySortOrder`, and ascending UUID; missing or unknown priorities rank with 0 and missing tie order follows known values.
-fn priority_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+pub(crate) fn priority_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     /// Map native priority zero/unknown to the final advisory bucket.
     fn rank(v: &Value) -> u64 {
         match native_priority(&v["priority"]).unwrap_or(0) {
@@ -71,6 +75,8 @@ pub struct Gateway {
     pub store: Store,
     /// ponytail: serialize requests across this gateway; use project locks only if throughput requires it.
     lock: Mutex<()>,
+    /// Bounded process-local comparison points; native Linear data remains authoritative.
+    baselines: StdMutex<crate::context::SnapshotCache>,
 }
 impl Gateway {
     /// Construct a gateway without contacting Linear; tool discovery works before credentials exist.
@@ -79,6 +85,7 @@ impl Gateway {
             catalog: Catalog::new()?,
             store: Store { linear },
             lock: Mutex::new(()),
+            baselines: StdMutex::new(crate::context::SnapshotCache::default()),
         }))
     }
     /// Validate, serialize and dispatch one tool call, retaining uncertain write outcomes.
@@ -98,6 +105,7 @@ impl Gateway {
             "create_project" => self.create_project(&args).await,
             "edit_project" => self.edit_project(&args).await,
             "get_context" => self.context(&args).await,
+            "get_overview" => self.overview(&args).await,
             "list_items" => self.list(&args, false).await,
             "search" => self.list(&args, true).await,
             "save_document" => self.document(&args).await,
@@ -292,18 +300,22 @@ impl Gateway {
             .clone())
     }
     /// Create or edit one native ProjectUpdate with explicit health, author and rationale.
+    /// An omitted creation body is composed from a fresh read-only overview on this explicit write;
+    /// edits require an explicit body so their retries cannot generate a different request.
     /// New updates use request_id as native ID; edits compare expected_updated_at before writing,
     /// and identical native content makes a lost response replay safe without a second state store.
     async fn save_project_update(&self, a: &Value) -> Result<Value> {
         let project_id = text(a, "project_id")?;
         self.project(project_id).await?;
         let health = text(a, "health")?;
-        let body = crate::activity::render_project_update(
-            text(a, "actor")?,
-            text(a, "reason")?,
-            text(a, "body")?,
-        )?;
+        let actor = text(a, "actor")?;
+        let reason = text(a, "reason")?;
         let editing = a["id"].is_string();
+        require(
+            !editing || a["body"].is_string(),
+            "INVALID_INPUT",
+            "Edits need an explicit body so the same request remains replayable",
+        )?;
         let id = if editing {
             text(a, "id")?
         } else {
@@ -318,6 +330,37 @@ impl Gateway {
             .store
             .optional("QProjectUpdate", "projectUpdate", id)
             .await?;
+        if !editing
+            && a["body"].is_null()
+            && let Some(current) = &existing
+        {
+            let record = crate::activity::project_update_record(current)?;
+            require(
+                current["project"]["id"] == project_id
+                    && current["health"] == health
+                    && record.actor.as_deref() == Some(actor)
+                    && record.reason.as_deref() == Some(reason),
+                "REQUEST_CONFLICT",
+                "request_id already names another ProjectUpdate",
+            )?;
+            return Ok(
+                json!({"project_update":current,"activity":record,"url":current["url"],"replayed":true}),
+            );
+        }
+        let generated = if a["body"].is_null() {
+            Some(self.overview_data(project_id).await?.0)
+        } else {
+            None
+        };
+        let source = a["body"]
+            .as_str()
+            .or_else(|| {
+                generated
+                    .as_ref()
+                    .and_then(|overview| overview["project_update_draft"].as_str())
+            })
+            .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "ProjectUpdate draft is missing"))?;
+        let body = crate::activity::render_project_update(actor, reason, source)?;
         if let Some(current) = &existing {
             require(
                 current["project"]["id"] == project_id,
@@ -1531,12 +1574,128 @@ impl Gateway {
             json!({"review":next.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":false}),
         )
     }
-    /// Read a Project, Issue or Document by validated type and UUID; issue context reuses its loaded Project graph for children, transition conditions and same Project/parent/type-label priority peers.
-    /// Parent checkout includes its optional local path; Modules include a derived ModuleReport.
-    /// Readiness probes configured local Git. Missing records, report limits and API errors propagate.
+    /// Load one complete Project graph and bounded native activity, then compose a read-only view.
+    /// The limit prevents a large Project from turning a single overview into unbounded API reads.
+    async fn overview_data(&self, project_id: &str) -> Result<(Value, BTreeMap<String, Value>)> {
+        let project = self.project(project_id).await?;
+        let graph = self.store.graph(project_id).await?;
+        require(
+            graph.len() <= 300,
+            "INCOMPLETE_DATA",
+            "Overview exceeds 300 work items",
+        )?;
+        let updates = self
+            .store
+            .pages(
+                "QProjectUpdates",
+                "projectUpdates",
+                json!({"filter":{"project":{"id":{"eq":project_id}}},"includeArchived":false}),
+            )
+            .await?;
+        require(
+            updates.len() <= 100,
+            "INCOMPLETE_DATA",
+            "Overview exceeds 100 ProjectUpdates",
+        )?;
+        let mut activity = BTreeMap::new();
+        activity.insert(
+            project_id.to_owned(),
+            crate::activity::read_activity(&self.store, "project", project_id).await?,
+        );
+        for work in &graph {
+            if work.meta.is_some() {
+                activity.insert(
+                    work.id().to_owned(),
+                    crate::activity::read_activity(&self.store, "issue", work.id()).await?,
+                );
+            }
+        }
+        for update in &updates {
+            let id = update["id"]
+                .as_str()
+                .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "ProjectUpdate has no ID"))?;
+            let mut records =
+                crate::activity::read_activity(&self.store, "project_update", id).await?;
+            records.push(crate::activity::project_update_record(update)?);
+            activity.insert(id.to_owned(), records);
+        }
+        let overview = crate::context::project_overview(&project, &graph, &activity)?;
+        let snapshot = crate::context::compact_snapshot(&project, &graph, &activity)?;
+        Ok((overview, snapshot))
+    }
+
+    /// Return a full overview or a same-Project delta and a fresh opaque comparison point.
+    /// Missing process-local baselines fall back to a full response with baseline_expired=true;
+    /// neither branch writes to Linear or launches background activity.
+    async fn overview(&self, a: &Value) -> Result<Value> {
+        let project_id = text(a, "project_id")?;
+        let (mut full, snapshot) = self.overview_data(project_id).await?;
+        let comparison = self
+            .baselines
+            .lock()
+            .map_err(|_| {
+                Fault::new(
+                    "INCOMPLETE_DATA",
+                    "Overview comparison cache is unavailable",
+                )
+            })?
+            .compare(project_id, a["cursor"].as_str(), snapshot, Instant::now());
+        let observed_at = chrono::Utc::now().to_rfc3339();
+        if comparison["changes"].is_array() {
+            Ok(json!({"project_id":project_id,"observed_at":observed_at,
+                "cursor":comparison["cursor"],"baseline_expired":false,
+                "changes":comparison["changes"],"project_update_draft":full["project_update_draft"]}))
+        } else {
+            full["observed_at"] = json!(observed_at);
+            full["cursor"] = comparison["cursor"].clone();
+            full["baseline_expired"] = comparison["baseline_expired"].clone();
+            Ok(full)
+        }
+    }
+
+    /// Read native work by UUID or a native Issue link. Legacy type/ID calls keep their original
+    /// response; optional lead/reviewer views add a bounded assignment and evidence projection.
+    /// Derived counts are withheld when native membership differs from the recorded graph.
     async fn context(&self, a: &Value) -> Result<Value> {
-        let id = text(a, "id")?;
-        match text(a, "type")? {
+        require(
+            !(a["id"].is_string() && a["url"].is_string()),
+            "INVALID_INPUT",
+            "Supply id or url, not both",
+        )?;
+        let reference = a["url"]
+            .as_str()
+            .or_else(|| a["id"].as_str())
+            .ok_or_else(|| Fault::new("INVALID_INPUT", "Supply id or url"))?;
+        let linked = reference.starts_with("https://") || a["url"].is_string();
+        let kind = if linked {
+            require(
+                a["type"].is_null() || a["type"] == "issue",
+                "INVALID_LINK",
+                "Issue URLs require type issue",
+            )?;
+            "issue"
+        } else {
+            text(a, "type")?
+        };
+        let resolved;
+        let id = if linked {
+            let identifier = crate::context::issue_identifier(reference)?;
+            let issue = self
+                .store
+                .linear
+                .object("QIssue", "issue", &identifier)
+                .await?;
+            require(
+                issue["identifier"] == identifier,
+                "INVALID_LINK",
+                "Issue URL resolved to another item",
+            )?;
+            resolved = issue["id"].as_str().unwrap_or("").to_owned();
+            resolved.as_str()
+        } else {
+            reference
+        };
+        match kind {
             "project" => {
                 let p = self.project(id).await?;
                 let docs = self
@@ -1563,8 +1722,75 @@ impl Gateway {
                 let (w, g) = self.loaded(id).await?;
                 let checkout=rules::parent(&w).and_then(|p|rules::find(&g,p)).filter(|p|p.meta.as_ref().is_some_and(|m|m.kind==Kind::Module)).map(|p|json!({"repository_path":p.fields["repository_path"],"repository_url":p.fields["repository_url"],"branch":p.fields["branch"],"worktree":p.fields["worktree"],"lead":p.fields["lead"]}));
                 let m = w.managed()?;
-                let module_report = if m.kind == Kind::Module {
+                let discrepancies = if m.kind == Kind::Module {
+                    crate::context::module_discrepancies(&w, &g)
+                } else {
+                    rules::discrepancies(&w, &g)
+                };
+                let module_report = if m.kind == Kind::Module && discrepancies.is_empty() {
                     Some(crate::reports::module_report(&w, &g)?)
+                } else {
+                    None
+                };
+                let agent_view = if let Some(view) = a["view"].as_str().or(linked.then_some("lead"))
+                {
+                    let children = rules::children(&g, w.id());
+                    require(
+                        children.len() <= 200,
+                        "INCOMPLETE_DATA",
+                        "Agent context has more than 200 direct children",
+                    )?;
+                    let mut activity = BTreeMap::new();
+                    for target in std::iter::once(&w).chain(children) {
+                        activity.insert(
+                            target.id().to_owned(),
+                            crate::activity::read_activity(&self.store, "issue", target.id())
+                                .await?,
+                        );
+                    }
+                    let mut issue_ids = Vec::new();
+                    let mut ancestor = Some(&w);
+                    while let Some(item) = ancestor {
+                        require(
+                            issue_ids.len() < 4 && !issue_ids.iter().any(|id| id == item.id()),
+                            "INCOMPLETE_DATA",
+                            "Issue ancestry is incomplete or cyclic",
+                        )?;
+                        issue_ids.push(item.id().to_owned());
+                        ancestor = rules::parent(item).and_then(|id| rules::find(&g, id));
+                    }
+                    let native_documents = self
+                        .store
+                        .pages(
+                            "QDocuments",
+                            "documents",
+                            json!({"filter":{"or":[
+                        {"project":{"id":{"eq":m.project_id}}},
+                        {"issue":{"id":{"in":issue_ids}}}
+                    ]},"includeArchived":true}),
+                        )
+                        .await?;
+                    let mut unique_documents = BTreeMap::new();
+                    for document in native_documents {
+                        let id = document["id"]
+                            .as_str()
+                            .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Document has no ID"))?;
+                        unique_documents.insert(id.to_owned(), document);
+                    }
+                    require(
+                        unique_documents.len() <= 500,
+                        "INCOMPLETE_DATA",
+                        "Agent context exceeds 500 document links",
+                    )?;
+                    let documents: Vec<Value> = unique_documents.into_values().collect();
+                    Some(crate::context::agent_context(
+                        &w,
+                        &g,
+                        view,
+                        &activity,
+                        &documents,
+                        module_report.as_ref(),
+                    )?)
                 } else {
                     None
                 };
@@ -1585,7 +1811,7 @@ impl Gateway {
                 peers.sort_by(|a, b| priority_cmp(&a.native, &b.native));
                 let priority_group = json!({"project_id":m.project_id,"parent_id":m.parent_id,"kind":m.kind,"peers":peers.iter().map(|p|json!({"id":p.id(),"identifier":p.native["identifier"],"title":p.native["title"],"status":p.native["state"]["name"],"priority":p.native["priority"],"priorityLabel":p.native["priorityLabel"]})).collect::<Vec<_>>()});
                 Ok(
-                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"module_report":module_report,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":rules::discrepancies(&w,&g),"transitions":rules::actions(&w,&g)}),
+                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"module_report":module_report,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":discrepancies,"transitions":rules::actions(&w,&g),"agent_context":agent_view}),
                 )
             }
         }
