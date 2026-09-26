@@ -531,7 +531,7 @@ impl Fixture {
     pub async fn call(&self, name: &str, mut args: Value) -> Outcome {
         if !matches!(
             name,
-            "get_context" | "get_comment" | "list_items" | "search"
+            "get_context" | "get_overview" | "get_comment" | "list_items" | "search"
         ) {
             if args.get("request_id").is_none() {
                 args["request_id"] = json!(id())

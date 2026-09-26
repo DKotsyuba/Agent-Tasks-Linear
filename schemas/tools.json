@@ -2859,6 +2859,30 @@
     }
   },
   {
+    "name": "get_overview",
+    "description": "Read a complete Project overview and unpublished ProjectUpdate draft from native work, reports and activity. Active Epics include every frozen Module; standalone Modules and Atomics are separate. Incomplete membership fails explicitly. This read never publishes an update or launches work.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
     "name": "list_items",
     "description": "List native Projects, Issues, Documents, Comments or ProjectUpdates with opaque pagination. Comment and ProjectUpdate pages include normalized activity_records; target_type+target_id scopes Comments, project_id scopes updates. Issue priority ordering fetches the bounded sibling group before sorting. Priority never gates work.",
     "inputSchema": {
@@ -3429,7 +3453,7 @@
   },
   {
     "name": "save_project_update",
-    "description": "Create or edit a native ProjectUpdate for one Project with explicit onTrack/atRisk/offTrack health, author, explanation and body. New updates use request_id as native ID; edits need id and expected_updated_at from a prior read. Same arguments recover unknown outcomes. Does not change Issue status or publish on reads.",
+    "description": "Create or edit a native ProjectUpdate for one Project with explicit onTrack/atRisk/offTrack health, author and explanation. Omit body on creation to compose the current overview draft; edits need an explicit body, id and expected_updated_at for exact retries. New updates use request_id as native ID. Does not change Issue status or publish on reads.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3485,8 +3509,7 @@
         "actor",
         "project_id",
         "health",
-        "reason",
-        "body"
+        "reason"
       ],
       "additionalProperties": false
     },

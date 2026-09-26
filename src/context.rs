@@ -2,8 +2,8 @@
 
 use crate::{
     activity::ActivityRecord,
-    model::{Fault, Kind, Result, Work, require},
-    reports::ModuleReport,
+    model::{Fault, Kind, Result, Status, Work, require},
+    reports::{ModuleReport, module_report},
     rules,
 };
 use serde_json::{Value, json};
@@ -121,4 +121,205 @@ pub fn agent_context(
         "next_work":if view == "lead" {json!(tasks.iter().filter(|task| !matches!(task["status"].as_str(),Some("Done"|"Canceled"|"Duplicate"))).collect::<Vec<_>>())} else {Value::Null},
         "review_evidence":if view == "reviewer" {json!({"module_report":report,"latest_review":latest_review})} else {Value::Null}
     }))
+}
+
+/// Compose one Module card from the shared current-round report and native assignment.
+/// A discrepancy makes the whole overview incomplete rather than silently reducing its totals.
+fn module_card(module: &Work, graph: &[Work]) -> Result<Value> {
+    let problems = rules::discrepancies(module, graph);
+    require(
+        problems.is_empty(),
+        "INCOMPLETE_DATA",
+        format!(
+            "{}: {}",
+            module.native["identifier"].as_str().unwrap_or(module.id()),
+            problems.join("; ")
+        ),
+    )?;
+    let report = module_report(module, graph)?;
+    Ok(
+        json!({"id":module.id(),"identifier":module.native["identifier"],"url":module.native["url"],
+        "title":module.native["title"],"status":module.native["state"]["name"],
+        "priority":module.native["priority"],"lead":module.fields["lead"],
+        "session_url":module.fields["session_url"],"expected_result":module.fields["expected_result"],
+        "report":report}),
+    )
+}
+
+/// Build a complete read-only Project overview from one native graph and bounded activity reads.
+/// Active Epics show every frozen Module, while active root Modules and all Atomics are separate.
+/// Missing metadata, recorded children or status drift fails with INCOMPLETE_DATA rather than
+/// reporting false progress. Activity identifies open questions and current review evidence.
+pub fn project_overview(
+    project: &Value,
+    graph: &[Work],
+    activity: &BTreeMap<String, Vec<ActivityRecord>>,
+) -> Result<Value> {
+    for work in graph.iter().filter(|work| work.meta.is_some()) {
+        work.status()?;
+    }
+    let mut epics: Vec<_> = graph
+        .iter()
+        .filter(|work| {
+            work.meta.as_ref().is_some_and(|m| m.kind == Kind::Epic)
+                && matches!(work.status(), Ok(Status::InProgress | Status::InReview))
+        })
+        .collect();
+    epics.sort_by(|a, b| crate::gateway::priority_cmp(&a.native, &b.native));
+    let mut epic_cards = Vec::new();
+    let mut draft = format!(
+        "## Project overview\n\n{}\n\n",
+        project["name"].as_str().unwrap_or("Project")
+    );
+    for epic in epics {
+        let problems = rules::discrepancies(epic, graph);
+        require(
+            problems.is_empty(),
+            "INCOMPLETE_DATA",
+            format!("{}: {}", epic.id(), problems.join("; ")),
+        )?;
+        let frozen = epic.managed()?.frozen_modules.as_ref().ok_or_else(|| {
+            Fault::new(
+                "INCOMPLETE_DATA",
+                "Active Epic has no frozen Module membership",
+            )
+        })?;
+        let mut modules: Vec<_> = frozen
+            .iter()
+            .map(|id| {
+                let module = rules::find(graph, id).ok_or_else(|| {
+                    Fault::new(
+                        "INCOMPLETE_DATA",
+                        "Frozen Module is missing from the Project graph",
+                    )
+                })?;
+                require(
+                    module.managed()?.kind == Kind::Module,
+                    "INCOMPLETE_DATA",
+                    "Frozen member is not a Module",
+                )?;
+                Ok(module)
+            })
+            .collect::<Result<_>>()?;
+        modules.sort_by(|a, b| crate::gateway::priority_cmp(&a.native, &b.native));
+        let cards: Vec<Value> = modules
+            .iter()
+            .map(|module| module_card(module, graph))
+            .collect::<Result<_>>()?;
+        let done: usize = cards
+            .iter()
+            .filter(|card| !matches!(card["status"].as_str(), Some("Canceled" | "Duplicate")))
+            .map(|card| card["report"]["tasks_done"].as_u64().unwrap_or(0) as usize)
+            .sum();
+        let total: usize = cards
+            .iter()
+            .filter(|card| !matches!(card["status"].as_str(), Some("Canceled" | "Duplicate")))
+            .map(|card| card["report"]["tasks_total"].as_u64().unwrap_or(0) as usize)
+            .sum();
+        draft.push_str(&format!(
+            "### [{}]({}) — {done}/{total} Tasks Done\n\n",
+            epic.native["title"].as_str().unwrap_or("Epic"),
+            epic.native["url"].as_str().unwrap_or("")
+        ));
+        for card in &cards {
+            draft.push_str(&format!(
+                "- [{}]({}): {}, {}/{} Tasks Done; lead {}\n",
+                card["identifier"].as_str().unwrap_or("Module"),
+                card["url"].as_str().unwrap_or(""),
+                card["status"].as_str().unwrap_or("unknown"),
+                card["report"]["tasks_done"],
+                card["report"]["tasks_total"],
+                card["lead"].as_str().unwrap_or("unassigned")
+            ));
+        }
+        draft.push('\n');
+        epic_cards.push(json!({"id":epic.id(),"identifier":epic.native["identifier"],"url":epic.native["url"],
+            "title":epic.native["title"],"status":epic.native["state"]["name"],"priority":epic.native["priority"],
+            "business_requirements":epic.fields["business_requirements"],"expected_result":epic.fields["expected_result"],
+            "result":epic.fields["result"],"modules":cards,"tasks_done":done,"tasks_total":total}));
+    }
+    let mut standalone: Vec<_> = graph
+        .iter()
+        .filter(|work| {
+            work.meta.as_ref().is_some_and(|m| m.kind == Kind::Module)
+                && rules::parent(work).is_none()
+                && matches!(work.status(), Ok(Status::InProgress | Status::InReview))
+        })
+        .collect();
+    standalone.sort_by(|a, b| crate::gateway::priority_cmp(&a.native, &b.native));
+    let standalone: Vec<Value> = standalone
+        .into_iter()
+        .map(|module| module_card(module, graph))
+        .collect::<Result<_>>()?;
+    if !standalone.is_empty() {
+        draft.push_str("### Standalone Modules\n\n");
+        for card in &standalone {
+            draft.push_str(&format!(
+                "- [{}]({}): {}, {}/{} Tasks Done; lead {}\n",
+                card["identifier"].as_str().unwrap_or("Module"),
+                card["url"].as_str().unwrap_or(""),
+                card["status"].as_str().unwrap_or("unknown"),
+                card["report"]["tasks_done"],
+                card["report"]["tasks_total"],
+                card["lead"].as_str().unwrap_or("unassigned")
+            ));
+        }
+        draft.push('\n');
+    }
+    let mut atomic_work: Vec<_> = graph
+        .iter()
+        .filter(|work| work.meta.as_ref().is_some_and(|m| m.kind == Kind::Atomic))
+        .collect();
+    atomic_work.sort_by(|a, b| crate::gateway::priority_cmp(&a.native, &b.native));
+    let atomics: Vec<_> = atomic_work.into_iter()
+        .map(|work| json!({"id":work.id(),"identifier":work.native["identifier"],"url":work.native["url"],
+            "title":work.native["title"],"status":work.native["state"]["name"],"priority":work.native["priority"],
+            "result":work.fields["result"],"reported_checks":work.fields["check_result"]})).collect();
+    let mut excluded_work: Vec<_> = graph
+        .iter()
+        .filter(|work| matches!(work.status(), Ok(Status::Canceled | Status::Duplicate)))
+        .collect();
+    excluded_work.sort_by_key(|work| work.id());
+    let excluded: Vec<_> = excluded_work
+        .into_iter()
+        .map(|work| {
+            json!({"id":work.id(),"identifier":work.native["identifier"],"url":work.native["url"],
+            "status":work.native["state"]["name"],"reason":work.fields["reason"]})
+        })
+        .collect();
+    let awaiting_review: Vec<_> = graph.iter().filter(|work| matches!(work.status(), Ok(Status::InReview)))
+        .map(|work| json!({"id":work.id(),"identifier":work.native["identifier"],"url":work.native["url"],
+            "review":activity.get(work.id()).and_then(|records| records.iter().find(|record| record.formal_review))})).collect();
+    let mut open_questions: Vec<_> = activity
+        .values()
+        .flat_map(|records| records.iter())
+        .filter(|record| record.kind == "question" && record.resolved_at.is_none())
+        .collect();
+    open_questions.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let questions: Vec<_> = open_questions.into_iter()
+        .map(|record| json!({"id":record.id,"url":record.url,"target":record.target,"recipient":record.recipient,"body":record.body})).collect();
+    if !questions.is_empty() {
+        draft.push_str("### Open questions\n\n");
+        for question in &questions {
+            draft.push_str(&format!(
+                "- [{}]({})\n",
+                question["body"].as_str().unwrap_or("Question"),
+                question["url"].as_str().unwrap_or("")
+            ));
+        }
+    }
+    require(
+        draft.chars().count() <= 30_000,
+        "REPORT_LIMIT",
+        "ProjectUpdate draft exceeds the native body limit",
+    )?;
+    Ok(
+        json!({"project_id":project["id"],"project_title":project["name"],"project_url":project["url"],
+        "active_epics":epic_cards,"standalone_modules":standalone,"atomics":atomics,"excluded":excluded,
+        "awaiting_review":awaiting_review,"open_questions":questions,"project_update_draft":draft}),
+    )
 }

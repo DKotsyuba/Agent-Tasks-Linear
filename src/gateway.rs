@@ -98,6 +98,7 @@ impl Gateway {
             "create_project" => self.create_project(&args).await,
             "edit_project" => self.edit_project(&args).await,
             "get_context" => self.context(&args).await,
+            "get_overview" => self.overview(&args).await,
             "list_items" => self.list(&args, false).await,
             "search" => self.list(&args, true).await,
             "save_document" => self.document(&args).await,
@@ -292,18 +293,22 @@ impl Gateway {
             .clone())
     }
     /// Create or edit one native ProjectUpdate with explicit health, author and rationale.
+    /// An omitted creation body is composed from a fresh read-only overview on this explicit write;
+    /// edits require an explicit body so their retries cannot generate a different request.
     /// New updates use request_id as native ID; edits compare expected_updated_at before writing,
     /// and identical native content makes a lost response replay safe without a second state store.
     async fn save_project_update(&self, a: &Value) -> Result<Value> {
         let project_id = text(a, "project_id")?;
         self.project(project_id).await?;
         let health = text(a, "health")?;
-        let body = crate::activity::render_project_update(
-            text(a, "actor")?,
-            text(a, "reason")?,
-            text(a, "body")?,
-        )?;
+        let actor = text(a, "actor")?;
+        let reason = text(a, "reason")?;
         let editing = a["id"].is_string();
+        require(
+            !editing || a["body"].is_string(),
+            "INVALID_INPUT",
+            "Edits need an explicit body so the same request remains replayable",
+        )?;
         let id = if editing {
             text(a, "id")?
         } else {
@@ -318,6 +323,37 @@ impl Gateway {
             .store
             .optional("QProjectUpdate", "projectUpdate", id)
             .await?;
+        if !editing
+            && a["body"].is_null()
+            && let Some(current) = &existing
+        {
+            let record = crate::activity::project_update_record(current)?;
+            require(
+                current["project"]["id"] == project_id
+                    && current["health"] == health
+                    && record.actor.as_deref() == Some(actor)
+                    && record.reason.as_deref() == Some(reason),
+                "REQUEST_CONFLICT",
+                "request_id already names another ProjectUpdate",
+            )?;
+            return Ok(
+                json!({"project_update":current,"activity":record,"url":current["url"],"replayed":true}),
+            );
+        }
+        let generated = if a["body"].is_null() {
+            Some(self.overview_data(project_id).await?)
+        } else {
+            None
+        };
+        let source = a["body"]
+            .as_str()
+            .or_else(|| {
+                generated
+                    .as_ref()
+                    .and_then(|overview| overview["project_update_draft"].as_str())
+            })
+            .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "ProjectUpdate draft is missing"))?;
+        let body = crate::activity::render_project_update(actor, reason, source)?;
         if let Some(current) = &existing {
             require(
                 current["project"]["id"] == project_id,
@@ -1531,6 +1567,61 @@ impl Gateway {
             json!({"review":next.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":false}),
         )
     }
+    /// Load one complete Project graph and bounded native activity, then compose a read-only view.
+    /// The limit prevents a large Project from turning a single overview into unbounded API reads.
+    async fn overview_data(&self, project_id: &str) -> Result<Value> {
+        let project = self.project(project_id).await?;
+        let graph = self.store.graph(project_id).await?;
+        require(
+            graph.len() <= 300,
+            "INCOMPLETE_DATA",
+            "Overview exceeds 300 work items",
+        )?;
+        let updates = self
+            .store
+            .pages(
+                "QProjectUpdates",
+                "projectUpdates",
+                json!({"filter":{"project":{"id":{"eq":project_id}}},"includeArchived":false}),
+            )
+            .await?;
+        require(
+            updates.len() <= 100,
+            "INCOMPLETE_DATA",
+            "Overview exceeds 100 ProjectUpdates",
+        )?;
+        let mut activity = BTreeMap::new();
+        activity.insert(
+            project_id.to_owned(),
+            crate::activity::read_activity(&self.store, "project", project_id).await?,
+        );
+        for work in &graph {
+            if work.meta.is_some() {
+                activity.insert(
+                    work.id().to_owned(),
+                    crate::activity::read_activity(&self.store, "issue", work.id()).await?,
+                );
+            }
+        }
+        for update in &updates {
+            let id = update["id"]
+                .as_str()
+                .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "ProjectUpdate has no ID"))?;
+            activity.insert(
+                id.to_owned(),
+                crate::activity::read_activity(&self.store, "project_update", id).await?,
+            );
+        }
+        crate::context::project_overview(&project, &graph, &activity)
+    }
+
+    /// Return a fresh overview and unpublished ProjectUpdate draft; reads never write to Linear.
+    async fn overview(&self, a: &Value) -> Result<Value> {
+        let mut result = self.overview_data(text(a, "project_id")?).await?;
+        result["observed_at"] = json!(chrono::Utc::now().to_rfc3339());
+        Ok(result)
+    }
+
     /// Read native work by UUID or a native Issue link. Legacy type/ID calls keep their original
     /// response; optional lead/reviewer views add a bounded assignment and evidence projection.
     /// Derived counts are withheld when native membership differs from the recorded graph.

@@ -86,3 +86,109 @@ async fn missing_recorded_child_is_explicitly_incomplete() {
             .any(|entry| entry.as_str().unwrap().contains("Recorded child"))
     );
 }
+
+/// A mixed Project yields exact progress and an unpublished draft; publication stays explicit.
+#[tokio::test]
+async fn overview_groups_work_and_only_explicit_update_writes() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, Some(&epic)).await;
+    f.mv(&epic, "In Progress").await;
+    f.mv(&module, "In Progress").await;
+    let done = f.work("task", &project, Some(&module)).await;
+    f.mv(&done, "In Progress").await;
+    f.result("task", &done).await;
+    f.mv(&done, "Done").await;
+    let excluded = f.work("task", &project, Some(&module)).await;
+    f.ok(
+        "edit_task",
+        json!({"id":excluded,"fields":{"reason":"Superseded"}}),
+    )
+    .await;
+    f.mv(&excluded, "Canceled").await;
+    let standalone = f.work("module", &project, None).await;
+    f.mv(&standalone, "In Progress").await;
+    let atomic = f.work("atomic", &project, None).await;
+    let question = f
+        .ok(
+            "add_comment",
+            json!({"target_type":"issue","target_id":done,
+        "kind":"question","role":"worker","recipient":"lead","body":"Ship this result?"}),
+        )
+        .await;
+    let before = {
+        let db = f.db.lock().await;
+        (db.tick, db.comments.len(), db.project_updates.len())
+    };
+    let overview = f.ok("get_overview", json!({"project_id":project})).await;
+    let after = f.db.lock().await;
+    assert_eq!(
+        (
+            after.tick,
+            after.comments.len(),
+            after.project_updates.len()
+        ),
+        before
+    );
+    drop(after);
+    assert_eq!(overview["active_epics"][0]["id"], epic);
+    assert_eq!(overview["active_epics"][0]["modules"][0]["id"], module);
+    assert_eq!(overview["active_epics"][0]["tasks_done"], 1);
+    assert_eq!(overview["active_epics"][0]["tasks_total"], 1);
+    assert_eq!(overview["standalone_modules"][0]["id"], standalone);
+    assert_eq!(overview["atomics"][0]["id"], atomic);
+    assert_eq!(overview["excluded"][0]["id"], excluded);
+    assert_eq!(
+        overview["open_questions"][0]["url"],
+        question["comment"]["url"]
+    );
+    assert!(
+        overview["project_update_draft"]
+            .as_str()
+            .unwrap()
+            .contains("Tasks Done")
+    );
+    let update_args = json!({"request_id":support::id(),"project_id":project,"health":"onTrack",
+        "reason":"Progress verified"});
+    let update = f.ok("save_project_update", update_args.clone()).await;
+    assert_eq!(update["activity"]["health"], "onTrack");
+    assert!(
+        update["activity"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("Project overview")
+    );
+    assert_eq!(f.db.lock().await.project_updates.len(), before.2 + 1);
+    f.ok("add_comment", json!({"target_type":"project","target_id":project,
+        "kind":"question","role":"worker","recipient":"lead","body":"New question after publication"})).await;
+    let replay = f.ok("save_project_update", update_args).await;
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(
+        replay["project_update"]["id"],
+        update["project_update"]["id"]
+    );
+    assert_eq!(f.db.lock().await.project_updates.len(), before.2 + 1);
+    let edit_without_body = f
+        .call(
+            "save_project_update",
+            json!({"id":update["project_update"]["id"],
+        "project_id":project,"health":"onTrack","reason":"Progress verified",
+        "expected_updated_at":update["project_update"]["updatedAt"]}),
+        )
+        .await;
+    assert_eq!(edit_without_body.data["code"], "INVALID_INPUT");
+}
+
+/// A missing direct child blocks overview composition instead of lowering Task totals.
+#[tokio::test]
+async fn overview_rejects_incomplete_membership() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.db.lock().await.issues.remove(&task);
+    let outcome = f.call("get_overview", json!({"project_id":project})).await;
+    assert_eq!(outcome.data["code"], "INCOMPLETE_DATA");
+}
