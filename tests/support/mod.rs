@@ -220,8 +220,24 @@ async fn graphql(
                 db.documents
                     .values()
                     .filter(|i| {
-                        v["filter"]["project"].is_null()
-                            || i["project"]["id"] == v["filter"]["project"]["id"]["eq"]
+                        if v["includeArchived"] == false && !i["archivedAt"].is_null() {
+                            return false;
+                        }
+                        let filter = &v["filter"];
+                        let clauses = filter["or"].as_array();
+                        let matches = |clause: &Value| {
+                            let project = clause["project"]["id"]["eq"].as_str();
+                            let issue = clause["issue"]["id"]["eq"].as_str();
+                            let issues = clause["issue"]["id"]["in"].as_array();
+                            project.is_some_and(|id| i["project"]["id"] == id)
+                                || issue.is_some_and(|id| i["issue"]["id"] == id)
+                                || issues
+                                    .is_some_and(|ids| ids.iter().any(|id| i["issue"]["id"] == *id))
+                        };
+                        clauses.map_or_else(
+                            || filter.is_null() || matches(filter),
+                            |items| items.iter().any(matches),
+                        )
                     })
                     .cloned()
                     .collect(),

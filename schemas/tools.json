@@ -2808,7 +2808,7 @@
   },
   {
     "name": "get_context",
-    "description": "Read a native Project, Issue, Document or ProjectUpdate by type and ID; a native Linear Issue URL alone also selects the Issue. Optional view=lead/reviewer adds assignment, current reports, review, questions and document links. Existing ID/type calls keep their fields. Reads never repair Linear.",
+    "description": "Read a native Project, Issue, Document or ProjectUpdate by type and ID; a native Linear Issue URL alone also selects the Issue. Optional view=lead/reviewer adds assignment, current reports, review, questions and Project/current/ancestor Issue document links. Child pending/status drift withholds exact Module counts. Existing ID/type calls keep their fields. Reads never repair Linear.",
     "inputSchema": {
       "type": "object",
       "properties": {

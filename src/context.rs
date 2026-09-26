@@ -49,6 +49,22 @@ pub fn issue_identifier(reference: &str) -> Result<String> {
     Ok(identifier.to_owned())
 }
 
+/// Collect native drift from a Module and every direct child before any derived count is shown.
+/// A child's pending write, status mismatch or missing metadata makes its apparent native Done
+/// status provisional, even when the parent itself has no discrepancy.
+pub fn module_discrepancies(module: &Work, graph: &[Work]) -> Vec<String> {
+    let mut problems = rules::discrepancies(module, graph);
+    for child in rules::children(graph, module.id()) {
+        let label = child.native["identifier"].as_str().unwrap_or(child.id());
+        problems.extend(
+            rules::discrepancies(child, graph)
+                .into_iter()
+                .map(|problem| format!("{label}: {problem}")),
+        );
+    }
+    problems
+}
+
 /// Render the assignment and evidence for one managed Issue without loading external data.
 /// The graph is the complete native Project hierarchy; `activity` holds bounded native comment
 /// reads keyed by Issue UUID, and `documents` contains metadata links only. An incomplete native
@@ -112,7 +128,11 @@ pub fn agent_context(
             .filter(|record| record.formal_review)
             .max_by(|a, b| a.created_at.cmp(&b.created_at))
     });
-    let discrepancies = rules::discrepancies(work, graph);
+    let discrepancies = if meta.kind == Kind::Module {
+        module_discrepancies(work, graph)
+    } else {
+        rules::discrepancies(work, graph)
+    };
     let checkout = module.map(|item| json!({"repository_path":item.fields["repository_path"],
         "branch":item.fields["branch"],"worktree":item.fields["worktree"],"lead":item.fields["lead"]}));
     let links: Vec<_> = documents
@@ -137,7 +157,7 @@ pub fn agent_context(
 /// Compose one Module card from the shared current-round report and native assignment.
 /// A discrepancy makes the whole overview incomplete rather than silently reducing its totals.
 fn module_card(module: &Work, graph: &[Work]) -> Result<Value> {
-    let problems = rules::discrepancies(module, graph);
+    let problems = module_discrepancies(module, graph);
     require(
         problems.is_empty(),
         "INCOMPLETE_DATA",

@@ -87,6 +87,123 @@ async fn missing_recorded_child_is_explicitly_incomplete() {
     );
 }
 
+/// Role views link Project and current/ancestor Issue documents without loading their bodies.
+#[tokio::test]
+async fn role_context_includes_issue_ancestry_documents() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, Some(&epic)).await;
+    let task = f.work("task", &project, Some(&module)).await;
+    let project_doc = f
+        .ok(
+            "save_document",
+            json!({"project_id":project,"title":"Project guide","content":"Large body"}),
+        )
+        .await;
+    let epic_doc = f
+        .ok(
+            "save_document",
+            json!({"issue_id":epic,"title":"Epic plan","content":"Large body"}),
+        )
+        .await;
+    let module_doc = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module,"title":"Module contract","content":"Large body"}),
+        )
+        .await;
+    let task_doc = f
+        .ok(
+            "save_document",
+            json!({"issue_id":task,"title":"Task details","content":"Large body"}),
+        )
+        .await;
+    f.db.lock()
+        .await
+        .documents
+        .get_mut(epic_doc["id"].as_str().unwrap())
+        .unwrap()["archivedAt"] = json!("2026-09-25T00:00:00Z");
+    let module_context = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":module,"view":"lead"}),
+        )
+        .await;
+    let module_links = module_context["agent_context"]["documents"]
+        .as_array()
+        .unwrap();
+    for doc in [&project_doc, &epic_doc, &module_doc] {
+        assert!(module_links.iter().any(|link| link["id"] == doc["id"]));
+    }
+    assert!(!module_links.iter().any(|link| link["id"] == task_doc["id"]));
+    assert!(
+        module_links
+            .iter()
+            .all(|link| link.get("content").is_none())
+    );
+    let task_context = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":task,"view":"reviewer"}),
+        )
+        .await;
+    let task_links = task_context["agent_context"]["documents"]
+        .as_array()
+        .unwrap();
+    for doc in [&project_doc, &epic_doc, &module_doc, &task_doc] {
+        assert!(task_links.iter().any(|link| link["id"] == doc["id"]));
+    }
+    let ids: std::collections::BTreeSet<_> = task_links
+        .iter()
+        .map(|link| link["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), task_links.len());
+}
+
+/// A child with uncertain native Done and pending recorded transition is never counted as exact.
+#[tokio::test]
+async fn pending_child_done_suppresses_module_progress() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.mv(&task, "In Progress").await;
+    f.result("task", &task).await;
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    let lost = f
+        .call(
+            "move_status",
+            json!({"id":task,"status":"Done","actor_role":"worker"}),
+        )
+        .await;
+    assert_eq!(lost.status, "outcome_unknown");
+    let context = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":module,"view":"lead"}),
+        )
+        .await;
+    assert!(context["module_report"].is_null());
+    assert!(
+        context["discrepancies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.as_str().unwrap().contains("pending"))
+    );
+    assert!(
+        context["agent_context"]["discrepancies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.as_str().unwrap().contains("Native status differs"))
+    );
+    let overview = f.call("get_overview", json!({"project_id":project})).await;
+    assert_eq!(overview.data["code"], "INCOMPLETE_DATA");
+}
+
 /// A mixed Project yields exact progress and an unpublished draft; publication stays explicit.
 #[tokio::test]
 async fn overview_groups_work_and_only_explicit_update_writes() {

@@ -1722,7 +1722,11 @@ impl Gateway {
                 let (w, g) = self.loaded(id).await?;
                 let checkout=rules::parent(&w).and_then(|p|rules::find(&g,p)).filter(|p|p.meta.as_ref().is_some_and(|m|m.kind==Kind::Module)).map(|p|json!({"repository_path":p.fields["repository_path"],"repository_url":p.fields["repository_url"],"branch":p.fields["branch"],"worktree":p.fields["worktree"],"lead":p.fields["lead"]}));
                 let m = w.managed()?;
-                let discrepancies = rules::discrepancies(&w, &g);
+                let discrepancies = if m.kind == Kind::Module {
+                    crate::context::module_discrepancies(&w, &g)
+                } else {
+                    rules::discrepancies(&w, &g)
+                };
                 let module_report = if m.kind == Kind::Module && discrepancies.is_empty() {
                     Some(crate::reports::module_report(&w, &g)?)
                 } else {
@@ -1744,7 +1748,41 @@ impl Gateway {
                                 .await?,
                         );
                     }
-                    let documents = self.store.pages("QDocuments", "documents", json!({"filter":{"project":{"id":{"eq":m.project_id}}},"includeArchived":false})).await?;
+                    let mut issue_ids = Vec::new();
+                    let mut ancestor = Some(&w);
+                    while let Some(item) = ancestor {
+                        require(
+                            issue_ids.len() < 4 && !issue_ids.iter().any(|id| id == item.id()),
+                            "INCOMPLETE_DATA",
+                            "Issue ancestry is incomplete or cyclic",
+                        )?;
+                        issue_ids.push(item.id().to_owned());
+                        ancestor = rules::parent(item).and_then(|id| rules::find(&g, id));
+                    }
+                    let native_documents = self
+                        .store
+                        .pages(
+                            "QDocuments",
+                            "documents",
+                            json!({"filter":{"or":[
+                        {"project":{"id":{"eq":m.project_id}}},
+                        {"issue":{"id":{"in":issue_ids}}}
+                    ]},"includeArchived":true}),
+                        )
+                        .await?;
+                    let mut unique_documents = BTreeMap::new();
+                    for document in native_documents {
+                        let id = document["id"]
+                            .as_str()
+                            .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Document has no ID"))?;
+                        unique_documents.insert(id.to_owned(), document);
+                    }
+                    require(
+                        unique_documents.len() <= 500,
+                        "INCOMPLETE_DATA",
+                        "Agent context exceeds 500 document links",
+                    )?;
+                    let documents: Vec<Value> = unique_documents.into_values().collect();
                     Some(crate::context::agent_context(
                         &w,
                         &g,
