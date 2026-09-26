@@ -12,6 +12,12 @@ fn markdown_list_markers_preserve_content() {
     let native =
         "## План\n\n* [Результат](<https://linear.app/example/issue/TEST-1/result>): готово.";
     assert_eq!(markdown_key(original), markdown_key(native));
+    for (before, after) in [
+        ("- `inline`\n- next", "* `inline`\n* next"),
+        ("- ```text\n  - item\n  ```", "* ```text\n  - item\n  ```"),
+    ] {
+        assert_eq!(markdown_key(before), markdown_key(after));
+    }
     assert_ne!(
         markdown_key(original),
         markdown_key(&native.replace("готово", "отложено"))
@@ -25,6 +31,9 @@ fn markdown_list_markers_preserve_content() {
         ("~~~\n- item\n~~~", "~~~\n* item\n~~~"),
         ("    - item", "    * item"),
         ("\\- item", "- item"),
+        ("- item", "\\* item"),
+        ("text `first\n- item\nlast`", "text `first\n* item\nlast`"),
+        ("- ```text\n  - item\n  ```", "- ```text\n  * item\n  ```"),
         ("- - -", "* - -"),
     ] {
         assert_ne!(markdown_key(before), markdown_key(after), "{before}");
@@ -55,6 +64,7 @@ async fn markdown_list_pending_retry_preserves_manual_changes() {
     for manual in [
         native.replace("готово", "отложено"),
         native.replace("TEST-1", "TEST-2"),
+        native.replace("* [", "\\* ["),
     ] {
         f.db.lock().await.issues.get_mut(&epic).unwrap()["description"] = json!(manual);
         f.restart();

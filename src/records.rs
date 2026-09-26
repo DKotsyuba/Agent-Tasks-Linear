@@ -3,6 +3,7 @@ use crate::{
     linear::Linear,
     model::{Fault, Meta, Result, Work, require},
 };
+use pulldown_cmark::{Event, Parser, Tag};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -235,8 +236,10 @@ impl Store {
 }
 
 /// Return a comparison key across Linear's whitespace, punctuation escapes, links and unordered list markers.
-/// Only unescaped `-`/`*` list markers outside fenced/indented code are interchangeable;
-/// text, link destinations, headings and unknown sections remain significant. This performs no writes and is not a content proof.
+/// Parser-recognized `-`/`*` list boundaries are encoded separately from normalized text,
+/// so escaped literal markers and markers in code cannot collide with list syntax.
+/// Unparsed backticks disable list folding conservatively. Text, destinations, headings and unknown
+/// sections remain significant; the serialized key is comparison-only and performs no writes.
 pub fn markdown_key(value: &str) -> String {
     // Native Linear links gain the target's title. In typed URL sections only,
     // the destination is the field value; preserve labels in all ordinary prose.
@@ -254,39 +257,29 @@ pub fn markdown_key(value: &str) -> String {
     let source = url_fields
         .map(|fields| patch_description(value, &fields))
         .unwrap_or_else(|| value.to_owned());
-    let mut fence = None;
-    let source = source
-        .lines()
-        .map(|line| {
-            let body = line.trim_start_matches(' ');
-            let indent = line.len() - body.len();
-            if indent < 4 {
-                let marker = body.chars().next().unwrap_or(' ');
-                let count = body.chars().take_while(|c| *c == marker).count();
-                if matches!(marker, '`' | '~') && count >= 3 {
-                    match fence {
-                        Some((open, length))
-                            if marker == open
-                                && count >= length
-                                && body[count..].trim().is_empty() =>
-                        {
-                            fence = None
-                        }
-                        None => fence = Some((marker, count)),
-                        _ => {}
-                    }
-                } else if fence.is_none()
-                    && marker == '-'
-                    && (body.starts_with("- ") || body.starts_with("-\t"))
-                    && body.chars().any(|c| c != '-' && !c.is_whitespace())
-                {
-                    return format!("{}*{}", &line[..indent], &body[1..]);
-                }
+    let events: Vec<_> = Parser::new(&source).into_offset_iter().collect();
+    let ambiguous = events
+        .iter()
+        .any(|(event, _)| matches!(event, Event::Text(text) if text.contains('`')));
+    let mut parts = Vec::new();
+    let mut start = 0;
+    if !ambiguous {
+        for (event, range) in events {
+            if matches!(event, Event::Start(Tag::Item))
+                && matches!(source.as_bytes().get(range.start), Some(b'-' | b'*'))
+            {
+                parts.push(markdown_text_key(&source[start..range.start]));
+                start = range.start + 1;
             }
-            line.to_owned()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+        }
+    }
+    parts.push(markdown_text_key(&source[start..]));
+    serde_json::to_string(&parts).unwrap()
+}
+
+/// Normalize an intact Markdown text segment using Linear's existing escape, link and whitespace rules.
+/// List boundaries are excluded by the caller; this helper does not infer or rewrite list/code syntax.
+fn markdown_text_key(source: &str) -> String {
     let mut text = String::new();
     let mut chars = source.chars().peekable();
     while let Some(c) = chars.next() {
