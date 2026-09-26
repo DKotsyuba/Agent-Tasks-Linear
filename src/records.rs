@@ -321,12 +321,14 @@ pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
 }
 
 /// Compare normalized text while consuming only a native titled link aligned to a requested
-/// bare URL with the same destination. A URL must end at whitespace/end to avoid prefix matches.
+/// bare URL with the same destination. Its first brackets must form that link, and the URL
+/// must end at whitespace/end, so extra prefix prose and destination prefixes remain visible.
 fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> bool {
     while !expected.is_empty() && !actual.is_empty() {
         if (expected.starts_with("https://") || expected.starts_with("http://"))
             && actual.starts_with('[')
             && let Some(middle) = actual.find("](")
+            && !actual[1..middle].bytes().any(|b| b == b'[' || b == b']')
             && let Some(close) = link_end(actual, middle + 2)
         {
             let destination = actual[middle + 2..close]

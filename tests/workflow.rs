@@ -590,6 +590,7 @@ fn markdown_native_link_title_preserves_meaningful_differences() {
         &native.replace("Spec title", "New spec title")
     ));
     for changed in [
+        native.replace("[Spec title]", "[Extra] [Spec title]"),
         native.replace("spec-123", "spec-124"),
         native.replace("Plan:", "Changed:"),
         native.replace("[Role]", "[Other]"),
