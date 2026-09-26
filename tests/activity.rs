@@ -170,6 +170,28 @@ async fn comments_cover_project_and_update_targets() {
             f.ok("get_comment", json!({"id":item["url"]})).await["comment"]["id"],
             item["id"]
         );
+        if kind == "project_update" {
+            let url = item["url"].as_str().unwrap();
+            assert!(url.contains(&format!(
+                "#project-update-{update_id}&comment-{}",
+                &item["id"].as_str().unwrap()[..8]
+            )));
+            let wrong_project = url.replacen(
+                &format!("/project/{project}/"),
+                &format!("/project/{}/", id()),
+                1,
+            );
+            let wrong_update = url.replacen(
+                &format!("project-update-{update_id}"),
+                &format!("project-update-{}", id()),
+                1,
+            );
+            for wrong in [wrong_project, wrong_update] {
+                let outcome = f.call("get_comment", json!({"id":wrong})).await;
+                assert_eq!(outcome.status, "blocked");
+                assert_eq!(outcome.data["code"], "RECORD_MISSING");
+            }
+        }
         assert_eq!(
             f.ok(
                 "list_items",

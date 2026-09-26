@@ -413,8 +413,20 @@ async fn graphql(
             } else {
                 input["body"].as_str().unwrap().to_owned()
             };
+            let url = if let Some(update_id) = input["projectUpdateId"].as_str() {
+                let project_id = db.project_updates[update_id]["project"]["id"]
+                    .as_str()
+                    .unwrap();
+                let project_url = db.projects[project_id]["url"].as_str().unwrap();
+                format!(
+                    "{project_url}/activity#project-update-{update_id}&comment-{}",
+                    &id[..8]
+                )
+            } else {
+                format!("{target}#comment-{}", &id[..8])
+            };
             let item = json!({
-                "id":id,"url":format!("{target}#comment-{}",&id[..8]),"body":body,
+                "id":id,"url":url,"body":body,
                 "issue":input.get("issueId").map(|id|json!({"id":id})),
                 "project":input.get("projectId").map(|id|json!({"id":id})),
                 "projectUpdate":input.get("projectUpdateId").map(|id|json!({"id":id})),
