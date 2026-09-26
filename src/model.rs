@@ -147,7 +147,19 @@ pub struct Review {
     /// True for acceptance, false for changes requested.
     pub accepted: bool,
 }
-/// Minimal machine data stored on one native attachment, never in issue titles.
+/// Immutable local commit snapshot associated explicitly with one work round.
+/// Its enclosing native work record supplies work identity; repeated repository/SHA pairs within
+/// that round are not appended. Flattening preserves the public GitCommit fields in JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalGitReport {
+    /// Work round in which the caller explicitly imported this snapshot.
+    pub round: u64,
+    /// Exact source snapshot, including author-reported checks rather than independent evidence.
+    #[serde(flatten)]
+    pub commit: crate::git::GitCommit,
+}
+
+/// Machine data and source snapshots stored on one native attachment, never in issue titles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Meta {
     /// Record format discriminator.
@@ -174,6 +186,9 @@ pub struct Meta {
     /// Snapshot of merged modules used by an integration run.
     #[serde(default)]
     pub integration: BTreeMap<String, String>,
+    /// Ordered immutable commit snapshots across all work rounds; absent in legacy records.
+    #[serde(default)]
+    pub git_reports: Vec<LocalGitReport>,
     /// Most recent review; previous reports remain in Linear comments.
     pub review: Option<Review>,
     /// Native completion timestamp expected after closure.
@@ -186,6 +201,13 @@ pub struct Meta {
     pub last_request: Option<Value>,
     /// A prepared write survives crashes and can only be resumed by its original request.
     pub pending: Option<Box<Pending>>,
+}
+impl Meta {
+    /// Read imported reports for the current round in attachment order, without touching Git.
+    /// Earlier snapshots remain history and never silently satisfy a reopened work item.
+    pub fn current_git_reports(&self) -> impl Iterator<Item = &LocalGitReport> {
+        self.git_reports.iter().filter(|r| r.round == self.round)
+    }
 }
 /// Two-phase issue update stored before changing native fields; no background recovery runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]

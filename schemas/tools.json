@@ -3164,5 +3164,52 @@
       "idempotentHint": true,
       "openWorldHint": true
     }
+  },
+  {
+    "name": "record_commits",
+    "description": "Read and persist local Git commit snapshots for an active code Task or Atomic. Uses the assigned checkout; commits are concrete hexadecimal hashes, in attachment order. Result and Checks sections are required. Deduplicates repository/SHA within this work round, preserves old snapshots and fills result/check_result. Never changes status or writes Git. Reuse request_id and arguments after an unknown outcome.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "work_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "commits": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{4,64}$"
+          },
+          "minItems": 1,
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "request_id",
+        "actor",
+        "work_id",
+        "commits"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
   }
 ]

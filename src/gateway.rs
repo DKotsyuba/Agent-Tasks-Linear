@@ -1,4 +1,4 @@
-//! Sixteen explicit workflow operations over native Linear entities.
+//! Explicit workflow operations over native Linear entities and local Git source snapshots.
 use crate::{
     catalog::Catalog,
     linear::Linear,
@@ -101,6 +101,7 @@ impl Gateway {
             "save_document" => self.document(&args).await,
             "move_status" => self.move_status(&args).await,
             "record_review" => self.review(&args).await,
+            "record_commits" => self.record_commits(&args).await,
             _ => {
                 let (action, kind) = name
                     .split_once('_')
@@ -417,6 +418,7 @@ impl Gateway {
             revision: 1,
             frozen_modules: None,
             integration: BTreeMap::new(),
+            git_reports: vec![],
             review: None,
             completed_at: None,
             description: actual,
@@ -840,6 +842,116 @@ impl Gateway {
         )?;
         self.update(&w, next, input, request).await
     }
+    /// Import concrete commits for an active code Task/Atomic using its assigned checkout.
+    /// Resumes the exact pending request before reading Git. Validates every source before writing,
+    /// deduplicates current-round repository/SHA pairs, preserves history and fills result/checks.
+    /// Returns current reports without changing status; unknown native outcomes remain uncertain.
+    async fn record_commits(&self, a: &Value) -> Result<Value> {
+        let (w, graph) = self.loaded(text(a, "work_id")?).await?;
+        let request = Self::request("record_commits", a);
+        if let Some(mut outcome) = self.resume(&w, &request).await? {
+            let restored = self.store.work(w.id()).await.map_err(Fault::uncertain)?;
+            outcome["git_reports"] = json!(
+                restored
+                    .managed()?
+                    .current_git_reports()
+                    .collect::<Vec<_>>()
+            );
+            return Ok(outcome);
+        }
+        let m = w.managed()?;
+        require(
+            matches!(m.kind, Kind::Task | Kind::Atomic) && w.fields["work_type"] == "code",
+            "WRONG_KIND",
+            "Commit reports belong to code Tasks or Atomics",
+        )?;
+        require(
+            w.status()? == Status::InProgress,
+            "REOPEN_REQUIRED",
+            "Start or reopen this work before importing commits",
+        )?;
+        rules::enforce(rules::discrepancies(&w, &graph))?;
+        let owner = rules::parent(&w)
+            .and_then(|id| rules::find(&graph, id))
+            .filter(|p| p.meta.as_ref().is_some_and(|m| m.kind == Kind::Module))
+            .unwrap_or(&w);
+        rules::enforce(rules::discrepancies(owner, &graph))?;
+        let path = text(&owner.fields, "worktree")?;
+        let expected_repository = owner.fields["repository_path"]
+            .as_str()
+            .map(crate::git::repository_identity)
+            .transpose()?;
+        let mut next = m.clone();
+        for hash in a["commits"].as_array().unwrap() {
+            let commit = crate::git::read_commit(path, hash.as_str().unwrap())?;
+            require(
+                expected_repository
+                    .as_ref()
+                    .is_none_or(|id| *id == commit.repository_identity),
+                "REPOSITORY_MISMATCH",
+                "Assigned worktree belongs to a different repository",
+            )?;
+            if !next.current_git_reports().any(|r| {
+                r.commit.repository_identity == commit.repository_identity
+                    && r.commit.sha == commit.sha
+            }) {
+                next.git_reports.push(crate::model::LocalGitReport {
+                    round: m.round,
+                    commit,
+                });
+            }
+        }
+        let reports: Vec<_> = next.current_git_reports().collect();
+        let patch = json!({
+            "result":reports.iter().map(|r| format!("### {} {}\n\n{}", &r.commit.sha[..12], r.commit.subject, r.commit.result)).collect::<Vec<_>>().join("\n\n"),
+            "check_result":reports.iter().map(|r| format!("### {}\n\n{}", &r.commit.sha[..12], r.commit.checks)).collect::<Vec<_>>().join("\n\n")
+        });
+        let patch = patch
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(key, value)| {
+                // Native level-two headings delimit workflow fields, so source headings render deeper.
+                let body = value
+                    .as_str()
+                    .unwrap()
+                    .lines()
+                    .map(|line| {
+                        if line.starts_with("## ") {
+                            format!("#{line}")
+                        } else {
+                            line.to_owned()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (key.clone(), json!(body))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let patch = Value::Object(patch);
+        self.catalog.validate_fields(m.kind, &patch)?;
+        let changed = next.git_reports.len() != m.git_reports.len()
+            || patch
+                .as_object()
+                .unwrap()
+                .iter()
+                .any(|(key, value)| m.fields[key] != *value);
+        for (key, value) in patch.as_object().unwrap() {
+            next.fields[key] = value.clone();
+        }
+        next.description =
+            patch_description(w.native["description"].as_str().unwrap_or(""), &patch);
+        if changed {
+            next.revision += 1;
+            next.review = None;
+        }
+        let reports = json!(next.current_git_reports().collect::<Vec<_>>());
+        let input = json!({"description":next.description});
+        let mut outcome = self.update(&w, next, input, request).await?;
+        outcome["git_reports"] = reports;
+        Ok(outcome)
+    }
+
     /// Guard and explicitly move work; check_only never persists intent, labels or changes.
     async fn move_status(&self, a: &Value) -> Result<Value> {
         let (w, graph) = self.loaded(text(a, "id")?).await?;
@@ -1014,7 +1126,7 @@ impl Gateway {
                 peers.sort_by(|a, b| priority_cmp(&a.native, &b.native));
                 let priority_group = json!({"project_id":m.project_id,"parent_id":m.parent_id,"kind":m.kind,"peers":peers.iter().map(|p|json!({"id":p.id(),"identifier":p.native["identifier"],"title":p.native["title"],"status":p.native["state"]["name"],"priority":p.native["priority"],"priorityLabel":p.native["priorityLabel"]})).collect::<Vec<_>>()});
                 Ok(
-                    json!({"issue":w.native,"fields":w.fields,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":rules::discrepancies(&w,&g),"transitions":rules::actions(&w,&g)}),
+                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":rules::discrepancies(&w,&g),"transitions":rules::actions(&w,&g)}),
                 )
             }
         }

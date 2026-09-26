@@ -6,7 +6,7 @@ Rust MCP for an explicit agent workflow using native Linear Projects, Issues and
 
 | Tools | Responsibility |
 |---|---|
-| `create_project`, `edit_project` | Permanent product container, GitHub repository, Runbook and Decisions documents |
+| `create_project`, `edit_project` | Permanent product container, optional local repository/link, Runbook and Decisions documents |
 | `create_epic`, `edit_epic` | Business requirements, expected outcome, scope and acceptance criteria |
 | `create_module`, `edit_module` | Contracts, lead session, branch/worktree, PR and merge report |
 | `create_task`, `edit_task` | Local work, checks and commit or non-code artifact |
@@ -16,15 +16,16 @@ Rust MCP for an explicit agent workflow using native Linear Projects, Issues and
 | `save_document` | Native documents attached to a Project or Issue |
 | `move_status` | Explicit guarded transition or `check_only` validation |
 | `record_review` | Reviewer report, findings, artifacts and verdict |
+| `record_commits` | Local Git snapshots and current-round results for code Tasks/Atomics |
 
-Sixteen tools. Issue titles use one leading `[EPIC]`, `[MODULE]`, `[TASK]` or `[ATOMIC]` marker; project titles are unchanged. Issue priority uses Linear's 0–4 scale. `edit_*` never changes status. Discovery contains the complete input schemas; [the workflow reference](docs/architecture.md) explains the fields and conditions.
+Seventeen tools. Issue titles use one leading `[EPIC]`, `[MODULE]`, `[TASK]` or `[ATOMIC]` marker; project titles are unchanged. Issue priority uses Linear's 0–4 scale. `edit_*` never changes status. Discovery contains the complete input schemas; [the workflow reference](docs/architecture.md) explains the fields and conditions.
 
 ## Cycle
 
 1. Create Project → Epic → Modules → Tasks; Modules may also belong directly to Project. Atomics belong to Project, Epic or Module.
 2. Prepare the Epic, then start it. Its current Module membership is permanently fixed.
 3. Prepare and start Modules, then their Tasks. Tasks use their Module's checkout.
-4. Complete Tasks with local checks and a commit link or non-code artifact. Tasks have no separate review.
+4. Import code Task results from local commits (or supply legacy commit links), then explicitly complete Tasks. Non-code work uses artifacts. Tasks have no separate review.
 5. Review each whole Module. Record its PR merge, then explicitly close it.
 6. Create an integration Atomic for the completed Modules, run its scenarios and review the report.
 7. Review and close the Epic. New Modules remain outside that Epic, independently queued in Todo or waiting for it to finish.

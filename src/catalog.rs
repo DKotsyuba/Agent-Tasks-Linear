@@ -1,4 +1,4 @@
-//! Strict, embedded schemas for the sixteen public tools.
+//! Strict, embedded schemas for the public tools.
 use crate::model::{Fault, Kind, Result};
 use serde_json::Value;
 /// Compiled request validators and MCP discovery descriptions.

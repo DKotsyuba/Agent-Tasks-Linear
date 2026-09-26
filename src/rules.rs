@@ -358,11 +358,17 @@ fn start(e: &mut Vec<String>, w: &Work, graph: &[Work]) {
         }
     }
 }
-/// Check a result before submission/closure. Non-code work requires an artifact URL, not a commit.
+/// Check current results before submission/closure. Code accepts current-round imported snapshots
+/// or the legacy commit URL; non-code still requires its artifact URL. No Git read is needed here.
 fn result(e: &mut Vec<String>, w: &Work) {
     needs(e, &w.fields, &["result", "check_result"]);
     if w.fields["work_type"] == "code" {
-        needs(e, &w.fields, &["commit_url"]);
+        if w.meta
+            .as_ref()
+            .is_none_or(|m| m.current_git_reports().next().is_none())
+        {
+            needs(e, &w.fields, &["commit_url"]);
+        }
     } else {
         needs(e, &w.fields, &["artifact_url"]);
     }

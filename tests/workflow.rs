@@ -3,6 +3,194 @@ mod support;
 use serde_json::json;
 use support::{Fixture, id};
 
+/// Commit imports survive lost replies and unavailable Git, deduplicate linked checkouts, and
+/// require explicit current-round results before code closure while retaining native history.
+#[tokio::test]
+async fn local_commit_imports_are_durable_ordered_and_round_scoped() {
+    use std::{fs, path::Path, process::Command};
+    /// Execute literal Git fixture setup arguments and return trimmed stdout, requiring success.
+    fn git(path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+    let root = std::env::temp_dir().join(format!("commit import {}", id()));
+    let repo = root.join("repo");
+    let linked = root.join("linked");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    let mut hashes = vec![];
+    for name in ["first", "second"] {
+        let message = format!(
+            "feat(import): {name}\n\nResult:\n## Details\n{name} result\n\nChecks:\n{name} passed\n"
+        );
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                &message,
+            ],
+        );
+        hashes.push(git(&repo, &["rev-parse", "HEAD"]));
+    }
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.ok("edit_module", json!({"id":module,"fields":{"repository_path":repo,"repository_url":null,"worktree":repo}})).await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.ok(
+        "edit_task",
+        json!({"id":task,"fields":{"work_type":"code"}}),
+    )
+    .await;
+    f.mv(&task, "In Progress").await;
+    let request = json!({"request_id":id(),"work_id":task,"commits":[hashes[0]]});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("record_commits", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    fs::rename(&repo, root.join("offline")).unwrap();
+    f.restart();
+    let replayed = f.ok("record_commits", request.clone()).await;
+    assert_eq!(replayed["git_reports"].as_array().unwrap().len(), 1);
+    f.ok("record_commits", request).await;
+    let snapshot = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert_eq!(snapshot["issue"]["state"]["name"], "In Progress");
+    assert!(
+        snapshot["git_reports"][0]["original_message"]
+            .as_str()
+            .unwrap()
+            .contains("## Details")
+    );
+    assert!(
+        snapshot["fields"]["result"]
+            .as_str()
+            .unwrap()
+            .contains("### Details")
+    );
+    assert!(snapshot["discrepancies"].as_array().unwrap().is_empty());
+    fs::rename(root.join("offline"), &repo).unwrap();
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"worktree":linked}}),
+    )
+    .await;
+    let imported = f
+        .ok(
+            "record_commits",
+            json!({"work_id":task,"commits":[hashes[0],hashes[1],hashes[0]]}),
+        )
+        .await;
+    assert_eq!(imported["git_reports"].as_array().unwrap().len(), 2);
+    assert_eq!(imported["git_reports"][0]["sha"], hashes[0]);
+    assert_eq!(imported["git_reports"][1]["sha"], hashes[1]);
+    let before = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    f.ok(
+        "record_commits",
+        json!({"work_id":task,"commits":[hashes[0]]}),
+    )
+    .await;
+    assert_eq!(
+        f.call(
+            "record_commits",
+            json!({"work_id":task,"commits":[hashes[1],"deadbeefdeadbeef"]})
+        )
+        .await
+        .status,
+        "blocked"
+    );
+    let after = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert_eq!(
+        before["workflow"]["revision"],
+        after["workflow"]["revision"]
+    );
+    assert_eq!(before["git_reports"], after["git_reports"]);
+    assert!(after["fields"]["commit_url"].is_null());
+    f.mv(&task, "Done").await;
+    f.mv(&task, "In Progress").await;
+    let reopened = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert!(reopened["git_reports"].as_array().unwrap().is_empty());
+    assert_eq!(
+        reopened["workflow"]["git_reports"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        f.call(
+            "move_status",
+            json!({"id":task,"status":"Done","actor_role":"worker"})
+        )
+        .await
+        .status,
+        "blocked"
+    );
+    let new_round = f
+        .ok(
+            "record_commits",
+            json!({"work_id":task,"commits":[hashes[0]]}),
+        )
+        .await;
+    assert_eq!(new_round["git_reports"].as_array().unwrap().len(), 1);
+    assert_eq!(new_round["git_reports"][0]["round"], 2);
+    f.mv(&task, "Done").await;
+
+    let atomic = f.work("atomic", &project, Some(&module)).await;
+    assert_eq!(
+        f.call(
+            "record_commits",
+            json!({"work_id":atomic,"commits":[hashes[0]]})
+        )
+        .await
+        .status,
+        "blocked"
+    );
+    f.ok(
+        "edit_atomic",
+        json!({"id":atomic,"fields":{"work_type":"code"}}),
+    )
+    .await;
+    f.mv(&atomic, "In Progress").await;
+    f.ok(
+        "record_commits",
+        json!({"work_id":atomic,"commits":[hashes[1]]}),
+    )
+    .await;
+    f.mv(&atomic, "In Review").await;
+    f.review(&atomic, "accepted").await;
+    f.mv(&atomic, "Done").await;
+    fs::remove_dir_all(root).unwrap();
+    f.restart();
+    let cold = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert_eq!(cold["git_reports"][0]["sha"], hashes[0]);
+    assert_eq!(cold["workflow"]["git_reports"].as_array().unwrap().len(), 3);
+}
+
 /// Local projects preserve prose/documents, inherit real checkouts, and keep PR/merge gates.
 /// Uses an isolated real Git repository and linked worktree; fixture writes never contact Linear.
 #[tokio::test]
