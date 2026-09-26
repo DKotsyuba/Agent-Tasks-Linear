@@ -3,6 +3,122 @@ mod support;
 use serde_json::json;
 use support::{Fixture, id};
 
+/// Linear may change list markers, but code, literal markers, words and destinations remain significant.
+#[test]
+fn markdown_list_markers_preserve_content() {
+    use agent_tasks_linear::records::markdown_key;
+    let original =
+        "## План\n- [Результат](https://linear.app/example/issue/TEST-1/result): готово.";
+    let native =
+        "## План\n\n* [Результат](<https://linear.app/example/issue/TEST-1/result>): готово.";
+    assert_eq!(markdown_key(original), markdown_key(native));
+    assert_ne!(
+        markdown_key(original),
+        markdown_key(&native.replace("готово", "отложено"))
+    );
+    assert_ne!(
+        markdown_key(original),
+        markdown_key(&native.replace("TEST-1", "TEST-2"))
+    );
+    for (before, after) in [
+        ("```text\n- item\n```", "```text\n* item\n```"),
+        ("~~~\n- item\n~~~", "~~~\n* item\n~~~"),
+        ("    - item", "    * item"),
+        ("\\- item", "- item"),
+        ("- - -", "* - -"),
+    ] {
+        assert_ne!(markdown_key(before), markdown_key(after), "{before}");
+    }
+}
+
+/// A legacy pending edit finalizes after native list serialization while manual content edits still block.
+#[tokio::test]
+async fn markdown_list_pending_retry_preserves_manual_changes() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let request = json!({"request_id":id(),"id":epic,"fields":{"description":"### План\n\n- [Результат](https://linear.app/example/issue/TEST-1/result): готово."}});
+    {
+        let mut db = f.db.lock().await;
+        db.normalize_lists = true;
+        db.lose = Some("MUpdateIssue".into());
+    }
+    assert_eq!(
+        f.call("edit_epic", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    let native = f.db.lock().await.issues[&epic]["description"]
+        .as_str()
+        .unwrap()
+        .replace("](https://", "](<https://")
+        .replace("/result)", "/result>)");
+    for manual in [
+        native.replace("готово", "отложено"),
+        native.replace("TEST-1", "TEST-2"),
+    ] {
+        f.db.lock().await.issues.get_mut(&epic).unwrap()["description"] = json!(manual);
+        f.restart();
+        let conflict = f.call("edit_epic", request.clone()).await;
+        assert_eq!(conflict.data["code"], "PENDING_CONFLICT");
+        assert_eq!(f.db.lock().await.issues[&epic]["description"], manual);
+    }
+    f.db.lock().await.issues.get_mut(&epic).unwrap()["description"] = json!(native);
+    f.restart();
+    f.ok("edit_epic", request.clone()).await;
+    f.ok("edit_epic", request).await;
+    let context = f.ok("get_context", json!({"type":"issue","id":epic})).await;
+    assert!(context["workflow"]["pending"].is_null());
+    assert_eq!(context["discrepancies"], json!([]));
+    assert_eq!(context["issue"]["description"], native);
+}
+
+/// Duplicate uses a native relation; a lost response resumes once without changing the original issue.
+#[tokio::test]
+async fn duplicate_transition_recovers_relation_write() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let original = f.work("atomic", &project, None).await;
+    let duplicate = f.work("atomic", &project, None).await;
+    let url = format!(
+        "https://linear.app/workspace/issue/{}/original",
+        f.db.lock().await.issues[&original]["identifier"]
+            .as_str()
+            .unwrap()
+    );
+    f.ok(
+        "edit_atomic",
+        json!({"id":duplicate,"fields":{"reason":"Same request","duplicate_of":url}}),
+    )
+    .await;
+    let request =
+        json!({"request_id":id(),"id":duplicate,"status":"Duplicate","actor_role":"orchestrator"});
+    f.db.lock().await.lose = Some("MCreateIssueRelation".into());
+    assert_eq!(
+        f.call("move_status", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    assert_eq!(
+        f.db.lock().await.issues[&duplicate]["state"]["name"],
+        "Duplicate"
+    );
+    f.restart();
+    f.ok("move_status", request.clone()).await;
+    f.ok("move_status", request).await;
+    let context = f
+        .ok("get_context", json!({"type":"issue","id":duplicate}))
+        .await;
+    assert!(context["workflow"]["pending"].is_null());
+    assert_eq!(context["discrepancies"], json!([]));
+    assert_eq!(context["fields"]["duplicate_of"], url);
+    assert_eq!(context["fields"]["reason"], "Same request");
+    let db = f.db.lock().await;
+    assert_eq!(db.relations.len(), 1);
+    let relation = db.relations.values().next().unwrap();
+    assert_eq!(relation["issue"]["id"], duplicate);
+    assert_eq!(relation["relatedIssue"]["id"], original);
+    assert_eq!(db.issues[&original]["state"]["name"], "Backlog");
+}
+
 /// Exercise two modules, local task completion, module review, merge, integration and epic closure.
 #[tokio::test]
 async fn complete_cycle_freezes_epic_and_requires_current_integration() {
@@ -163,7 +279,7 @@ async fn independent_queue_review_corrections_and_cancellation() {
         .status,
         "blocked"
     );
-    f.ok("edit_atomic",json!({"id":child,"fields":{"reason":"Duplicate request","duplicate_of":"https://linear.app/issue/original"}})).await;
+    f.ok("edit_atomic",json!({"id":child,"fields":{"reason":"Duplicate request","duplicate_of":format!("https://linear.app/issue/{module}")}})).await;
     f.mv(&child, "Duplicate").await;
     f.mv(&independent, "Canceled").await;
     let invalid=f.call("create_atomic",json!({"project_id":project,"team_id":f.team,"parent_id":child,"title":"Invalid nesting"})).await;

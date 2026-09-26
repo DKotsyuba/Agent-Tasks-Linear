@@ -25,12 +25,16 @@ pub struct Database {
     pub comments: BTreeMap<String, Value>,
     /// Native workflow labels by UUID.
     pub labels: BTreeMap<String, Value>,
+    /// Native directed issue relations, with duplicate relations controlling source status.
+    pub relations: BTreeMap<String, Value>,
     /// Simulated monotonic timestamps for completion identity.
     pub tick: u64,
     /// Mutation operation whose response should be lost after applying its write.
     pub lose: Option<String>,
     /// Return one successful issueUpdate payload without applying its fields.
     pub stale_update: bool,
+    /// Serialize unordered list markers like Linear after issue description writes.
+    pub normalize_lists: bool,
 }
 /// Native standard workflow names in the fixture.
 pub const STATES: [&str; 7] = [
@@ -58,7 +62,7 @@ fn issue_page(nodes: Vec<Value>, variables: &Value) -> Value {
 }
 /// Resolve a native status object by its fixture identifier.
 fn state(id: &str) -> Value {
-    json!({"id":id,"name":id,"type":match id {"Backlog"=>"backlog","Todo"=>"unstarted","Done"=>"completed","Canceled"|"Duplicate"=>"canceled",_=>"started"}})
+    json!({"id":id,"name":id,"type":match id {"Backlog"=>"backlog","Todo"=>"unstarted","Done"=>"completed","Canceled"=>"canceled","Duplicate"=>"duplicate",_=>"started"}})
 }
 /// Mock GraphQL only at the HTTP boundary; the real transport and all workflow code are exercised.
 async fn graphql(
@@ -70,6 +74,11 @@ async fn graphql(
     let v = &request["variables"];
     let id = v["id"].as_str().unwrap_or("");
     let input = &v["input"];
+    if op == "MUpdateIssue" && input["stateId"] == "Duplicate" {
+        return Json(
+            json!({"data":{"issueUpdate":null},"errors":[{"message":"Duplicate is a system-managed state","extensions":{"code":"INPUT_ERROR"}}]}),
+        );
+    }
     if op == "MUpdateIssue" && db.stale_update {
         db.stale_update = false;
         return Json(json!({"data":{"issueUpdate":{"success":true,"issue":db.issues[id]}}}));
@@ -87,7 +96,16 @@ async fn graphql(
         )),
         "QLabels" => Some(("issueLabels", page(db.labels.values().cloned().collect()))),
         "QProject" => db.projects.get(id).cloned().map(|v| ("project", v)),
-        "QIssue" => db.issues.get(id).cloned().map(|v| ("issue", v)),
+        "QIssue" => db
+            .issues
+            .values()
+            .find(|v| v["id"] == id || v["identifier"] == id)
+            .cloned()
+            .map(|v| ("issue", v)),
+        "QIssueRelations" => Some((
+            "issue",
+            json!({"relations":issue_page(db.relations.values().filter(|r| r["issue"]["id"] == id).cloned().collect(),v)}),
+        )),
         "QAttachmentById" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
         "QDocument" => db.documents.get(id).cloned().map(|v| ("document", v)),
         "QComment" => db.comments.get(id).cloned().map(|v| ("comment", v)),
@@ -178,6 +196,7 @@ async fn graphql(
         "MUpdateIssue" => {
             db.tick += 1;
             let tick = db.tick;
+            let normalize_lists = db.normalize_lists;
             let item = db.issues.get_mut(id).unwrap();
             for (k, v) in input.as_object().unwrap() {
                 match k.as_str() {
@@ -198,10 +217,43 @@ async fn graphql(
                             json!({"id":v})
                         }
                     }
+                    "description" if normalize_lists => {
+                        item[k] = json!(
+                            v.as_str()
+                                .unwrap()
+                                .lines()
+                                .map(|line| line
+                                    .strip_prefix("- ")
+                                    .map(|body| format!("* {body}"))
+                                    .unwrap_or_else(|| line.to_owned()))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        )
+                    }
                     _ => item[k] = v.clone(),
                 }
             }
             Some(("issueUpdate", json!({"success":true,"issue":item})))
+        }
+        "MCreateIssueRelation" => {
+            assert_eq!(input["type"], "duplicate");
+            let source = input["issueId"].as_str().unwrap();
+            let target = input["relatedIssueId"].as_str().unwrap();
+            assert_ne!(source, target);
+            assert!(db.issues.contains_key(target));
+            let relation = json!({"id":input["id"],"type":"duplicate","archivedAt":null,"issue":{"id":source},"relatedIssue":{"id":target}});
+            assert!(
+                !db.relations
+                    .values()
+                    .any(|r| r["issue"]["id"] == source && r["type"] == "duplicate")
+            );
+            db.relations
+                .insert(input["id"].as_str().unwrap().into(), relation.clone());
+            db.issues.get_mut(source).unwrap()["state"] = state("Duplicate");
+            Some((
+                "issueRelationCreate",
+                json!({"success":true,"issueRelation":relation}),
+            ))
         }
         "MUpsertRecord" => {
             let aid = input["id"].as_str().unwrap();

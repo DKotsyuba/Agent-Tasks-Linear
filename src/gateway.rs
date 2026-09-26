@@ -543,7 +543,8 @@ impl Gateway {
         self.apply_native(w, next, input, &w.native).await
     }
     /// Apply a prepared update only from its saved source, or finalize an already applied target.
-    /// Concurrent manual changes produce a conflict and are never overwritten on retry.
+    /// Duplicate transitions create/check their native relation rather than assigning the reserved state;
+    /// legacy pending stateId inputs use the same path. Concurrent manual changes conflict and are never overwritten.
     async fn apply_native(
         &self,
         w: &Work,
@@ -577,7 +578,9 @@ impl Gateway {
             "PENDING_CONFLICT",
             "Native fields changed while a write was pending; preserve the manual edit and resolve the conflict before retrying",
         )?;
-        let native = if already_applied {
+        let native = if next.status == Status::Duplicate && input.get("stateId").is_some() {
+            self.apply_duplicate(w, &next, already_applied).await?
+        } else if already_applied {
             current
         } else {
             self.store
@@ -609,6 +612,90 @@ impl Gateway {
             .await
             .map_err(Fault::uncertain)?;
         Ok(json!({"issue":native,"round":next.round}))
+    }
+    /// Resolve a stored Linear issue URL without visiting it; reject malformed/external URLs, missing issues and self-links.
+    /// `fields` contains the proposed retirement fields, and the returned native Issue supplies the canonical UUID.
+    async fn duplicate_target(&self, w: &Work, fields: &Value) -> Result<Value> {
+        let url = reqwest::Url::parse(text(fields, "duplicate_of")?)
+            .map_err(|_| Fault::new("INVALID_INPUT", "duplicate_of must be a Linear issue URL"))?;
+        require(
+            url.scheme() == "https"
+                && url.host_str() == Some("linear.app")
+                && url.username().is_empty()
+                && url.password().is_none(),
+            "INVALID_INPUT",
+            "duplicate_of must be a Linear issue URL",
+        )?;
+        let segments: Vec<_> = url.path_segments().into_iter().flatten().collect();
+        let original = segments
+            .windows(2)
+            .find(|pair| pair[0] == "issue" && !pair[1].is_empty())
+            .map(|pair| pair[1])
+            .ok_or_else(|| {
+                Fault::new("INVALID_INPUT", "duplicate_of must identify a Linear issue")
+            })?;
+        let original = self
+            .store
+            .linear
+            .object("QIssue", "issue", original)
+            .await?;
+        require(
+            original["id"] != w.id(),
+            "INVALID_INPUT",
+            "An issue cannot duplicate itself",
+        )?;
+        Ok(original)
+    }
+    /// Apply or confirm a prepared Duplicate transition from `next` without directly setting its reserved status.
+    /// Rejects conflicting live duplicate relations and reuses a request-derived relation UUID.
+    /// An already-applied status requires the matching relation; response loss remains uncertain,
+    /// and the caller verifies the returned native issue before finalizing metadata.
+    async fn apply_duplicate(&self, w: &Work, next: &Meta, already_applied: bool) -> Result<Value> {
+        let original = self.duplicate_target(w, &next.fields).await?;
+        let relations = self
+            .store
+            .pages("QIssueRelations", "/issue/relations", json!({"id":w.id()}))
+            .await?;
+        let duplicates: Vec<_> = relations
+            .iter()
+            .filter(|r| r["type"] == "duplicate" && r["archivedAt"].is_null())
+            .collect();
+        require(
+            duplicates
+                .iter()
+                .all(|r| r["issue"]["id"] == w.id() && r["relatedIssue"]["id"] == original["id"]),
+            "PENDING_CONFLICT",
+            "Native duplicate relation points to another issue; preserve it and resolve the conflict before retrying",
+        )?;
+        require(
+            !already_applied || !duplicates.is_empty(),
+            "PENDING_CONFLICT",
+            "Native Duplicate status lacks the expected original issue relation",
+        )?;
+        if duplicates.is_empty() {
+            let request_id = text(
+                &next.last_request.as_ref().unwrap()["arguments"],
+                "request_id",
+            )?;
+            let result = self.store.linear.call("MCreateIssueRelation", json!({"input":{
+                "id":child_id(request_id,"duplicate"),"issueId":w.id(),"relatedIssueId":original["id"],"type":"duplicate"
+            }})).await?;
+            let relation = &result["issueRelationCreate"]["issueRelation"];
+            require(
+                relation["type"] == "duplicate"
+                    && relation["issue"]["id"] == w.id()
+                    && relation["relatedIssue"]["id"] == original["id"]
+                    && relation["archivedAt"].is_null(),
+                "NATIVE_STATE_MISMATCH",
+                "Linear did not confirm the requested duplicate relation",
+            )
+            .map_err(Fault::uncertain)?;
+        }
+        self.store
+            .linear
+            .object("QIssue", "issue", w.id())
+            .await
+            .map_err(Fault::uncertain)
     }
     /// Apply one managed issue edit for `kind`; missing title normalizes the existing title, missing priority preserves it, and priority zero clears it.
     /// Empty or title/priority-only edits preserve native descriptions, stored fields and review identity in any status, without validating or adopting legacy content; requirement/parent edits validate content, invalidate review and require reopening reviewed work, except the existing Module merge-report allowance. Returns the confirmed issue outcome or a safe conflict/write fault.
@@ -745,6 +832,9 @@ impl Gateway {
         let m = w.managed()?;
         if w.status()? == target && m.status == target && !rules::restart_integration(&w, &graph) {
             return Ok(json!({"issue":w.native,"unchanged":true}));
+        }
+        if target == Status::Duplicate {
+            self.duplicate_target(&w, &m.fields).await?;
         }
         let states = self
             .states(w.native["team"]["id"].as_str().unwrap())

@@ -41,7 +41,7 @@ Issue create/edit calls accept a `fields` object. Omitted values are preserved; 
 | `integration_modules`, `scenarios`, `environment` | Participating Module UUIDs and actual interaction checks |
 | `reason`, `duplicate_of` | Retirement reason and original issue URL |
 
-Descriptions have readable Russian level-two section headings. Use level-three or deeper headings inside field values. Unrelated sections/prose remain intact during partial edits. A manually changed description is reported; a content edit can adopt the current recognized fields after full schema validation. Title/priority-only edits do not send or adopt descriptions and preserve review identity, results and revision, including while In Review or Done. Native Markdown escaping and link formatting are accounted for without removing unrelated prose.
+Descriptions have readable Russian level-two section headings. Use level-three or deeper headings inside field values. Unrelated sections/prose remain intact during partial edits. A manually changed description is reported; a content edit can adopt the current recognized fields after full schema validation. Title/priority-only edits do not send or adopt descriptions and preserve review identity, results and revision, including while In Review or Done. Native Markdown escaping, link formatting and `-`/`*` unordered list markers are accounted for without removing unrelated prose. List-marker equivalence does not rewrite fenced or indented code, escaped leading hyphens or thematic breaks; changed words and link destinations still conflict.
 
 ## Priority views
 
@@ -67,6 +67,8 @@ Normal cycle: Backlog → Todo → In Progress → In Review → Done. Task skip
 | Atomic | Parent work In Progress if present; executor, expected result, acceptance, local check; coding checkout (inherited under Module) | Result, checks, commit or non-code artifact | Positive current review; orchestrator |
 
 Completed children may remain Done while parents are still In Progress. Canceled and Duplicate children do not contribute unfinished scope. Parent retirement requires all children to be terminal. Canceled requires a reason; Duplicate also requires an original-work link. No transition cascades to children.
+
+Duplicate is a [system-managed Linear status](https://linear.app/docs/configuring-workflows). Its transition resolves `duplicate_of` to a native Issue and creates an `issueRelationCreate` relation with `type: duplicate`, the retiring issue as `issueId` and the original as `relatedIssueId`. It does not directly assign the reserved state. A retry checks the complete outgoing relation list, preserves a conflicting original link and confirms both relation and native status before finalizing the saved intent. Invalid issue links and self-links are rejected before preparing a new transition.
 
 ## Review and rework
 

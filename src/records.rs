@@ -153,7 +153,8 @@ impl Store {
         }
         Ok(())
     }
-    /// Read every connection page, refusing truncated graphs instead of assuming omitted work is done.
+    /// Read every connection page selected by a root field name or JSON pointer, refusing missing or truncated graphs.
+    /// `args` are copied into each request with bounded `first`/`after` pagination; no writes occur.
     pub async fn pages(&self, query: &str, field: &str, mut args: Value) -> Result<Vec<Value>> {
         let mut out = vec![];
         let mut after = Value::Null;
@@ -161,7 +162,11 @@ impl Store {
             args["first"] = json!(100);
             args["after"] = after.clone();
             let data = self.linear.call(query, args.clone()).await?;
-            let c = &data[field];
+            let c = if field.starts_with('/') {
+                data.pointer(field).unwrap_or(&Value::Null)
+            } else {
+                &data[field]
+            };
             let nodes = c["nodes"]
                 .as_array()
                 .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Missing connection page"))?;
@@ -229,8 +234,9 @@ impl Store {
     }
 }
 
-/// Compare Markdown across Linear's whitespace and punctuation-escape normalization.
-/// Text, headings and unknown sections are retained; this is not a content proof.
+/// Return a comparison key across Linear's whitespace, punctuation escapes, links and unordered list markers.
+/// Only unescaped `-`/`*` list markers outside fenced/indented code are interchangeable;
+/// text, link destinations, headings and unknown sections remain significant. This performs no writes and is not a content proof.
 pub fn markdown_key(value: &str) -> String {
     // Native Linear links gain the target's title. In typed URL sections only,
     // the destination is the field value; preserve labels in all ordinary prose.
@@ -248,6 +254,39 @@ pub fn markdown_key(value: &str) -> String {
     let source = url_fields
         .map(|fields| patch_description(value, &fields))
         .unwrap_or_else(|| value.to_owned());
+    let mut fence = None;
+    let source = source
+        .lines()
+        .map(|line| {
+            let body = line.trim_start_matches(' ');
+            let indent = line.len() - body.len();
+            if indent < 4 {
+                let marker = body.chars().next().unwrap_or(' ');
+                let count = body.chars().take_while(|c| *c == marker).count();
+                if matches!(marker, '`' | '~') && count >= 3 {
+                    match fence {
+                        Some((open, length))
+                            if marker == open
+                                && count >= length
+                                && body[count..].trim().is_empty() =>
+                        {
+                            fence = None
+                        }
+                        None => fence = Some((marker, count)),
+                        _ => {}
+                    }
+                } else if fence.is_none()
+                    && marker == '-'
+                    && (body.starts_with("- ") || body.starts_with("-\t"))
+                    && body.chars().any(|c| c != '-' && !c.is_whitespace())
+                {
+                    return format!("{}*{}", &line[..indent], &body[1..]);
+                }
+            }
+            line.to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut text = String::new();
     let mut chars = source.chars().peekable();
     while let Some(c) = chars.next() {
