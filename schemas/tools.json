@@ -1,7 +1,7 @@
 [
   {
     "name": "create_project",
-    "description": "Create a native permanent Project with a GitHub URL, Runbook and Decisions documents. Reuse request_id unchanged on retry.",
+    "description": "Create a native permanent Project with Runbook and Decisions documents. Both repository_path and external repository_url are optional for planning; supplied paths must identify an existing local Git repository. Reuse request_id unchanged on retry.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -33,6 +33,13 @@
           "maxLength": 30000,
           "pattern": "\\S"
         },
+        "repository_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": "\\S",
+          "description": "Absolute path to an existing local Git repository or linked worktree."
+        },
         "repository_url": {
           "type": "string",
           "format": "uri",
@@ -45,8 +52,7 @@
         "actor",
         "team_id",
         "title",
-        "description",
-        "repository_url"
+        "description"
       ],
       "additionalProperties": false
     },
@@ -59,7 +65,7 @@
   },
   {
     "name": "edit_project",
-    "description": "Partially edit a native Project. Omitted fields remain unchanged. Does not change status.",
+    "description": "Partially edit a native Project. Omitted fields remain unchanged; null removes repository_path or repository_url. Supplied local paths must identify an existing Git repository. Does not change status.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -91,11 +97,32 @@
           "maxLength": 30000,
           "pattern": "\\S"
         },
+        "repository_path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000,
+              "pattern": "\\S",
+              "description": "Absolute path to an existing local Git repository or linked worktree."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "repository_url": {
-          "type": "string",
-          "format": "uri",
-          "pattern": "^https?://",
-          "maxLength": 4000
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://",
+              "maxLength": 4000
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -368,6 +395,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"
@@ -665,6 +706,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"
@@ -1017,6 +1072,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"
@@ -1384,6 +1453,20 @@
                 }
               ]
             },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "work_type": {
               "enum": [
                 "code",
@@ -1683,6 +1766,20 @@
                 }
               ]
             },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "work_type": {
               "enum": [
                 "code",
@@ -1962,6 +2059,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"
@@ -2275,6 +2386,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"
@@ -2604,6 +2729,20 @@
                   "format": "uri",
                   "pattern": "^https?://",
                   "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repository_path": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000,
+                  "pattern": "\\S",
+                  "description": "Absolute path to an existing local Git repository or linked worktree."
                 },
                 {
                   "type": "null"

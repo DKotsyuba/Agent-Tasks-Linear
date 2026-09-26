@@ -21,7 +21,7 @@ Project creation also creates native `Runbook` and `Решения` documents. R
 
 ## Public data fields
 
-Create calls require `request_id`, `actor`, `title`, `project_id` and `team_id`; Task also requires `parent_id`. Issue titles are stored with exactly one leading kind marker (`[EPIC]`, `[MODULE]`, `[TASK]`, `[ATOMIC]`); repeated or wrong recognized markers are normalized, unrelated markers such as `[UI]` are preserved, and a marker without a title is rejected. Project titles remain unchanged. Issue `priority` is native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low. Omitted create priority is 0; omitted edit priority preserves the native value and 0 clears it. Issue fields may be prepared in Backlog/Todo. Project creation instead requires `team_id`, `title`, `description`, `repository_url` (GitHub HTTPS).
+Create calls require `request_id`, `actor`, `title`, `project_id` and `team_id`; Task also requires `parent_id`. Issue titles are stored with exactly one leading kind marker (`[EPIC]`, `[MODULE]`, `[TASK]`, `[ATOMIC]`); repeated or wrong recognized markers are normalized, unrelated markers such as `[UI]` are preserved, and a marker without a title is rejected. Project titles remain unchanged. Issue `priority` is native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low. Omitted create priority is 0; omitted edit priority preserves the native value and 0 clears it. Issue fields may be prepared in Backlog/Todo. Project creation instead requires `team_id`, `title` and `description`; both `repository_path` and `repository_url` are optional for planning. A supplied path must be an absolute existing local Git checkout; the optional external URL accepts HTTP(S), including non-GitHub hosts. Legacy URL-only calls remain valid.
 
 Issue create/edit calls accept a `fields` object. Omitted values are preserved; null removes a nullable value. `work_type` defaults to `code` for Module/Task/Atomic and `non_code` for Epic. Use `non_code` explicitly for document/administrative work and `integration` for an integration Atomic.
 
@@ -32,7 +32,7 @@ Issue create/edit calls accept a `fields` object. Omitted values are preserved; 
 | `expected_result`, `acceptance_criteria` | Observable outcome and acceptance |
 | `required_contract`, `provided_contract` | Module contract description/link or explicit “not required” |
 | `lead`, `executor`, `session_url` | Session reference such as `codex:…` or `agent-run:…`, optional real transcript URL |
-| `repository_url`, `branch`, `worktree` | Execution checkout; Task inherits from Module |
+| `repository_path`, `repository_url`, `branch`, `worktree` | Local repository, optional external link and execution checkout; Task inherits from Module |
 | `local_check` | Planned local verification |
 | `result`, `check_result` | Actual outcome and check summary |
 | `commit_url`, `artifact_url` | Code commit or non-code result link |
@@ -42,6 +42,10 @@ Issue create/edit calls accept a `fields` object. Omitted values are preserved; 
 | `reason`, `duplicate_of` | Retirement reason and original issue URL |
 
 Descriptions have readable Russian level-two section headings. Use level-three or deeper headings inside field values. Unrelated sections/prose remain intact during partial edits. A manually changed description is reported; a content edit can adopt the current recognized fields after full schema validation. Title/priority-only edits do not send or adopt descriptions and preserve review identity, results and revision, including while In Review or Done. Native Markdown escaping, link formatting and `-`/`*` unordered list markers are accounted for without removing unrelated prose. A CommonMark parser identifies actual list boundaries, which remain distinct from escaped literal markers and code contents. Unparsed backticks conservatively disable marker folding. Changed words and link destinations still conflict.
+
+`repository_path` uses the dedicated `Локальный репозиторий` section. Project edits preserve omitted fields and documents; null removes either repository field. Adding a path preserves old prose in `Репозиторий`. Modules and code Atomics outside Modules inherit omitted repository fields at creation; only valid external URLs are inherited from that legacy section. Existing work can be updated explicitly with `edit_module`/`edit_atomic`; later Project edits do not rewrite existing work. Task and nested Atomic context includes the current Module repository path, URL, branch, worktree and lead.
+
+Supplied local paths are validated before create/edit writes. Starting a Module or standalone code Atomic requires a local path or legacy URL. With `repository_path`, readiness also validates its worktree. Normal repositories and linked worktrees are accepted; missing, relative, non-Git and bare directories are rejected. Validation runs only local `git rev-parse --show-toplevel`, without shell interpolation, with output discarded and a two-second process deadline. Git must be installed on the gateway host. Context and check-only transition calls use the same read-only readiness check. URL-only legacy records retain field-based readiness; supplying a local path opts into local checks. Branch remains a required declared field. Planning and non-code work need no repository.
 
 ## Priority views
 
@@ -76,7 +80,7 @@ Duplicate is a [system-managed Linear status](https://linear.app/docs/configurin
 
 The orchestrator returns work to In Progress after changes are requested. A new work round clears its current results/checks/artifacts and current review. Earlier native reports and history remain. New outputs and a new review are required. Editing reviewed content requires reopening; a Module's `merge_report` can be added after positive review without invalidating it.
 
-GitHub links and merge facts are trusted agent reports. MCP neither executes Git nor contacts GitHub to prove contents. Shared bearer clients are trusted; reported roles are workflow attribution, not separate authorization principals.
+Commit/PR links and merge facts remain trusted agent reports. MCP validates configured local Git checkouts but does not inspect commits or contact a remote host to prove those reports. A local repository does not replace the Module's real PR, review or merge requirements. Shared bearer clients are trusted; reported roles are workflow attribution, not separate authorization principals.
 
 ## Integration Atomic
 

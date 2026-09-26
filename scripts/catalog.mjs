@@ -8,6 +8,8 @@ const text={type:'string',minLength:1,maxLength:30000,pattern:'\\S'};
 const uuid={type:'string',format:'uuid',pattern:'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'};
 /** Safe public artifact/repository URL; the server never fetches these URLs. @type {Schema} */
 const url={type:'string',format:'uri',pattern:'^https?://',maxLength:4000};
+/** Local checkout path; the host validates an absolute existing Git directory. @type {Schema} */
+const repositoryPath={type:'string',minLength:1,maxLength:4000,pattern:'\\S',description:'Absolute path to an existing local Git repository or linked worktree.'};
 /** Build a strict JSON object schema without mutating its inputs.
  * @param {Record<string,Schema>} properties Named property schemas.
  * @param {string[]} [required=[]] Mandatory property names; omission allows partial edits.
@@ -22,6 +24,7 @@ function nullable(s){return {anyOf:[s,{type:'null'}]};}
 /** Complete set of human fields, stored in native issue descriptions. @type {Record<string,Schema>} */
 const fields=Object.fromEntries(['description','business_requirements','expected_result','scope','acceptance_criteria','required_contract','provided_contract','lead','executor','branch','worktree','local_check','result','check_result','merge_report','scenarios','environment','reason'].map(k=>[k,nullable(text)]));
 for(const k of ['session_url','repository_url','pr_url','commit_url','artifact_url']) fields[k]=nullable(url);
+fields.repository_path=nullable(repositoryPath);
 fields.work_type={enum:['code','non_code','integration']};
 fields.after_epic=nullable(uuid);fields.duplicate_of=nullable(url);
 fields.integration_modules=nullable({type:'array',items:uuid,uniqueItems:true,minItems:2,maxItems:100});
@@ -42,8 +45,8 @@ const mutation={request_id:uuid,actor:text};
 const priority={type:'integer',minimum:0,maximum:4,description:'Native Linear priority: 0 none, 1 urgent, 2 high, 3 medium, 4 low.'};
 for(const kind of ['project','epic','module','task','atomic']){
  if(kind==='project'){
-  tool('create_project','Create a native permanent Project with a GitHub URL, Runbook and Decisions documents. Reuse request_id unchanged on retry.',{...mutation,team_id:uuid,title:text,description:text,repository_url:url},['request_id','actor','team_id','title','description','repository_url']);
-  tool('edit_project','Partially edit a native Project. Omitted fields remain unchanged. Does not change status.',{...mutation,id:uuid,title:text,description:text,repository_url:url},['request_id','actor','id']);continue;
+  tool('create_project','Create a native permanent Project with Runbook and Decisions documents. Both repository_path and external repository_url are optional for planning; supplied paths must identify an existing local Git repository. Reuse request_id unchanged on retry.',{...mutation,team_id:uuid,title:text,description:text,repository_path:repositoryPath,repository_url:url},['request_id','actor','team_id','title','description']);
+  tool('edit_project','Partially edit a native Project. Omitted fields remain unchanged; null removes repository_path or repository_url. Supplied local paths must identify an existing Git repository. Does not change status.',{...mutation,id:uuid,title:text,description:text,repository_path:nullable(repositoryPath),repository_url:nullable(url)},['request_id','actor','id']);continue;
  }
  const scoped={...fields};
  if(kind!=='epic')delete scoped.business_requirements;

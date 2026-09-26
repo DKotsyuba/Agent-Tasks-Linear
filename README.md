@@ -29,7 +29,7 @@ Sixteen tools. Issue titles use one leading `[EPIC]`, `[MODULE]`, `[TASK]` or `[
 6. Create an integration Atomic for the completed Modules, run its scenarios and review the report.
 7. Review and close the Epic. New Modules remain outside that Epic, independently queued in Todo or waiting for it to finish.
 
-Start top-down and finish bottom-up. Parent closure never closes children. Native parent/child auto-close must be disabled. No agent launcher, Git operations, background watcher, automatic integration creation or scheduler is included.
+Start top-down and finish bottom-up. Parent closure never closes children. Native parent/child auto-close must be disabled. Projects can use an absolute local `repository_path` without a hosted URL, or omit both while planning. Local checkout validation uses read-only Git; no Git writes, agent launcher, background watcher, automatic integration creation or scheduler is included.
 
 ## Build and connect
 

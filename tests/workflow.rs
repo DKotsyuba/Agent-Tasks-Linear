@@ -3,6 +3,231 @@ mod support;
 use serde_json::json;
 use support::{Fixture, id};
 
+/// Local projects preserve prose/documents, inherit real checkouts, and keep PR/merge gates.
+/// Uses an isolated real Git repository and linked worktree; fixture writes never contact Linear.
+#[tokio::test]
+async fn local_repositories_preserve_content_and_support_linked_checkouts() {
+    use agent_tasks_linear::records::read_fields;
+    use std::{fs, path::Path, process::Command};
+
+    /// Run literal Git arguments in a disposable fixture repository, requiring success.
+    /// Returns stdout for before/after comparisons; only setup calls mutate this fixture.
+    fn git(path: &Path, args: &[&str]) -> Vec<u8> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}: {:?}", args, output);
+        output.stdout
+    }
+
+    let root = std::env::temp_dir().join(format!("local git {}", id()));
+    let repo = root.join("repository");
+    let linked = root.join("linked checkout");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "Fixture",
+        ],
+    );
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    fs::write(repo.join("untracked.txt"), "preserve").unwrap();
+    let before = git(&repo, &["status", "--porcelain=v1"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let linked_before = git(&linked, &["status", "--porcelain=v1"]);
+
+    let mut f = Fixture::new().await;
+    let request = json!({"request_id":id(),"team_id":f.team,"title":"Local product","description":"Native project description","repository_path":repo});
+    let created = f.ok("create_project", request.clone()).await;
+    let project = created["project"]["id"].as_str().unwrap().to_owned();
+    f.ok("create_project", request).await;
+    assert!(
+        read_fields(created["project"]["content"].as_str().unwrap()).unwrap()["repository_url"]
+            .is_null()
+    );
+    let prose = "## Репозиторий\n\nLocal sources only; hosting will be decided later.\n\n## Human notes\n\nKeep this paragraph.\n";
+    let content = format!("{}{prose}", created["project"]["content"].as_str().unwrap());
+    f.db.lock().await.projects.get_mut(&project).unwrap()["content"] = json!(content);
+    let documents = f.db.lock().await.documents.clone();
+    let unchanged = f
+        .ok("edit_project", json!({"id":project,"repository_path":repo}))
+        .await;
+    assert_eq!(unchanged["content"], content);
+
+    let module = f.work("module", &project, None).await;
+    let context = f
+        .ok("get_context", json!({"id":module,"type":"issue"}))
+        .await;
+    assert_eq!(context["fields"]["repository_path"], json!(repo));
+    assert!(context["fields"]["repository_url"].is_null());
+    let not_ready = f.ok("move_status", json!({"id":module,"status":"In Progress","actor_role":"orchestrator","check_only":true})).await;
+    assert_eq!(not_ready["allowed"], false);
+    assert!(
+        not_ready["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().unwrap().contains("INVALID_REPOSITORY"))
+    );
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"worktree":linked,"branch":"fixture"}}),
+    )
+    .await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.restart();
+    let context = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert_eq!(context["parent_checkout"]["repository_path"], json!(repo));
+    assert_eq!(context["parent_checkout"]["worktree"], json!(linked));
+    f.mv(&task, "In Progress").await;
+    f.result("task", &task).await;
+    f.mv(&task, "Done").await;
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"result":"Implemented","check_result":"Verified"}}),
+    )
+    .await;
+    let review = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"In Review","actor_role":"orchestrator","check_only":true}),
+        )
+        .await;
+    assert_eq!(review["conditions"], json!(["Required field: pr_url"]));
+    f.result("module", &module).await;
+    f.mv(&module, "In Review").await;
+    f.review(&module, "accepted").await;
+    let done = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"Done","actor_role":"orchestrator","check_only":true}),
+        )
+        .await;
+    assert_eq!(done["conditions"], json!(["Required field: merge_report"]));
+
+    let atomic = f.ok("create_atomic", json!({"project_id":project,"team_id":f.team,"title":"Local code","fields":{"work_type":"code","executor":"fixture","expected_result":"Build","acceptance_criteria":"Checks pass","local_check":"Run checks","branch":"fixture","worktree":repo}})).await;
+    let atomic_id = atomic["issue"]["id"].as_str().unwrap();
+    f.mv(atomic_id, "In Progress").await;
+    let context = f
+        .ok("get_context", json!({"id":atomic_id,"type":"issue"}))
+        .await;
+    assert_eq!(context["fields"]["repository_path"], json!(repo));
+
+    f.ok(
+        "edit_project",
+        json!({"id":project,"repository_url":"https://git.example.test/product"}),
+    )
+    .await;
+    let removed = f
+        .ok("edit_project", json!({"id":project,"repository_url":null}))
+        .await;
+    let fields = read_fields(removed["content"].as_str().unwrap()).unwrap();
+    assert_eq!(fields["repository_path"], json!(repo));
+    assert_eq!(fields["description"], "Native project description");
+    assert!(fields["repository_url"].is_null());
+    assert!(
+        removed["content"]
+            .as_str()
+            .unwrap()
+            .contains("## Human notes\n\nKeep this paragraph.")
+    );
+    assert_eq!(f.db.lock().await.documents, documents);
+    assert_eq!(f.db.lock().await.projects.len(), 1);
+    let cleared = f
+        .ok("edit_project", json!({"id":project,"repository_path":null}))
+        .await;
+    assert!(
+        read_fields(cleared["content"].as_str().unwrap()).unwrap()["repository_path"].is_null()
+    );
+    let existing = f
+        .ok("get_context", json!({"id":module,"type":"issue"}))
+        .await;
+    assert_eq!(existing["fields"]["repository_path"], json!(repo));
+    assert_eq!(git(&repo, &["status", "--porcelain=v1"]), before);
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&linked, &["status", "--porcelain=v1"]), linked_before);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Bad paths fail before writes; planning and non-code work need no repository, and legacy URLs work.
+#[tokio::test]
+async fn repository_validation_preserves_planning_and_legacy_projects() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let original = f.db.lock().await.projects[&project].clone();
+    for path in [
+        "relative/repository".to_owned(),
+        std::env::temp_dir().join(id()).to_str().unwrap().to_owned(),
+        std::env::temp_dir().to_str().unwrap().to_owned(),
+    ] {
+        let rejected = f
+            .call("edit_project", json!({"id":project,"repository_path":path}))
+            .await;
+        assert_eq!(rejected.status, "blocked");
+        assert_eq!(rejected.data["code"], "INVALID_REPOSITORY");
+        assert_eq!(f.db.lock().await.projects[&project], original);
+        assert_eq!(f.call("create_project", json!({"team_id":f.team,"title":"Invalid","description":"No writes","repository_path":path})).await.status, "blocked");
+    }
+    let planning = f
+        .ok(
+            "create_project",
+            json!({"team_id":f.team,"title":"Planning","description":"No repository yet"}),
+        )
+        .await;
+    let planning_id = planning["project"]["id"].as_str().unwrap();
+    let planned_module = f.work("module", planning_id, None).await;
+    let readiness = f.ok("move_status", json!({"id":planned_module,"status":"In Progress","actor_role":"orchestrator","check_only":true})).await;
+    assert_eq!(
+        readiness["conditions"],
+        json!(["Required field: repository_path or repository_url"])
+    );
+    let non_code = f.work("atomic", planning_id, None).await;
+    f.mv(&non_code, "In Progress").await;
+
+    let module = f.work("module", &project, None).await;
+    assert_eq!(
+        f.call(
+            "edit_module",
+            json!({"id":module,"fields":{"repository_path":"relative"}})
+        )
+        .await
+        .status,
+        "blocked"
+    );
+    f.mv(&module, "In Progress").await;
+    let context = f
+        .ok("get_context", json!({"id":module,"type":"issue"}))
+        .await;
+    assert_eq!(
+        context["fields"]["repository_url"],
+        "https://github.com/example/product"
+    );
+    assert!(context["fields"]["repository_path"].is_null());
+    assert_eq!(f.db.lock().await.projects.len(), 2);
+}
+
 /// Linear may change list markers, but code, literal markers, words and destinations remain significant.
 #[test]
 fn markdown_list_markers_preserve_content() {

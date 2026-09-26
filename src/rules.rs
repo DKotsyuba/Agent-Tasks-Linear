@@ -1,4 +1,4 @@
-//! Pure workflow guards: top-down starts, bottom-up closure and frozen epic membership.
+//! Workflow guards: top-down starts, local checkout validation, bottom-up closure and frozen epics.
 use crate::model::{Fault, Kind, Result, Status, Work};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -251,7 +251,22 @@ fn completed_children(e: &mut Vec<String>, w: &Work, graph: &[Work]) {
         }
     }
 }
-/// Check start prerequisites for a work kind against a fresh full project graph.
+/// Require repository identity for a coding checkout, retaining legacy URL-only readiness.
+/// A local path triggers bounded read-only Git checks of both it and any supplied worktree;
+/// failures become guard conditions. Missing worktree/branch fields are handled by the caller.
+fn checkout(e: &mut Vec<String>, fields: &Value) {
+    if let Some(path) = fields["repository_path"].as_str() {
+        for path in std::iter::once(path).chain(fields["worktree"].as_str()) {
+            if let Err(error) = crate::git::validate_repository(path) {
+                e.push(error.to_string());
+            }
+        }
+    } else if !filled(fields, "repository_url") {
+        e.push("Required field: repository_path or repository_url".into());
+    }
+}
+
+/// Check start prerequisites against a fresh full graph, probing configured local Git checkouts.
 fn start(e: &mut Vec<String>, w: &Work, graph: &[Work]) {
     let m = w.meta.as_ref().unwrap();
     let f = &w.fields;
@@ -280,13 +295,13 @@ fn start(e: &mut Vec<String>, w: &Work, graph: &[Work]) {
                 f,
                 &[
                     "lead",
-                    "repository_url",
                     "branch",
                     "worktree",
                     "required_contract",
                     "provided_contract",
                 ],
             );
+            checkout(e, f);
             if let Some(id) = f["after_epic"].as_str() {
                 if parent(w).is_some() {
                     e.push("after_epic is only valid for a Project-level Module".into());
@@ -308,7 +323,8 @@ fn start(e: &mut Vec<String>, w: &Work, graph: &[Work]) {
                     .and_then(|id| find(graph, id))
                     .filter(|p| p.meta.as_ref().is_some_and(|m| m.kind == Kind::Module));
                 if inherited.is_none() {
-                    needs(e, f, &["repository_url", "branch", "worktree"]);
+                    needs(e, f, &["branch", "worktree"]);
+                    checkout(e, f);
                 }
             }
             if f["work_type"] == "integration" {

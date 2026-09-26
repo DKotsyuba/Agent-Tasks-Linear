@@ -186,21 +186,20 @@ impl Gateway {
             .await?;
         Ok(id)
     }
-    /// Create a permanent native project and ensure its two default documents on every retry.
+    /// Create a permanent native project with optional local repository path and HTTP(S) URL.
+    /// Planning needs neither; a supplied path must be an existing Git checkout.
+    /// Ensures both default documents on every retry and rejects conflicting same-ID content.
     async fn create_project(&self, a: &Value) -> Result<Value> {
         let id = text(a, "request_id")?;
         let title = text(a, "title")?;
         let description = text(a, "description")?;
-        let repository = text(a, "repository_url")?;
-        require(
-            repository.starts_with("https://github.com/"),
-            "INVALID_INPUT",
-            "repository_url must be a GitHub HTTPS repository link",
-        )?;
+        if let Some(path) = a["repository_path"].as_str() {
+            crate::git::validate_repository(path)?;
+        }
         self.states(text(a, "team_id")?).await?;
         let content = patch_description(
             "",
-            &json!({"description":description,"repository_url":repository}),
+            &json!({"description":description,"repository_path":a["repository_path"],"repository_url":a["repository_url"]}),
         );
         let project = if let Some(p) = self.store.optional("QProject", "project", id).await? {
             require(
@@ -248,7 +247,9 @@ impl Gateway {
         }
         Ok(json!({"project":project,"documents":docs}))
     }
-    /// Patch only requested project fields, preserving native content outside owned sections.
+    /// Patch requested project fields, preserving omitted sections, prose and documents.
+    /// Null removes either repository field; supplied paths must be existing local Git checkouts.
+    /// Returns the native project or a validation/API fault without changing work statuses.
     async fn edit_project(&self, a: &Value) -> Result<Value> {
         let id = text(a, "id")?;
         let p = self.project(id).await?;
@@ -257,7 +258,10 @@ impl Gateway {
             input["name"] = v.clone();
         }
         let mut fields = json!({});
-        for key in ["description", "repository_url"] {
+        if let Some(path) = a["repository_path"].as_str() {
+            crate::git::validate_repository(path)?;
+        }
+        for key in ["description", "repository_path", "repository_url"] {
             if let Some(v) = a.get(key) {
                 fields[key] = v.clone();
             }
@@ -281,6 +285,8 @@ impl Gateway {
             .clone())
     }
     /// Create a native issue, then its small attachment. Same-ID retries resume incomplete creation.
+    /// Modules and standalone code Atomics inherit omitted repository fields from Project;
+    /// legacy repository prose is not inherited as a URL. Tasks use their Module's checkout.
     async fn create_work(&self, kind: Kind, a: &Value) -> Result<Value> {
         let id = text(a, "request_id")?;
         let project = text(a, "project_id")?;
@@ -347,13 +353,29 @@ impl Gateway {
             });
         }
         if kind == Kind::Module
-            && fields.get("repository_url").is_none()
-            && let Some(repo) =
-                read_fields(p["content"].as_str().unwrap_or(""))?.get("repository_url")
+            || (kind == Kind::Atomic
+                && fields["work_type"] == "code"
+                && parent
+                    .and_then(|id| rules::find(&graph, id))
+                    .is_none_or(|w| w.meta.as_ref().is_none_or(|m| m.kind != Kind::Module)))
         {
-            fields["repository_url"] = repo.clone();
+            let project_fields = read_fields(p["content"].as_str().unwrap_or(""))?;
+            for key in ["repository_path", "repository_url"] {
+                if fields.get(key).is_none()
+                    && let Some(value) = project_fields.get(key)
+                    && self
+                        .catalog
+                        .validate_fields(kind, &json!({key:value}))
+                        .is_ok()
+                {
+                    fields[key] = value.clone();
+                }
+            }
         }
         self.catalog.validate_fields(kind, &fields)?;
+        if let Some(path) = fields["repository_path"].as_str() {
+            crate::git::validate_repository(path)?;
+        }
         Self::check_fields(kind, &fields, parent, &graph)?;
         let description = patch_description("", &fields);
         let native = if let Some(existing) = self.store.optional("QIssue", "issue", id).await? {
@@ -699,6 +721,7 @@ impl Gateway {
     }
     /// Apply one managed issue edit for `kind`; missing title normalizes the existing title, missing priority preserves it, and priority zero clears it.
     /// Empty or title/priority-only edits preserve native descriptions, stored fields and review identity in any status, without validating or adopting legacy content; requirement/parent edits validate content, invalidate review and require reopening reviewed work, except the existing Module merge-report allowance. Returns the confirmed issue outcome or a safe conflict/write fault.
+    /// Explicit repository_path edits validate the local Git checkout before preparing a write.
     async fn edit_work(&self, kind: Kind, a: &Value) -> Result<Value> {
         let (w, graph) = self.loaded(text(a, "id")?).await?;
         let m = w.managed()?;
@@ -781,6 +804,9 @@ impl Gateway {
         if !presentation_only {
             self.catalog.validate_fields(kind, &fields)?;
             Self::check_fields(kind, &fields, next.parent_id.as_deref(), &graph)?;
+        }
+        if let Some(path) = patch["repository_path"].as_str() {
+            crate::git::validate_repository(path)?;
         }
         next.fields = fields;
         if !presentation_only {
@@ -949,7 +975,8 @@ impl Gateway {
         Ok(json!({"review":next.review,"issue_id":w.id()}))
     }
     /// Read a Project, Issue or Document by validated type and UUID; issue context reuses its loaded Project graph for children, transition conditions and same Project/parent/type-label priority peers.
-    /// Reads do not mutate Linear; missing records, unmanaged issues and native/API failures propagate as safe faults.
+    /// Parent checkout includes its optional local repository path. Readiness probes local Git
+    /// when configured; reads do not mutate Linear. Missing records and API failures propagate.
     async fn context(&self, a: &Value) -> Result<Value> {
         let id = text(a, "id")?;
         match text(a, "type")? {
@@ -968,7 +995,7 @@ impl Gateway {
             "document" => self.store.linear.object("QDocument", "document", id).await,
             _ => {
                 let (w, g) = self.loaded(id).await?;
-                let checkout=rules::parent(&w).and_then(|p|rules::find(&g,p)).filter(|p|p.meta.as_ref().is_some_and(|m|m.kind==Kind::Module)).map(|p|json!({"repository_url":p.fields["repository_url"],"branch":p.fields["branch"],"worktree":p.fields["worktree"],"lead":p.fields["lead"]}));
+                let checkout=rules::parent(&w).and_then(|p|rules::find(&g,p)).filter(|p|p.meta.as_ref().is_some_and(|m|m.kind==Kind::Module)).map(|p|json!({"repository_path":p.fields["repository_path"],"repository_url":p.fields["repository_url"],"branch":p.fields["branch"],"worktree":p.fields["worktree"],"lead":p.fields["lead"]}));
                 let m = w.managed()?;
                 let peers: Vec<_> = g
                     .iter()
