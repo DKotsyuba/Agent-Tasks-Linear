@@ -7,7 +7,18 @@ use crate::{
     rules,
 };
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::{Duration, Instant},
+};
+
+/// Maximum retained comparison points across all Projects in one gateway process.
+const MAX_BASELINES: usize = 32;
+/// Comparison points expire after this interval; workflow state always comes from Linear.
+const BASELINE_TTL: Duration = Duration::from_secs(30 * 60);
+/// Bound each compact comparison point before it enters process memory.
+const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 
 /// Resolve a native Linear Issue URL to its human identifier without fetching the URL.
 /// Only HTTPS links on linear.app with an issue path are accepted; a malformed or unrelated
@@ -322,4 +333,179 @@ pub fn project_overview(
         "active_epics":epic_cards,"standalone_modules":standalone,"atomics":atomics,"excluded":excluded,
         "awaiting_review":awaiting_review,"open_questions":questions,"project_update_draft":draft}),
     )
+}
+
+/// Hash one current value so a compact snapshot still detects changes beyond its preview.
+fn digest(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+/// Keep a short human hint alongside a digest; absent values stay absent rather than empty.
+fn preview(value: Option<&str>) -> Option<String> {
+    value.map(|text| text.chars().take(240).collect())
+}
+
+/// Capture only the fields whose change matters to a repeated Project overview.
+/// `project` contributes displayed identity; work includes completion, assignments, field digests
+/// and current-round source/review references. Activity includes questions, replies, resolution and formal review state. The
+/// returned map is deterministic and never serves as authoritative workflow state.
+pub fn compact_snapshot(
+    project: &Value,
+    graph: &[Work],
+    activity: &BTreeMap<String, Vec<ActivityRecord>>,
+) -> Result<BTreeMap<String, Value>> {
+    let mut snapshot = BTreeMap::new();
+    snapshot.insert(
+        "project".into(),
+        json!({"id":project["id"],"name":project["name"],"url":project["url"]}),
+    );
+    for work in graph.iter().filter(|work| work.meta.is_some()) {
+        let meta = work.managed()?;
+        let result = work.fields["result"].as_str();
+        let checks = work.fields["check_result"].as_str();
+        snapshot.insert(format!("work:{}", work.id()), json!({
+            "id":work.id(),"url":work.native["url"],"identifier":work.native["identifier"],
+            "title":work.native["title"],"priority":work.native["priority"],"parent_id":work.native["parent"]["id"],
+            "kind":meta.kind,"status":work.status()?,"lead":work.fields["lead"],
+            "round":meta.round,"revision":meta.revision,
+            "fields_hash":digest(&serde_json::to_string(&work.fields).unwrap_or_default()),
+            "result_hash":result.map(digest),"result_preview":preview(result),
+            "checks_hash":checks.map(digest),
+            "source_commits":meta.current_git_reports().map(|report| json!({"sha":report.commit.sha,"repository_identity":report.commit.repository_identity})).collect::<Vec<_>>(),
+            "review":meta.review
+        }));
+    }
+    for records in activity.values() {
+        for record in records {
+            snapshot.insert(format!("activity:{}", record.id), json!({
+                "id":record.id,"url":record.url,"target":record.target,"kind":record.kind,
+                "parent_id":record.parent_id,"recipient":record.recipient,
+                "record_hash":digest(&serde_json::to_string(record).unwrap_or_default()),
+                "body_hash":digest(&record.body),"body_preview":preview(Some(&record.body)),
+                "created_at":record.created_at,"updated_at":record.updated_at,
+                "resolved_at":record.resolved_at,"resolving_comment_id":record.resolving_comment_id,
+                "verdict":record.verdict,"findings_hash":record.findings.as_deref().map(digest),
+                "formal_review":record.formal_review,"health":record.health,"reason":record.reason
+            }));
+        }
+    }
+    require(
+        serde_json::to_vec(&snapshot)
+            .map(|bytes| bytes.len())
+            .unwrap_or(usize::MAX)
+            <= MAX_SNAPSHOT_BYTES,
+        "INCOMPLETE_DATA",
+        "Comparison snapshot exceeds 256 KiB",
+    )?;
+    Ok(snapshot)
+}
+
+/// One opaque previous observation bound to its Project and process lifetime.
+struct Baseline {
+    /// Random cursor returned to the caller; it carries no Project data itself.
+    cursor: String,
+    /// Native Project UUID; a cursor from another Project is never compared.
+    project_id: String,
+    /// Monotonic process time used only for bounded expiry.
+    captured_at: Instant,
+    /// Compact prior fields, never an authoritative work record.
+    snapshot: BTreeMap<String, Value>,
+}
+
+/// Small process-local comparison cache; restarts and eviction intentionally lose baselines.
+#[derive(Default)]
+pub struct SnapshotCache {
+    /// Oldest-first observations, capped at MAX_BASELINES.
+    entries: VecDeque<Baseline>,
+}
+
+impl SnapshotCache {
+    /// Compare with a valid same-Project cursor, then retain the current compact snapshot.
+    /// An absent cursor requests a full overview; expired, foreign or unknown cursors produce
+    /// `baseline_expired=true` and no changes array, so callers must use the full result.
+    /// `now` is monotonic process time, injectable for deterministic expiry checks.
+    pub fn compare(
+        &mut self,
+        project_id: &str,
+        cursor: Option<&str>,
+        snapshot: BTreeMap<String, Value>,
+        now: Instant,
+    ) -> Value {
+        self.entries.retain(|entry| {
+            now.checked_duration_since(entry.captured_at)
+                .unwrap_or_default()
+                < BASELINE_TTL
+        });
+        let old = cursor.and_then(|key| {
+            self.entries
+                .iter()
+                .find(|entry| entry.cursor == key && entry.project_id == project_id)
+        });
+        let changes = old.map(|entry| {
+            let mut changes = Vec::new();
+            for (key, after) in &snapshot {
+                if entry.snapshot.get(key) != Some(after) {
+                    changes.push(json!({"key":key,"before":entry.snapshot.get(key),"after":after}));
+                }
+            }
+            for (key, before) in &entry.snapshot {
+                if !snapshot.contains_key(key) {
+                    changes.push(json!({"key":key,"before":before,"after":Value::Null}));
+                }
+            }
+            changes
+        });
+        let baseline_expired = cursor.is_some() && changes.is_none();
+        if self.entries.len() == MAX_BASELINES {
+            self.entries.pop_front();
+        }
+        let next = uuid::Uuid::new_v4().to_string();
+        self.entries.push_back(Baseline {
+            cursor: next.clone(),
+            project_id: project_id.into(),
+            captured_at: now,
+            snapshot,
+        });
+        json!({"cursor":next,"baseline_expired":baseline_expired,"changes":changes})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Capacity, scope and monotonic expiry never turn a missing baseline into no changes.
+    #[test]
+    fn bounded_baselines_expire_explicitly() {
+        let mut cache = SnapshotCache::default();
+        let now = Instant::now();
+        let snapshot = BTreeMap::from([("work:a".into(), json!({"status":"In Progress"}))]);
+        let first = cache.compare("project-a", None, snapshot.clone(), now);
+        let unchanged = cache.compare("project-a", first["cursor"].as_str(), snapshot.clone(), now);
+        assert_eq!(unchanged["changes"], json!([]));
+        assert_eq!(unchanged["baseline_expired"], false);
+        for _ in 0..MAX_BASELINES {
+            cache.compare("project-a", None, snapshot.clone(), now);
+        }
+        assert_eq!(cache.entries.len(), MAX_BASELINES);
+        let evicted = cache.compare("project-a", first["cursor"].as_str(), snapshot.clone(), now);
+        assert_eq!(evicted["baseline_expired"], true);
+        assert!(evicted["changes"].is_null());
+        let foreign = cache.compare(
+            "project-b",
+            evicted["cursor"].as_str(),
+            snapshot.clone(),
+            now,
+        );
+        assert_eq!(foreign["baseline_expired"], true);
+        assert!(foreign["changes"].is_null());
+        let expired = cache.compare(
+            "project-a",
+            evicted["cursor"].as_str(),
+            snapshot,
+            now + BASELINE_TTL + Duration::from_secs(1),
+        );
+        assert_eq!(expired["baseline_expired"], true);
+        assert!(expired["changes"].is_null());
+    }
 }

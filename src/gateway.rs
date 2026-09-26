@@ -7,7 +7,11 @@ use crate::{
     rules,
 };
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex as StdMutex},
+    time::Instant,
+};
 use tokio::sync::Mutex;
 
 /// Read a native priority that is represented as an integral JSON number from 0 through 4.
@@ -71,6 +75,8 @@ pub struct Gateway {
     pub store: Store,
     /// ponytail: serialize requests across this gateway; use project locks only if throughput requires it.
     lock: Mutex<()>,
+    /// Bounded process-local comparison points; native Linear data remains authoritative.
+    baselines: StdMutex<crate::context::SnapshotCache>,
 }
 impl Gateway {
     /// Construct a gateway without contacting Linear; tool discovery works before credentials exist.
@@ -79,6 +85,7 @@ impl Gateway {
             catalog: Catalog::new()?,
             store: Store { linear },
             lock: Mutex::new(()),
+            baselines: StdMutex::new(crate::context::SnapshotCache::default()),
         }))
     }
     /// Validate, serialize and dispatch one tool call, retaining uncertain write outcomes.
@@ -341,7 +348,7 @@ impl Gateway {
             );
         }
         let generated = if a["body"].is_null() {
-            Some(self.overview_data(project_id).await?)
+            Some(self.overview_data(project_id).await?.0)
         } else {
             None
         };
@@ -1569,7 +1576,7 @@ impl Gateway {
     }
     /// Load one complete Project graph and bounded native activity, then compose a read-only view.
     /// The limit prevents a large Project from turning a single overview into unbounded API reads.
-    async fn overview_data(&self, project_id: &str) -> Result<Value> {
+    async fn overview_data(&self, project_id: &str) -> Result<(Value, BTreeMap<String, Value>)> {
         let project = self.project(project_id).await?;
         let graph = self.store.graph(project_id).await?;
         require(
@@ -1607,19 +1614,43 @@ impl Gateway {
             let id = update["id"]
                 .as_str()
                 .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "ProjectUpdate has no ID"))?;
-            activity.insert(
-                id.to_owned(),
-                crate::activity::read_activity(&self.store, "project_update", id).await?,
-            );
+            let mut records =
+                crate::activity::read_activity(&self.store, "project_update", id).await?;
+            records.push(crate::activity::project_update_record(update)?);
+            activity.insert(id.to_owned(), records);
         }
-        crate::context::project_overview(&project, &graph, &activity)
+        let overview = crate::context::project_overview(&project, &graph, &activity)?;
+        let snapshot = crate::context::compact_snapshot(&project, &graph, &activity)?;
+        Ok((overview, snapshot))
     }
 
-    /// Return a fresh overview and unpublished ProjectUpdate draft; reads never write to Linear.
+    /// Return a full overview or a same-Project delta and a fresh opaque comparison point.
+    /// Missing process-local baselines fall back to a full response with baseline_expired=true;
+    /// neither branch writes to Linear or launches background activity.
     async fn overview(&self, a: &Value) -> Result<Value> {
-        let mut result = self.overview_data(text(a, "project_id")?).await?;
-        result["observed_at"] = json!(chrono::Utc::now().to_rfc3339());
-        Ok(result)
+        let project_id = text(a, "project_id")?;
+        let (mut full, snapshot) = self.overview_data(project_id).await?;
+        let comparison = self
+            .baselines
+            .lock()
+            .map_err(|_| {
+                Fault::new(
+                    "INCOMPLETE_DATA",
+                    "Overview comparison cache is unavailable",
+                )
+            })?
+            .compare(project_id, a["cursor"].as_str(), snapshot, Instant::now());
+        let observed_at = chrono::Utc::now().to_rfc3339();
+        if comparison["changes"].is_array() {
+            Ok(json!({"project_id":project_id,"observed_at":observed_at,
+                "cursor":comparison["cursor"],"baseline_expired":false,
+                "changes":comparison["changes"],"project_update_draft":full["project_update_draft"]}))
+        } else {
+            full["observed_at"] = json!(observed_at);
+            full["cursor"] = comparison["cursor"].clone();
+            full["baseline_expired"] = comparison["baseline_expired"].clone();
+            Ok(full)
+        }
     }
 
     /// Read native work by UUID or a native Issue link. Legacy type/ID calls keep their original

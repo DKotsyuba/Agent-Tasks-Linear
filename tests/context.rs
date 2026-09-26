@@ -192,3 +192,136 @@ async fn overview_rejects_incomplete_membership() {
     let outcome = f.call("get_overview", json!({"project_id":project})).await;
     assert_eq!(outcome.data["code"], "INCOMPLETE_DATA");
 }
+
+/// Only a retained same-Project baseline may justify an empty or changed delta.
+#[tokio::test]
+async fn overview_delta_tracks_work_and_discussion_with_safe_fallbacks() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.mv(&task, "In Progress").await;
+    let first = f.ok("get_overview", json!({"project_id":project})).await;
+    assert_eq!(first["baseline_expired"], false);
+    assert!(first["changes"].is_null());
+    let unchanged = f
+        .ok(
+            "get_overview",
+            json!({"project_id":project,"cursor":first["cursor"]}),
+        )
+        .await;
+    assert_eq!(unchanged["changes"], json!([]));
+    assert_ne!(unchanged["cursor"], first["cursor"]);
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"lead":"codex:new-lead"}}),
+    )
+    .await;
+    f.ok("edit_task", json!({"id":task,"fields":{"result":"Finished work","check_result":"Manual check passed","artifact_url":"https://example.test/result"}})).await;
+    f.mv(&task, "Done").await;
+    let question = f
+        .ok(
+            "add_comment",
+            json!({"target_type":"issue","target_id":module,
+        "kind":"question","role":"lead","recipient":"reviewer","body":"Ready for review?"}),
+        )
+        .await;
+    let changed = f
+        .ok(
+            "get_overview",
+            json!({"project_id":project,"cursor":unchanged["cursor"]}),
+        )
+        .await;
+    let entries = changed["changes"].as_array().unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["key"] == format!("work:{module}")
+                && entry["after"]["lead"] == "codex:new-lead")
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["key"] == format!("work:{task}")
+                && entry["after"]["status"] == "Done"
+                && entry["after"]["result_preview"] == "Finished work")
+    );
+    assert!(
+        entries.iter().any(|entry| entry["key"]
+            == format!("activity:{}", question["comment"]["id"].as_str().unwrap()))
+    );
+    let reply = f
+        .ok(
+            "add_comment",
+            json!({"target_type":"issue","target_id":module,
+        "parent_id":question["comment"]["id"],"kind":"note","role":"reviewer","body":"Yes"}),
+        )
+        .await;
+    f.ok(
+        "resolve_comment",
+        json!({"id":question["comment"]["id"],"resolved":true,
+        "resolving_comment_id":reply["comment"]["id"]}),
+    )
+    .await;
+    let discussion = f
+        .ok(
+            "get_overview",
+            json!({"project_id":project,"cursor":changed["cursor"]}),
+        )
+        .await;
+    assert!(
+        discussion["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["key"]
+                == format!("activity:{}", question["comment"]["id"].as_str().unwrap())
+                && entry["after"]["resolved_at"].is_string())
+    );
+    assert!(
+        discussion["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["key"]
+                == format!("activity:{}", reply["comment"]["id"].as_str().unwrap()))
+    );
+    f.result("module", &module).await;
+    f.mv(&module, "In Review").await;
+    f.review(&module, "accepted").await;
+    let reviewed = f
+        .ok(
+            "get_overview",
+            json!({"project_id":project,"cursor":discussion["cursor"]}),
+        )
+        .await;
+    assert!(
+        reviewed["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["key"] == format!("work:{module}")
+                && entry["after"]["review"]["accepted"] == true)
+    );
+    let other = f.project().await;
+    let foreign = f
+        .ok(
+            "get_overview",
+            json!({"project_id":other,"cursor":reviewed["cursor"]}),
+        )
+        .await;
+    assert_eq!(foreign["baseline_expired"], true);
+    assert!(foreign["changes"].is_null());
+    assert_eq!(foreign["project_id"], other);
+    f.restart();
+    let cold = f
+        .ok(
+            "get_overview",
+            json!({"project_id":project,"cursor":reviewed["cursor"]}),
+        )
+        .await;
+    assert_eq!(cold["baseline_expired"], true);
+    assert!(cold["changes"].is_null());
+    assert!(cold["standalone_modules"].is_array());
+}
