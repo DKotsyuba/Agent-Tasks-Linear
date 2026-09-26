@@ -1,6 +1,9 @@
 //! Pure, embedded MiniJinja presentation for every agent-facing MCP outcome.
 
-use crate::{model::Outcome, records::patch_description};
+use crate::{
+    model::Outcome,
+    records::{patch_description, read_fields},
+};
 use minijinja::{AutoEscape, Environment, UndefinedBehavior};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
@@ -287,7 +290,10 @@ fn context_projection(data: &Value) -> Value {
         && data["fields"]["result"].is_string()
         && data["fields"]["result"] == report["summary"]
         && data["fields"]["check_result"] == report["reported_checks"]
-    {
+        && read_fields(description).ok().is_some_and(|native| {
+            native["result"] == report["summary"]
+                && native["check_result"] == report["reported_checks"]
+        }) {
         patch_description(description, &json!({"result":null,"check_result":null}))
     } else {
         description.to_owned()
@@ -357,9 +363,16 @@ fn comment_projection(data: &Value) -> Value {
         .flatten()
         .map(|reply| json!({"item":identity(reply),"body":reply["body"]}))
         .collect();
+    let thread = if data["root"].is_object() {
+        &data["root"]
+    } else {
+        &data["comment"]
+    };
     json!({"item":identity(&data["comment"]),"activity":data["activity"],
         "root":identity(&data["root"]),"root_body":data["root"]["body"],
         "root_distinct":data["root"].is_object() && data["root"]["id"] != data["comment"]["id"],
+        "thread_resolved":thread["resolvedAt"].is_string(),
+        "thread_resolving_comment_id":thread["resolvingCommentId"],
         "replies":replies,"has_next":data["replies"]["pageInfo"]["hasNextPage"],
         "cursor":data["replies"]["pageInfo"]["endCursor"]})
 }
@@ -596,7 +609,7 @@ mod tests {
         let sha = "a".repeat(40);
         let description = "## Результат\nDerived summary\n\n## Результаты проверок\ncheck one\n\n## Manual notes\nKeep this human note.\n";
         let report = json!({"tasks_done":1,"tasks_total":1,"summary":"Derived summary","reported_checks":"check one","pr_draft":"## Summary\nDerived summary\n\n## Checks\ncheck one","notes":"Known risk","source_commits":[{"sha":sha,"subject":"feat: deliver","work_ids":["task-1"]}],"unfinished":[],"excluded":[]});
-        let data = json!({"issue":{"id":"module-1","identifier":"MYT-1","title":"Module","url":"https://linear.app/module-1","description":description},"fields":{"result":"Derived summary","check_result":"check one"},"module_report":report,"children":[]});
+        let data = json!({"issue":{"id":"module-1","identifier":"MYT-1","title":"Module","url":"https://linear.app/module-1","description":description},"fields":{"result":"Derived summary","check_result":"check one"},"module_report":report.clone(),"children":[]});
         let text = render_outcome(
             "get_context",
             &json!({"type":"issue","id":"module-1"}),
@@ -608,6 +621,14 @@ mod tests {
         assert!(text.contains("Keep this human note."));
         assert_eq!(text.matches("Derived summary").count(), 1);
         assert_eq!(text.matches("check one").count(), 1);
+        let drift = json!({"issue":{"id":"module-1","description":"## Результат\nManual correction\n\n## Результаты проверок\ncheck one\n\n## Manual notes\nKeep this human note.\n"},"fields":{"result":"Derived summary","check_result":"check one"},"module_report":report,"children":[]});
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"issue","id":"module-1"}),
+            &Outcome::ok(drift),
+        );
+        assert!(text.contains("Manual correction"), "{text}");
+        assert!(text.contains("Keep this human note."));
     }
 
     /// Overview pages retain the one reusable update draft, Epic totals and Module session link.
@@ -642,7 +663,7 @@ mod tests {
     /// Comment reads retain attribution and thread state; status checks identify a preview.
     #[test]
     fn activity_preview_and_fallback_keep_action_handles() {
-        let comment = json!({"comment":{"id":"reply-1","url":"https://linear.app/reply-1","parent":{"id":"root-1"}},"activity":{"kind":"question","actor":"codex:lead","role":"reviewer","session":"https://example.com/session","source_links":["https://example.com/source"],"parent_id":"root-1","resolved_at":"2026-09-26T00:00:00Z","resolving_comment_id":"reply-2","body":"Question"},"root":{"id":"root-1","url":"https://linear.app/root-1","body":"Root"},"replies":{"nodes":[],"pageInfo":{"hasNextPage":false}}});
+        let comment = json!({"comment":{"id":"reply-1","url":"https://linear.app/reply-1","parent":{"id":"root-1"},"resolvedAt":null},"activity":{"kind":"question","actor":"codex:lead","role":"reviewer","session":"https://example.com/session","source_links":["https://example.com/source"],"parent_id":"root-1","resolved_at":null,"resolving_comment_id":null,"body":"Question"},"root":{"id":"root-1","url":"https://linear.app/root-1","body":"Root","resolvedAt":"2026-09-26T00:00:00Z","resolvingCommentId":"reply-2"},"replies":{"nodes":[],"pageInfo":{"hasNextPage":false}}});
         let text = render_outcome(
             "get_comment",
             &json!({"id":"reply-1"}),
@@ -659,6 +680,7 @@ mod tests {
             assert!(text.contains(expected), "{text}");
         }
         assert_eq!(text.matches("Parent ID: root-1").count(), 1);
+        assert!(!text.contains("Resolved: false"));
         let preview = render_outcome(
             "move_status",
             &json!({"id":"issue-1","request_id":"req-1"}),
