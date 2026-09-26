@@ -77,7 +77,31 @@ async fn local_commit_imports_are_durable_ordered_and_round_scoped() {
     f.restart();
     let replayed = f.ok("record_commits", request.clone()).await;
     assert_eq!(replayed["git_reports"].as_array().unwrap().len(), 1);
+    assert_eq!(replayed["journal"].as_array().unwrap().len(), 1);
     f.ok("record_commits", request).await;
+    let first_activity = f
+        .ok(
+            "list_items",
+            json!({"type":"comment","target_type":"issue","target_id":task}),
+        )
+        .await;
+    assert_eq!(
+        first_activity["activity_records"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(first_activity["activity_records"][0]["kind"], "progress");
+    assert!(
+        first_activity["activity_records"][0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("first result")
+    );
+    assert!(
+        first_activity["activity_records"][0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("first passed")
+    );
     let snapshot = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
     assert_eq!(snapshot["issue"]["state"]["name"], "In Progress");
     assert!(
@@ -99,21 +123,38 @@ async fn local_commit_imports_are_durable_ordered_and_round_scoped() {
         json!({"id":module,"fields":{"worktree":linked}}),
     )
     .await;
-    let imported = f
-        .ok(
-            "record_commits",
-            json!({"work_id":task,"commits":[hashes[0],hashes[1],hashes[0]]}),
-        )
-        .await;
+    let second_request =
+        json!({"request_id":id(),"work_id":task,"commits":[hashes[0],hashes[1],hashes[0]]});
+    f.db.lock().await.lose = Some("MCreateComment".into());
+    assert_eq!(
+        f.call("record_commits", second_request.clone())
+            .await
+            .status,
+        "outcome_unknown"
+    );
+    f.restart();
+    let imported = f.ok("record_commits", second_request).await;
     assert_eq!(imported["git_reports"].as_array().unwrap().len(), 2);
     assert_eq!(imported["git_reports"][0]["sha"], hashes[0]);
     assert_eq!(imported["git_reports"][1]["sha"], hashes[1]);
+    assert_eq!(imported["journal"].as_array().unwrap().len(), 2);
     let before = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
     f.ok(
         "record_commits",
         json!({"work_id":task,"commits":[hashes[0]]}),
     )
     .await;
+    assert_eq!(
+        f.ok(
+            "list_items",
+            json!({"type":"comment","target_type":"issue","target_id":task})
+        )
+        .await["nodes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     assert_eq!(
         f.call(
             "record_commits",
@@ -158,6 +199,17 @@ async fn local_commit_imports_are_durable_ordered_and_round_scoped() {
         .await;
     assert_eq!(new_round["git_reports"].as_array().unwrap().len(), 1);
     assert_eq!(new_round["git_reports"][0]["round"], 2);
+    assert_eq!(
+        f.ok(
+            "list_items",
+            json!({"type":"comment","target_type":"issue","target_id":task})
+        )
+        .await["nodes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
     f.mv(&task, "Done").await;
 
     let atomic = f.work("atomic", &project, Some(&module)).await;
@@ -519,6 +571,70 @@ async fn markdown_list_pending_retry_preserves_manual_changes() {
     f.ok("edit_epic", request.clone()).await;
     f.ok("edit_epic", request).await;
     let context = f.ok("get_context", json!({"type":"issue","id":epic})).await;
+    assert!(context["workflow"]["pending"].is_null());
+    assert_eq!(context["discrepancies"], json!([]));
+    assert_eq!(context["issue"]["description"], native);
+}
+
+/// Native titles replace only requested bare URLs; explicit labels, destinations, words,
+/// code literals and extra sections remain substantive differences.
+#[test]
+fn markdown_native_link_title_preserves_meaningful_differences() {
+    use agent_tasks_linear::records::markdown_equivalent;
+    let url = "https://linear.app/example/document/spec-123";
+    let expected = format!("Plan: {url}\n\nKeep [Role](https://example.com/role)");
+    let native = expected.replace(url, &format!("[Spec title](<{url}>)"));
+    assert!(markdown_equivalent(&expected, &native));
+    assert!(markdown_equivalent(
+        &expected,
+        &native.replace("Spec title", "New spec title")
+    ));
+    for changed in [
+        native.replace("[Spec title]", "[Extra] [Spec title]"),
+        native.replace("spec-123", "spec-124"),
+        native.replace("Plan:", "Changed:"),
+        native.replace("[Role]", "[Other]"),
+        format!("{native}\n\n## Notes\nExtra text"),
+    ] {
+        assert!(!markdown_equivalent(&expected, &changed), "{changed}");
+    }
+    assert!(!markdown_equivalent(
+        &format!("[Original](<{url}>)"),
+        &format!("[Changed](<{url}>)"),
+    ));
+    assert!(!markdown_equivalent(
+        &format!("`{url}`"),
+        &format!("`[Spec title](<{url}>)`"),
+    ));
+}
+
+/// A pending Issue edit accepts Linear's title for an originally bare document URL without
+/// changing the requested words, other link labels, or its saved request identity.
+#[tokio::test]
+async fn markdown_document_title_pending_retry_preserves_content() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    let url = "https://linear.app/example/document/spec-123";
+    let request = json!({"request_id":id(),"id":module,"fields":{
+        "description":format!("Plan: {url}\n\nKeep [Role](https://example.com/role)")
+    }});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("edit_module", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    let native = f.db.lock().await.issues[&module]["description"]
+        .as_str()
+        .unwrap()
+        .replace(url, &format!("[Spec title](<{url}>)"));
+    f.db.lock().await.issues.get_mut(&module).unwrap()["description"] = json!(native);
+    f.restart();
+    f.ok("edit_module", request.clone()).await;
+    f.ok("edit_module", request).await;
+    let context = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
     assert!(context["workflow"]["pending"].is_null());
     assert_eq!(context["discrepancies"], json!([]));
     assert_eq!(context["issue"]["description"], native);
@@ -1138,10 +1254,41 @@ async fn uncertain_creates_reviews_and_frozen_reparenting() {
         f.call("record_review", review.clone()).await.status,
         "outcome_unknown"
     );
-    f.ok("record_review", review.clone()).await;
-    f.ok("record_review", review.clone()).await;
-    assert_eq!(f.db.lock().await.comments.len(), 1);
+    let recorded = f.ok("record_review", review.clone()).await;
+    assert!(recorded["url"].as_str().unwrap().contains("#comment-"));
+    let replayed = f.ok("record_review", review.clone()).await;
+    assert_eq!(recorded["url"], replayed["url"]);
+    let activity = f.ok("get_comment", json!({"id":recorded["url"]})).await;
+    assert_eq!(activity["activity"]["kind"], "review");
+    assert_eq!(activity["activity"]["formal_review"], true);
+    assert_eq!(activity["activity"]["verdict"], "accepted");
+    let ordinary = f
+        .ok(
+            "add_comment",
+            json!({"target_type":"issue","target_id":atom,"body":"accepted"}),
+        )
+        .await;
+    assert_eq!(
+        f.ok("get_comment", json!({"id":ordinary["comment"]["id"]}))
+            .await["activity"]["formal_review"],
+        false
+    );
+    assert_eq!(
+        f.ok("get_context", json!({"type":"issue","id":atom})).await["workflow"]["review"]["id"],
+        review["request_id"]
+    );
+    let records = agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom)
+        .await
+        .unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records.iter().filter(|r| r.formal_review).count(), 1);
+    assert_eq!(f.db.lock().await.comments.len(), 2);
     f.mv(&atom, "In Progress").await;
+    let history = agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(history.iter().all(|r| !r.formal_review));
     f.result("atomic", &atom).await;
     f.mv(&atom, "In Review").await;
     assert_eq!(f.call("record_review", review).await.status, "blocked");

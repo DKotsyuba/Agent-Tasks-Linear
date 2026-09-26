@@ -2808,7 +2808,7 @@
   },
   {
     "name": "get_context",
-    "description": "Read native Project, Issue or Document. Issues include children, priority peers, parent checkout, current-round git_reports, discrepancies and guarded transitions. Modules also expose module_report with derived results, checks, counts, source commits and an unpublished PR draft. Reads never repair Linear.",
+    "description": "Read native Project, Issue, Document or ProjectUpdate. ProjectUpdate includes native health and normalized activity. Issues include children, priority peers, parent checkout, current-round git_reports, discrepancies and guarded transitions. Modules also expose module_report and an unpublished PR draft. Reads never repair Linear.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2816,7 +2816,8 @@
           "enum": [
             "project",
             "issue",
-            "document"
+            "document",
+            "project_update"
           ]
         },
         "id": {
@@ -2840,7 +2841,7 @@
   },
   {
     "name": "list_items",
-    "description": "List native items; native order keeps native pagination. For order_by=priority, require type=issue, project_id and kind; absent/null parent_id is the Project root. A supplied parent must be in that Project and have a compatible kind. Fetch the complete live sibling group within the page budget, then sort by priority 1,2,3,4,0, native prioritySortOrder, then UUID; page only after sorting. The scope-bound cursor includes Project, parent, kind, team, status, archived setting and priority filter. Priority is advisory and never starts or gates work. The optional 0–4 priority filter applies only to issues.",
+    "description": "List native Projects, Issues, Documents, Comments or ProjectUpdates with opaque pagination. Comment and ProjectUpdate pages include normalized activity_records; target_type+target_id scopes Comments, project_id scopes updates. Issue priority ordering fetches the bounded sibling group before sorting. Priority never gates work.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2848,7 +2849,9 @@
           "enum": [
             "project",
             "issue",
-            "document"
+            "document",
+            "comment",
+            "project_update"
           ]
         },
         "project_id": {
@@ -2867,6 +2870,18 @@
               "type": "null"
             }
           ]
+        },
+        "target_type": {
+          "enum": [
+            "issue",
+            "project",
+            "project_update"
+          ]
+        },
+        "target_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
         },
         "team_id": {
           "type": "string",
@@ -3092,7 +3107,7 @@
   },
   {
     "name": "record_review",
-    "description": "Record a reviewer report as a native comment for the current Module, Atomic or Epic review round. Does not move status; Tasks are reviewed only through their Module.",
+    "description": "Record a reviewer report as a native review activity comment for the current Module, Atomic or Epic round. Returns its direct permalink and never moves status; Tasks have no separate review.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3113,6 +3128,12 @@
           "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
         },
         "reviewer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "session": {
           "type": "string",
           "minLength": 1,
           "maxLength": 30000,
@@ -3167,7 +3188,7 @@
   },
   {
     "name": "record_commits",
-    "description": "Read and persist local Git commit snapshots for an active code Task or Atomic. Uses the assigned checkout; commits are concrete hexadecimal hashes, in attachment order. Result and Checks sections are required. Deduplicates repository/SHA within this work round, preserves old snapshots and fills result/check_result. Never changes status or writes Git. Reuse request_id and arguments after an unknown outcome.",
+    "description": "Read and persist local Git commit snapshots for an active code Task or Atomic. Uses the assigned checkout; commits are concrete hexadecimal hashes, in attachment order. Result and Checks are required. Deduplicates within this work round, fills result/check_result and journals each persisted report once as progress activity. Never changes status or writes Git. Reuse request_id and arguments after an unknown outcome.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3202,6 +3223,251 @@
         "actor",
         "work_id",
         "commits"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "add_comment",
+    "description": "Create visible note/progress/question/decision activity on an Issue, Project or ProjectUpdate. A question needs recipient; a reply parent must be on the same target. request_id is the native Comment ID, so retry identical arguments after an unknown outcome.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "target_type": {
+          "enum": [
+            "issue",
+            "project",
+            "project_update"
+          ]
+        },
+        "target_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "parent_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "kind": {
+          "enum": [
+            "note",
+            "progress",
+            "question",
+            "decision"
+          ]
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "session": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "recipient": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "source_links": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://",
+            "maxLength": 4000
+          },
+          "maxItems": 20
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "request_id",
+        "actor",
+        "target_type",
+        "target_id",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "get_comment",
+    "description": "Read a native comment by UUID or observed Linear permalink, its normalized activity record, and one native page of replies. Follow pageInfo.endCursor for later replies.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "first": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "after": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "resolve_comment",
+    "description": "Resolve or reopen a top-level native comment thread. An optional child comment may mark the resolving reply. Reuse request_id after an unknown outcome.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "resolved": {
+          "type": "boolean"
+        },
+        "resolving_comment_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        }
+      },
+      "required": [
+        "request_id",
+        "actor",
+        "id",
+        "resolved"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "save_project_update",
+    "description": "Create or edit a native ProjectUpdate for one Project with explicit onTrack/atRisk/offTrack health, author, explanation and body. New updates use request_id as native ID; edits need id and expected_updated_at from a prior read. Same arguments recover unknown outcomes. Does not change Issue status or publish on reads.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "project_id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+        },
+        "health": {
+          "enum": [
+            "onTrack",
+            "atRisk",
+            "offTrack"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        },
+        "expected_updated_at": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "request_id",
+        "actor",
+        "project_id",
+        "health",
+        "reason",
+        "body"
       ],
       "additionalProperties": false
     },
