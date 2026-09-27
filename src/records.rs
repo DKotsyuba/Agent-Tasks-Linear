@@ -293,7 +293,8 @@ pub fn markdown_key(value: &str) -> String {
 
 /// Compare requested Markdown with Linear's native rendering without losing intentional labels.
 /// A bare HTTP(S) URL may gain a native title even when closing prose punctuation follows it;
-/// a prose domain may become the same-label `http://` link at its original word boundary.
+/// a prose domain may become the same-label `http://` link at its original word boundary;
+/// an email autolink `<address>` may become the same-label `mailto:` link.
 /// Different destinations or labels, code, extra prose and list boundaries still differ.
 /// The comparison is directional and never rewrites either source.
 pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
@@ -321,6 +322,39 @@ pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
             .all(|(expected, actual)| same_text_with_native_link_title(expected, actual))
 }
 
+/// Report whether `domain` is a dotted sequence of labels a native autolinker can link:
+/// at least one dot, then nonempty alphanumeric/hyphen labels that start and end
+/// alphanumerically, with an alphabetic top-level label of at least two characters.
+fn linkable_domain(domain: &str) -> bool {
+    domain.contains('.')
+        && domain.split('.').all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && part
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && part
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        })
+        && domain
+            .rsplit('.')
+            .next()
+            .is_some_and(|part| part.len() >= 2 && part.bytes().all(|b| b.is_ascii_alphabetic()))
+}
+
+/// Report whether `label` is a plausible email address: a nonempty local part without
+/// Markdown link syntax, then a linkable domain after the last `@`.
+fn email_address(label: &str) -> bool {
+    label.rsplit_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty()
+            && !local.contains(['<', '>', '[', ']', '(', ')', ' '])
+            && linkable_domain(domain)
+    })
+}
+
 /// Report whether a requested bare URL or domain token ends at `rest`, the remainder of the
 /// requested text starting exactly after that token. A token ends at end of input, whitespace,
 /// or one of the closing prose punctuation characters `,;:!?)]}`; a period also ends it only
@@ -340,10 +374,11 @@ fn prose_boundary(rest: &str) -> bool {
     })
 }
 
-/// Compare normalized text while consuming only a native link aligned to a requested bare URL
-/// or a same-label prose domain. URL destinations and domain word boundaries must match exactly;
-/// explicit labels, changed destinations and surrounding prose remain visible. Both bare forms
-/// may end at any closing prose punctuation, exactly where Linear's autolinker closes a link.
+/// Compare normalized text while consuming only a native link aligned to a requested bare URL,
+/// a same-label prose domain or a same-label email autolink. URL destinations, email addresses
+/// and domain word boundaries must match exactly; explicit labels, changed destinations and
+/// surrounding prose remain visible. Bare forms may end at any closing prose punctuation,
+/// exactly where Linear's autolinker closes a link.
 fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> bool {
     let mut previous = None;
     while !expected.is_empty() && !actual.is_empty() {
@@ -362,28 +397,19 @@ fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> boo
                 && prose_boundary(&expected[destination.len()..]);
             let bare_domain = previous.is_none_or(|c: char| {
                 c.is_whitespace() || matches!(c, '(' | '[' | '{' | '"' | '\'')
-            }) && label.contains('.')
-                && label.split('.').all(|part| {
-                    !part.is_empty()
-                        && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                        && part
-                            .as_bytes()
-                            .first()
-                            .is_some_and(u8::is_ascii_alphanumeric)
-                        && part
-                            .as_bytes()
-                            .last()
-                            .is_some_and(u8::is_ascii_alphanumeric)
-                })
-                && label.rsplit('.').next().is_some_and(|part| {
-                    part.len() >= 2 && part.bytes().all(|b| b.is_ascii_alphabetic())
-                })
+            }) && linkable_domain(label)
                 && destination == format!("http://{label}")
                 && expected.starts_with(label)
                 && prose_boundary(&expected[label.len()..]);
-            if bare_url || bare_domain {
+            let bare_email = email_address(label)
+                && destination == format!("mailto:{label}")
+                && expected.starts_with(&format!("<{label}>"))
+                && prose_boundary(&expected[label.len() + 2..]);
+            if bare_url || bare_domain || bare_email {
                 let consumed = if bare_url {
                     destination.len()
+                } else if bare_email {
+                    label.len() + 2
                 } else {
                     label.len()
                 };

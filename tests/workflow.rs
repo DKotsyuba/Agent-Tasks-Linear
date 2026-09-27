@@ -645,7 +645,7 @@ fn markdown_native_link_title_preserves_meaningful_differences() {
     ));
     // A sentence period, comma or closing bracket directly after the bare URL is where
     // Linear closes its generated title link; the URL itself is unchanged.
-    let sentence = format!("D2 {url}. Consume existing semantics at BASE4d0f5f7.");
+    let sentence = format!("Plan {url}. Consume existing semantics at the pinned base.");
     let native_sentence = sentence.replace(url, &format!("[Spec title](<{url}>)"));
     assert!(markdown_equivalent(&sentence, &native_sentence));
     assert!(markdown_equivalent(
@@ -701,9 +701,118 @@ async fn markdown_document_title_pending_retry_preserves_content() {
     assert_eq!(context["issue"]["description"], native);
 }
 
+/// A native same-label mailto link may represent a requested email autolink in prose, but
+/// altered destinations, labels, extra prose and code literals cannot.
+#[test]
+fn markdown_mailto_autolink_preserves_meaning() {
+    use agent_tasks_linear::records::markdown_equivalent;
+    let email = "noreply@anthropic.com";
+    let expected = format!(
+        "Checks:\ncargo test --workspace --locked\n\nCo-Authored-By: Claude Code <{email}>"
+    );
+    let native = expected.replace(
+        &format!("<{email}>"),
+        &format!("[{email}](<mailto:{email}>)"),
+    );
+    assert!(markdown_equivalent(&expected, &native));
+    for changed in [
+        native.replace("mailto:noreply", "mailto:different"),
+        native.replace(&format!("[{email}]"), "[different@example.test]"),
+        native.replace("Co-Authored-By", "Also reviewed by"),
+        format!("{expected} extra"),
+    ] {
+        assert!(!markdown_equivalent(&expected, &changed), "{changed}");
+    }
+    assert!(!markdown_equivalent(
+        &format!("`<{email}>`"),
+        &format!("`[{email}](<mailto:{email}>)`"),
+    ));
+    assert!(!markdown_equivalent(
+        &format!("see <{email}> now"),
+        &format!("see [{email}](<mailto:different@example.test>) now"),
+    ));
+    assert!(!markdown_equivalent(
+        "see <a@localhost> now",
+        "see [a@localhost](<mailto:a@localhost>) now",
+    ));
+}
+
+/// A pending commit import accepts Linear's mailto autolink for a co-author footer while the
+/// exact retry finalizes without conflicts or drift.
+#[tokio::test]
+async fn markdown_mailto_pending_retry_preserves_content() {
+    use std::{fs, path::Path, process::Command};
+    /// Execute literal Git fixture setup arguments and return trimmed stdout, requiring success.
+    fn git(path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+    let root = std::env::temp_dir().join(format!("commit mailto {}", id()));
+    let repo = root.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    let message = "feat(catalog): accept typed permalinks\n\nResult:\nAdded reference inputs.\n\nChecks:\ncargo test --workspace --locked\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n";
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        ],
+    );
+    let hash = git(&repo, &["rev-parse", "HEAD"]);
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.ok("edit_module", json!({"id":module,"fields":{"repository_path":repo,"repository_url":null,"worktree":repo}})).await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.ok(
+        "edit_task",
+        json!({"id":task,"fields":{"work_type":"code"}}),
+    )
+    .await;
+    f.mv(&task, "In Progress").await;
+    let request = json!({"request_id":id(),"work_id":task,"commits":[hash]});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("record_commits", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    let email = "noreply@anthropic.com";
+    let native = f.db.lock().await.issues[&task]["description"]
+        .as_str()
+        .unwrap()
+        .replace(
+            &format!("<{email}>"),
+            &format!("[{email}](<mailto:{email}>)"),
+        );
+    f.db.lock().await.issues.get_mut(&task).unwrap()["description"] = json!(native.clone());
+    f.restart();
+    f.ok("record_commits", request.clone()).await;
+    f.ok("record_commits", request).await;
+    let context = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert!(context["workflow"]["pending"].is_null());
+    assert_eq!(context["discrepancies"], json!([]));
+    assert_eq!(context["issue"]["description"], native);
+    fs::remove_dir_all(root).unwrap();
+}
+
 /// A pending Issue edit accepts Linear's titled link when the requested bare document URL is
-/// followed directly by sentence punctuation, and a same-sentence domain autolink, as in the
-/// MYT-70 contract edit; the exact retry finalizes without conflicts or drift.
+/// followed directly by sentence punctuation, and a same-sentence domain autolink; the exact
+/// retry finalizes without conflicts or drift.
 #[tokio::test]
 async fn markdown_punctuation_url_pending_retry_preserves_content() {
     let mut f = Fixture::new().await;
