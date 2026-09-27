@@ -220,6 +220,30 @@ fn ack_projection(tool: &str, request: &Value, data: &Value) -> Value {
 
 /// Select the requested entity before inspecting its native relationship objects.
 fn context_projection(request: &Value, data: &Value) -> Value {
+    if data["detail"] == "brief" {
+        // One compact current slice: state, assignment, results, handoff, document links,
+        // recovery payload and explicit routes to the complete content and archive.
+        let brief_item = if data["issue"].is_object() {
+            &data["issue"]
+        } else {
+            &data["project"]
+        };
+        let mut item = identity(brief_item);
+        item["status"] = brief_item["status"].clone();
+        item["kind"] = brief_item["kind"].clone();
+        let pending_call = data["workflow"]["pending"]["request"]
+            .as_object()
+            .map(|pending| {
+                serde_json::to_string_pretty(&json!({
+                    "tool":pending.get("tool"),"arguments":pending.get("arguments")}))
+                .expect("JSON values serialize")
+            });
+        return json!({"kind":"brief","item":item,"fields":data["fields"],
+            "handoff":data["handoff"],"documents":data["documents"].as_array().cloned().unwrap_or_default(),
+            "routes":data["full_context"],"runtime":data["runtime"],"pending_call":pending_call,
+            "discrepancies":data["discrepancies"].as_array().cloned().unwrap_or_default(),
+            "transitions":data["transitions"].as_array().cloned().unwrap_or_default()});
+    }
     let kind = if request["type"] == "document" || data["id"].is_string() {
         "document"
     } else if data.get("issue").is_some() {
@@ -445,6 +469,48 @@ mod tests {
                 "{name}: {text}"
             );
         }
+    }
+
+    /// A brief read renders one compact current slice with handoff, routes and recovery payload.
+    #[test]
+    fn brief_context_renders_current_slice_and_routes() {
+        let brief = json!({"detail":"brief",
+            "issue":{"id":"issue-1","identifier":"MYT-1","title":"A task","url":"https://linear.app/issue-1",
+                "kind":"task","status":"In Progress","priority":0},
+            "fields":{"result":"Implemented","check_result":"All scenarios passed","lead":"codex:lead"},
+            "workflow":{"pending":{"request":{"tool":"edit_task","arguments":{"id":"issue-1"}}}},
+            "discrepancies":["A write is pending; retry the same request_id and arguments"],
+            "transitions":[{"status":"Done","allowed":false,"conditions":["Checks required"]}],
+            "handoff":{"current":{"id":"comment-1","url":"https://linear.app/issue-1#comment-aaaaaaaa",
+                "created_at":"2026-09-27T00:00:00Z","round":1,"revision":2,
+                "actor":"codex:lead","body":"Continue from the resolver"},
+                "revision_changed":true,"history":[]},
+            "documents":[{"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1","archived":false},
+                {"id":"doc-2","title":"Old plan","url":"https://linear.app/doc-2","archived":true}],
+            "full_context":{"issue":"get_context type=issue id=issue-1",
+                "project_documents":"list_items type=document project_id=project-1",
+                "archive":"list_items type=document project_id=project-1 include_archived=true"},
+            "runtime":{"version":"0.3.0","tools":22}});
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"issue","id":"issue-1","detail":"brief"}),
+            &Outcome::ok(brief),
+        );
+        assert!(text.contains("Brief"));
+        assert!(text.contains("Status: In Progress"));
+        assert!(text.contains("Kind: task"));
+        assert!(text.contains("Lead: codex:lead"));
+        assert!(text.contains("## Reported checks"));
+        assert!(text.contains("Continue from the resolver"));
+        assert!(text.contains("Revision changed: true"));
+        assert!(text.contains("Archived: true"));
+        assert!(text.contains("\"tool\": \"edit_task\""));
+        assert!(text.contains("A write is pending"));
+        assert!(text.contains("get_context type=issue id=issue-1"));
+        assert!(text.contains("include_archived=true"));
+        assert!(text.contains("Server version: 0.3.0"));
+        assert!(text.contains("Tools: 22"));
+        assert!(!text.contains("Presentation failed"), "{text}");
     }
 
     /// Read paths preserve human prose, full requested documents and exact recovery arguments.

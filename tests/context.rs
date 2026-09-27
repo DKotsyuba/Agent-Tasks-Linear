@@ -3,7 +3,7 @@
 mod support;
 
 use serde_json::json;
-use support::Fixture;
+use support::{Fixture, id};
 
 /// A native Issue link opens a complete role view while legacy UUID calls retain their shape.
 #[tokio::test]
@@ -296,6 +296,149 @@ async fn native_permalinks_resolve_typed_references() {
         .await;
     assert_eq!(ambiguous.status, "blocked");
     assert_eq!(ambiguous.data["code"], "INVALID_LINK");
+}
+
+/// detail=brief returns one compact current slice for either role and for Projects, keeps the
+/// recovery payload and discrepancies, honors native archived markers, and routes to full
+/// content while omitted or full detail preserves the legacy complete response.
+#[tokio::test]
+async fn brief_detail_keeps_current_slice_and_recovery() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, Some(&epic)).await;
+    f.mv(&epic, "In Progress").await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.mv(&task, "In Progress").await;
+    f.result("task", &task).await;
+    let archived_doc = f
+        .ok(
+            "save_document",
+            json!({"issue_id":epic,"title":"Old plan","content":"Historical"}),
+        )
+        .await;
+    f.db.lock()
+        .await
+        .documents
+        .get_mut(archived_doc["id"].as_str().unwrap())
+        .unwrap()["archivedAt"] = json!("2026-09-25T00:00:00Z");
+    let checkpoint = f
+        .ok(
+            "add_comment",
+            json!({"target_type":"issue","target_id":task,"kind":"handoff",
+                "body":"Continue from the renderer"}),
+        )
+        .await["comment"]
+        .clone();
+
+    let brief = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":task,"detail":"brief"}),
+        )
+        .await;
+    assert_eq!(brief["detail"], "brief");
+    assert_eq!(brief["issue"]["id"], json!(task));
+    assert_eq!(brief["issue"]["status"], "In Progress");
+    assert_eq!(brief["fields"]["check_result"], "Local scenarios passed");
+    assert!(brief["agent_context"].is_null());
+    assert_eq!(brief["handoff"]["current"]["id"], checkpoint["id"]);
+    let documents = brief["documents"].as_array().unwrap();
+    assert!(
+        documents
+            .iter()
+            .any(|doc| doc["id"] == archived_doc["id"] && doc["archived"] == true)
+    );
+    assert!(documents.iter().all(|doc| doc.get("content").is_none()));
+    assert_eq!(
+        brief["full_context"]["issue"],
+        format!("get_context type=issue id={task}")
+    );
+    assert_eq!(brief["runtime"]["tools"], 22);
+    assert!(brief["runtime"]["version"].is_string());
+    let reviewer_brief = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":task,"view":"reviewer","detail":"brief"}),
+        )
+        .await;
+    assert_eq!(reviewer_brief["handoff"]["current"]["id"], checkpoint["id"]);
+    assert!(reviewer_brief["review_evidence"].is_null());
+
+    // A pending write keeps its exact recoverable payload inside the brief slice.
+    let pending_request =
+        json!({"request_id":id(),"id":task,"fields":{"description":"Pending edit"}});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("edit_task", pending_request).await.status,
+        "outcome_unknown"
+    );
+    let pending_brief = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":task,"detail":"brief"}),
+        )
+        .await;
+    assert_eq!(
+        pending_brief["workflow"]["pending"]["request"]["tool"],
+        "edit_task"
+    );
+    assert!(
+        pending_brief["discrepancies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|problem| problem.as_str().unwrap().contains("pending"))
+    );
+
+    // Omitted and full detail keep the complete legacy response.
+    for detail in [None, Some("full")] {
+        let mut arguments = json!({"type":"issue","id":task,"view":"lead"});
+        if let Some(detail) = detail {
+            arguments["detail"] = json!(detail);
+        }
+        let full = f.ok("get_context", arguments).await;
+        assert!(full["agent_context"].is_object());
+        assert!(full["issue"]["description"].is_string());
+        assert!(full["handoff"].is_null());
+    }
+
+    // Project brief lists document links and archive routes without bodies.
+    let project_brief = f
+        .ok(
+            "get_context",
+            json!({"type":"project","id":project,"detail":"brief"}),
+        )
+        .await;
+    assert_eq!(project_brief["detail"], "brief");
+    assert!(project_brief["project"]["url"].is_string());
+    assert!(
+        project_brief["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|doc| doc.get("content").is_none())
+    );
+    assert_eq!(
+        project_brief["full_context"]["archive"],
+        format!("list_items type=document project_id={project} include_archived=true")
+    );
+
+    // Explicit document reads stay complete regardless of detail.
+    let document = f
+        .ok(
+            "save_document",
+            json!({"issue_id":task,"title":"Full body","content":"Complete prose"}),
+        )
+        .await;
+    let full_document = f
+        .ok(
+            "get_context",
+            json!({"type":"document","id":document["id"],"detail":"brief"}),
+        )
+        .await;
+    assert_eq!(full_document["content"], "Complete prose");
 }
 
 /// A child with uncertain native Done and pending recorded transition is never counted as exact.

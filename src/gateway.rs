@@ -1841,11 +1841,75 @@ impl Gateway {
         }
     }
 
+    /// Load deduplicated document metadata for the Project and the current Issue ancestry.
+    /// Archived documents are included and carry their native `archivedAt`; the load is
+    /// bounded and fails explicitly rather than returning a partial archive.
+    async fn ancestry_documents(
+        &self,
+        work: &Work,
+        graph: &[Work],
+        project_id: &str,
+    ) -> Result<Vec<Value>> {
+        let mut issue_ids = Vec::new();
+        let mut ancestor = Some(work);
+        while let Some(item) = ancestor {
+            require(
+                issue_ids.len() < 4 && !issue_ids.iter().any(|id| id == item.id()),
+                "INCOMPLETE_DATA",
+                "Issue ancestry is incomplete or cyclic",
+            )?;
+            issue_ids.push(item.id().to_owned());
+            ancestor = rules::parent(item).and_then(|id| rules::find(graph, id));
+        }
+        let native_documents = self
+            .store
+            .pages(
+                "QDocuments",
+                "documents",
+                json!({"filter":{"or":[
+                    {"project":{"id":{"eq":project_id}}},
+                    {"issue":{"id":{"in":issue_ids}}}
+                ]},"includeArchived":true}),
+            )
+            .await?;
+        let mut unique_documents = BTreeMap::new();
+        for document in native_documents {
+            let id = document["id"]
+                .as_str()
+                .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Document has no ID"))?;
+            unique_documents.insert(id.to_owned(), document);
+        }
+        require(
+            unique_documents.len() <= 500,
+            "INCOMPLETE_DATA",
+            "Agent context exceeds 500 document links",
+        )?;
+        Ok(unique_documents.into_values().collect())
+    }
+    /// One compact document link including its native archived marker.
+    fn document_link(document: &Value) -> Value {
+        json!({"id":document["id"],"title":document["title"],"url":document["url"],
+            "archived":!document["archivedAt"].is_null()})
+    }
+    /// Current server identity from the loaded binary and catalogue, never from human prose.
+    fn runtime_facts(&self) -> Value {
+        json!({"version":env!("CARGO_PKG_VERSION"),"tools":self.catalog.tools.len()})
+    }
+    /// Explicit read routes from a brief view to the complete content and archive.
+    fn full_routes(project_id: &str, issue_id: Option<&str>) -> Value {
+        json!({
+            "issue":issue_id.map(|id| format!("get_context type=issue id={id}")),
+            "project_documents":format!("list_items type=document project_id={project_id}"),
+            "archive":format!("list_items type=document project_id={project_id} include_archived=true")
+        })
+    }
+
     /// Read native work, a Project, Document or ProjectUpdate by UUID or supported native
     /// permalink; a URL alone infers the entity type, and a stated type must agree with it.
     /// Legacy type/ID calls keep their original response; optional lead/reviewer views add a
-    /// bounded assignment and evidence projection. Derived counts are withheld when native
-    /// membership differs from the recorded graph.
+    /// bounded assignment and evidence projection; detail=brief returns one compact current
+    /// slice with recovery state and explicit routes to full content. Derived counts are
+    /// withheld when native membership differs from the recorded graph.
     async fn context(&self, a: &Value) -> Result<Value> {
         require(
             !(a["id"].is_string() && a["url"].is_string()),
@@ -1886,6 +1950,23 @@ impl Gateway {
         match kind {
             "project" => {
                 let p = self.project(id).await?;
+                if a["detail"] == "brief" {
+                    let docs = self
+                        .store
+                        .pages(
+                            "QDocuments",
+                            "documents",
+                            json!({"filter":{"project":{"id":{"eq":id}}},"includeArchived":false}),
+                        )
+                        .await?;
+                    return Ok(json!({
+                        "detail":"brief",
+                        "project":{"id":p["id"],"name":p["name"],"url":p["url"]},
+                        "documents":docs.iter().map(Self::document_link).collect::<Vec<_>>(),
+                        "full_context":Self::full_routes(id, None),
+                        "runtime":self.runtime_facts()
+                    }));
+                }
                 let docs = self
                     .store
                     .pages(
@@ -1920,6 +2001,31 @@ impl Gateway {
                 } else {
                     None
                 };
+                if a["detail"] == "brief" {
+                    // Brief keeps the actual state, current results, blockers, the recovery
+                    // payload and the latest applicable handoff, and routes to full content.
+                    let activity =
+                        crate::activity::read_activity(&self.store, "issue", w.id()).await?;
+                    let documents = self
+                        .ancestry_documents(&w, &g, m.project_id.as_str())
+                        .await?;
+                    return Ok(json!({
+                        "detail":"brief",
+                        "issue":{"id":w.native["id"],"url":w.native["url"],
+                            "identifier":w.native["identifier"],"title":w.native["title"],
+                            "kind":m.kind,"status":w.native["state"]["name"],
+                            "priority":w.native["priority"]},
+                        "fields":{"result":w.fields["result"],"check_result":w.fields["check_result"],
+                            "lead":w.fields["lead"],"executor":w.fields["executor"]},
+                        "workflow":w.meta,
+                        "discrepancies":discrepancies,
+                        "transitions":rules::actions(&w,&g),
+                        "handoff":crate::context::handoff_selection(m, &activity),
+                        "documents":documents.iter().map(Self::document_link).collect::<Vec<_>>(),
+                        "full_context":Self::full_routes(&m.project_id, Some(w.id())),
+                        "runtime":self.runtime_facts()
+                    }));
+                }
                 let agent_view = if let Some(view) = a["view"].as_str().or(linked.then_some("lead"))
                 {
                     let children = rules::children(&g, w.id());
@@ -1936,41 +2042,9 @@ impl Gateway {
                                 .await?,
                         );
                     }
-                    let mut issue_ids = Vec::new();
-                    let mut ancestor = Some(&w);
-                    while let Some(item) = ancestor {
-                        require(
-                            issue_ids.len() < 4 && !issue_ids.iter().any(|id| id == item.id()),
-                            "INCOMPLETE_DATA",
-                            "Issue ancestry is incomplete or cyclic",
-                        )?;
-                        issue_ids.push(item.id().to_owned());
-                        ancestor = rules::parent(item).and_then(|id| rules::find(&g, id));
-                    }
-                    let native_documents = self
-                        .store
-                        .pages(
-                            "QDocuments",
-                            "documents",
-                            json!({"filter":{"or":[
-                        {"project":{"id":{"eq":m.project_id}}},
-                        {"issue":{"id":{"in":issue_ids}}}
-                    ]},"includeArchived":true}),
-                        )
+                    let documents = self
+                        .ancestry_documents(&w, &g, m.project_id.as_str())
                         .await?;
-                    let mut unique_documents = BTreeMap::new();
-                    for document in native_documents {
-                        let id = document["id"]
-                            .as_str()
-                            .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Document has no ID"))?;
-                        unique_documents.insert(id.to_owned(), document);
-                    }
-                    require(
-                        unique_documents.len() <= 500,
-                        "INCOMPLETE_DATA",
-                        "Agent context exceeds 500 document links",
-                    )?;
-                    let documents: Vec<Value> = unique_documents.into_values().collect();
                     Some(crate::context::agent_context(
                         &w,
                         &g,

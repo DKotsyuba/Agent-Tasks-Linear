@@ -302,7 +302,7 @@ pub fn agent_context(
         "epic":epic.map(|item| json!({"id":item.id(),"url":item.native["url"],"business_requirements":item.fields["business_requirements"],"acceptance_criteria":item.fields["acceptance_criteria"]})),
         "checkout":checkout,"tasks":tasks,"module_report":report,"current_git_reports":meta.current_git_reports().collect::<Vec<_>>(),
         "latest_review":latest_review,"open_questions":open_questions,"documents":links,"discrepancies":discrepancies,
-        "handoff":handoff_selection(meta, activity.get(work.id())),
+        "handoff":handoff_selection(meta, activity.get(work.id()).map(Vec::as_slice).unwrap_or(&[])),
         "next_work":if view == "lead" {json!(tasks.iter().filter(|task| !matches!(task["status"].as_str(),Some("Done"|"Canceled"|"Duplicate"))).collect::<Vec<_>>())} else {Value::Null},
         "review_evidence":if view == "reviewer" {json!({"module_report":report,"latest_review":latest_review})} else {Value::Null}
     }))
@@ -314,15 +314,11 @@ pub fn agent_context(
 /// handoff whose stamped revision no longer matches the work record, so changed-after-revision
 /// prose is never silently treated as the next instruction. Manual comments and imported Git
 /// progress are never classified as handoffs. The selection performs no writes.
-fn handoff_selection(meta: &crate::model::Meta, records: Option<&Vec<ActivityRecord>>) -> Value {
+pub(crate) fn handoff_selection(meta: &crate::model::Meta, records: &[ActivityRecord]) -> Value {
     let mut handoffs: Vec<_> = records
-        .map(|records| {
-            records
-                .iter()
-                .filter(|record| record.kind == "handoff")
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        .iter()
+        .filter(|record| record.kind == "handoff")
+        .collect::<Vec<_>>();
     handoffs.sort_by(|a, b| {
         a.created_at
             .cmp(&b.created_at)

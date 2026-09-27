@@ -380,7 +380,7 @@ async fn graphql(
         "MCreateDocument" => {
             let id = input["id"].as_str().unwrap();
             assert!(!db.documents.contains_key(id));
-            let item = json!({"id":id,"title":input["title"],"content":input["content"],"url":format!("https://linear.app/document/{id}"),"project":input.get("projectId").map(|id|json!({"id":id})),"issue":input.get("issueId").map(|id|json!({"id":id}))});
+            let item = json!({"id":id,"title":input["title"],"content":input["content"],"url":format!("https://linear.app/document/{id}"),"archivedAt":null,"project":input.get("projectId").map(|id|json!({"id":id})),"issue":input.get("issueId").map(|id|json!({"id":id}))});
             db.documents.insert(id.into(), item.clone());
             Some(("documentCreate", json!({"success":true,"document":item})))
         }
