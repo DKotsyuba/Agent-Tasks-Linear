@@ -23,6 +23,10 @@ Rust MCP for an explicit agent workflow using native Linear Projects, Issues and
 
 Twenty-two tools. Issue titles use one leading `[EPIC]`, `[MODULE]`, `[TASK]` or `[ATOMIC]` marker; project titles are unchanged. Issue priority uses Linear's 0–4 scale. `edit_*` never changes status. Discovery contains the complete input schemas; [the workflow reference](docs/architecture.md) explains the fields and conditions.
 
+## Role skills
+
+Two concise role skills ship as committed repository files: `skills/agent-tasks-linear-orchestrator/` for whoever coordinates the project, and `skills/agent-tasks-linear-module-lead/` for each persistent module lead. Install them through your agent's supported skill mechanism by referencing or copying those committed directories into its skills location; no plugin or framework is added. Each skill describes its role cycle only and points to the discovery mini-docs for exact call shapes.
+
 MCP tool calls return one concise plain-text block rendered from embedded MiniJinja templates. The agent-facing response has no duplicate `structuredContent`; `isError` reflects the operation outcome. Internal Gateway outcomes and input schemas remain structured. See [the output contract](docs/architecture.md#mcp-result-presentation).
 
 ## Cycle
