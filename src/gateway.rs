@@ -132,13 +132,148 @@ impl Gateway {
     }
     /// Require an active native project and return its readable content.
     async fn project(&self, id: &str) -> Result<Value> {
-        let p = self.store.linear.object("QProject", "project", id).await?;
+        let p = self.project_object(id).await?;
         require(
             p["archivedAt"].is_null(),
             "ARCHIVED_ITEM",
             "Project is archived",
         )?;
         Ok(p)
+    }
+    /// Read one native Project by UUID or URL slug through the fixed Linear lookup and
+    /// verify the returned object is the requested one; no arbitrary URL is fetched.
+    async fn project_object(&self, id_or_slug: &str) -> Result<Value> {
+        let p = self
+            .store
+            .linear
+            .object("QProject", "project", id_or_slug)
+            .await?;
+        require(
+            p["id"] == id_or_slug
+                || p["url"]
+                    .as_str()
+                    .is_some_and(|url| url.rsplit('/').next() == Some(id_or_slug)),
+            "INVALID_LINK",
+            "Project permalink resolved to another item",
+        )?;
+        Ok(p)
+    }
+    /// Resolve one typed reference (UUID or supported native permalink) to its canonical
+    /// native UUID through fixed GraphQL lookups, verifying entity kind and returned
+    /// identity within the authenticated workspace. Plain UUIDs pass through with their
+    /// type checked by the later native lookup. Comment permalinks resolve through
+    /// `comment_id`. `request_id`, `team_id`, Git hashes and stored artifact or repository
+    /// URLs are never resolved.
+    async fn resolve(&self, expected: &str, reference: &str) -> Result<String> {
+        match crate::context::parse_reference(reference)? {
+            crate::context::Reference::Uuid(id) => Ok(id),
+            crate::context::Reference::Issue {
+                identifier,
+                comment: None,
+            } => {
+                require(
+                    expected == "issue",
+                    "INVALID_LINK",
+                    "This reference field needs a native Linear Issue permalink",
+                )?;
+                let issue = self
+                    .store
+                    .linear
+                    .object("QIssue", "issue", &identifier)
+                    .await?;
+                require(
+                    issue["id"] == identifier || issue["identifier"] == identifier,
+                    "INVALID_LINK",
+                    "Issue permalink resolved to another item",
+                )?;
+                Ok(issue["id"].as_str().unwrap_or_default().to_owned())
+            }
+            crate::context::Reference::Project {
+                slug,
+                comment: None,
+            } => {
+                require(
+                    expected == "project",
+                    "INVALID_LINK",
+                    "This reference field needs a native Linear Project permalink",
+                )?;
+                Ok(self.project_object(&slug).await?["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned())
+            }
+            crate::context::Reference::Document { slug } => {
+                require(
+                    expected == "document",
+                    "INVALID_LINK",
+                    "This reference field needs a native Linear Document permalink",
+                )?;
+                let document = self
+                    .store
+                    .linear
+                    .object("QDocument", "document", &slug)
+                    .await?;
+                require(
+                    document["id"] == slug
+                        || document["url"]
+                            .as_str()
+                            .is_some_and(|url| url.rsplit('/').next() == Some(slug.as_str())),
+                    "INVALID_LINK",
+                    "Document permalink resolved to another item",
+                )?;
+                Ok(document["id"].as_str().unwrap_or_default().to_owned())
+            }
+            crate::context::Reference::ProjectUpdate {
+                project_slug,
+                short,
+                comment: None,
+            } => {
+                require(
+                    expected == "project_update",
+                    "INVALID_LINK",
+                    "This reference field needs a native Linear ProjectUpdate permalink",
+                )?;
+                self.project_update_id(&project_slug, &short).await
+            }
+            _ => Err(Fault::new(
+                "INVALID_LINK",
+                "Comment permalinks resolve only Comment references",
+            )),
+        }
+    }
+    /// Resolve one observed ProjectUpdate permalink to its native UUID inside the link's own
+    /// Project using the bounded exact-identity fallback. Unknown tokens, ambiguous short
+    /// tokens and exhausted pagination fail explicitly; no workspace-wide title scan runs.
+    async fn project_update_id(&self, project_slug: &str, short: &str) -> Result<String> {
+        let project = self.project_object(project_slug).await?;
+        let updates = self
+            .store
+            .pages(
+                "QProjectUpdates",
+                "projectUpdates",
+                json!({"filter":{"project":{"id":{"eq":project["id"]}}},"includeArchived":true}),
+            )
+            .await?;
+        let matches: Vec<_> = updates
+            .iter()
+            .filter(|update| {
+                update["id"]
+                    .as_str()
+                    .and_then(|id| id.get(..8))
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(short))
+            })
+            .collect();
+        require(
+            !matches.is_empty(),
+            "RECORD_MISSING",
+            "ProjectUpdate permalink target was not found",
+        )?;
+        require(
+            matches.len() == 1,
+            "INVALID_LINK",
+            "ProjectUpdate short token is ambiguous",
+        )?;
+        Ok(matches[0]["id"].as_str().unwrap_or_default().to_owned())
     }
     /// Verify a team's native automation cannot cascade parent/child statuses, then resolve existing states.
     async fn states(&self, team: &str) -> Result<Vec<Value>> {
@@ -1301,100 +1436,67 @@ impl Gateway {
         Ok(json!({"comment":comment,"replayed":false}))
     }
 
+    /// Resolve one Comment reference (bare UUID or observed native permalink) to its comment
+    /// UUID. ProjectUpdate short tokens resolve within the URL's own Project; the comment is
+    /// then matched by its exact full native URL. Missing targets, ambiguity and unsupported
+    /// shapes fail explicitly.
+    /// ponytail: unscoped links scan at most 20,000 comments; add a native hash lookup if that ceiling matters.
+    async fn comment_id(&self, supplied: &str) -> Result<String> {
+        match crate::context::parse_reference(supplied)? {
+            crate::context::Reference::Uuid(id) => Ok(id),
+            reference => {
+                require(
+                    reference.comment(),
+                    "INVALID_LINK",
+                    "Expected a native Linear comment permalink",
+                )?;
+                let mut filter = json!({});
+                match &reference {
+                    crate::context::Reference::ProjectUpdate {
+                        project_slug,
+                        short,
+                        ..
+                    } => {
+                        let update_id = self.project_update_id(project_slug, short).await?;
+                        filter["projectUpdate"] = json!({"id":{"eq":update_id}});
+                    }
+                    crate::context::Reference::Issue { identifier, .. } => {
+                        let issue = self
+                            .store
+                            .linear
+                            .object("QIssue", "issue", identifier)
+                            .await?;
+                        filter["issue"] = json!({"id":{"eq":issue["id"]}});
+                    }
+                    crate::context::Reference::Project { slug, .. } => {
+                        let project = self.project_object(slug).await?;
+                        filter["project"] = json!({"id":{"eq":project["id"]}});
+                    }
+                    _ => unreachable!("comment references carry a fragment"),
+                }
+                let comments = self
+                    .store
+                    .pages(
+                        "QComments",
+                        "comments",
+                        json!({"filter":filter,"includeArchived":true}),
+                    )
+                    .await?;
+                comments
+                    .into_iter()
+                    .find(|c| c["url"] == supplied)
+                    .and_then(|c| c["id"].as_str().map(str::to_owned))
+                    .ok_or_else(|| {
+                        Fault::new("RECORD_MISSING", "Native comment permalink was not found")
+                    })
+            }
+        }
+    }
+
     /// Read a comment by UUID or exact native permalink. Resolve ProjectUpdate short tokens
     /// within the URL's Project before matching the full returned URL and reading one reply page.
-    /// ponytail: unscoped links scan at most 20,000 comments; add a native hash lookup if that ceiling matters.
     async fn get_comment(&self, a: &Value) -> Result<Value> {
-        let supplied = text(a, "id")?;
-        let id = if uuid::Uuid::parse_str(supplied).is_ok() {
-            supplied.to_owned()
-        } else {
-            let url = reqwest::Url::parse(supplied)
-                .map_err(|_| Fault::new("INVALID_LINK", "Expected a native Linear comment URL"))?;
-            let fragment = url.fragment().unwrap_or("");
-            let (update_short, comment_part) =
-                if let Some((prefix, suffix)) = fragment.split_once('&') {
-                    (prefix.strip_prefix("project-update-"), suffix)
-                } else {
-                    (None, fragment)
-                };
-            let hash = comment_part.strip_prefix("comment-").unwrap_or("");
-            require(
-                url.scheme() == "https"
-                    && url.host_str() == Some("linear.app")
-                    && (!fragment.contains('&')
-                        || update_short.is_some_and(|id| {
-                            id.len() == 8 && id.bytes().all(|b| b.is_ascii_hexdigit())
-                        }))
-                    && hash.len() == 8
-                    && hash.bytes().all(|b| b.is_ascii_hexdigit()),
-                "INVALID_LINK",
-                "Expected an observed Linear comment permalink",
-            )?;
-            let segments: Vec<_> = url.path_segments().map(|s| s.collect()).unwrap_or_default();
-            let mut filter = json!({});
-            if let Some(update_short) = update_short {
-                let project_slug = segments
-                    .windows(2)
-                    .find_map(|pair| (pair[0] == "project").then_some(pair[1]))
-                    .ok_or_else(|| {
-                        Fault::new("INVALID_LINK", "ProjectUpdate link has no Project")
-                    })?;
-                let project = self
-                    .store
-                    .linear
-                    .object("QProject", "project", project_slug)
-                    .await?;
-                let updates = self.store.pages(
-                    "QProjectUpdates", "projectUpdates",
-                    json!({"filter":{"project":{"id":{"eq":project["id"]}}},"includeArchived":true}),
-                ).await?;
-                let matches: Vec<_> = updates
-                    .iter()
-                    .filter(|update| {
-                        update["id"]
-                            .as_str()
-                            .and_then(|id| id.get(..8))
-                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(update_short))
-                    })
-                    .collect();
-                require(
-                    !matches.is_empty(),
-                    "RECORD_MISSING",
-                    "ProjectUpdate link target was not found",
-                )?;
-                require(
-                    matches.len() == 1,
-                    "INVALID_LINK",
-                    "ProjectUpdate short token is ambiguous",
-                )?;
-                filter["projectUpdate"] = json!({"id":{"eq":matches[0]["id"]}});
-            } else if let Some(pos) = segments.iter().position(|s| *s == "issue")
-                && let Some(identifier) = segments.get(pos + 1)
-            {
-                let issue = self
-                    .store
-                    .linear
-                    .object("QIssue", "issue", identifier)
-                    .await?;
-                filter["issue"] = json!({"id":{"eq":issue["id"]}});
-            }
-            let comments = self
-                .store
-                .pages(
-                    "QComments",
-                    "comments",
-                    json!({"filter":filter,"includeArchived":true}),
-                )
-                .await?;
-            comments
-                .into_iter()
-                .find(|c| c["url"] == supplied)
-                .and_then(|c| c["id"].as_str().map(str::to_owned))
-                .ok_or_else(|| {
-                    Fault::new("RECORD_MISSING", "Native comment permalink was not found")
-                })?
-        };
+        let id = self.comment_id(text(a, "id")?).await?;
         let comment = self.store.linear.object("QComment", "comment", &id).await?;
         let root_id = comment["parent"]["id"].as_str().unwrap_or(&id);
         let root = if root_id == id {
@@ -1628,8 +1730,8 @@ impl Gateway {
     /// Missing process-local baselines fall back to a full response with baseline_expired=true;
     /// neither branch writes to Linear or launches background activity.
     async fn overview(&self, a: &Value) -> Result<Value> {
-        let project_id = text(a, "project_id")?;
-        let (mut full, snapshot) = self.overview_data(project_id).await?;
+        let project_id = self.resolve("project", text(a, "project_id")?).await?;
+        let (mut full, snapshot) = self.overview_data(&project_id).await?;
         let comparison = self
             .baselines
             .lock()
@@ -1639,7 +1741,7 @@ impl Gateway {
                     "Overview comparison cache is unavailable",
                 )
             })?
-            .compare(project_id, a["cursor"].as_str(), snapshot, Instant::now());
+            .compare(&project_id, a["cursor"].as_str(), snapshot, Instant::now());
         let observed_at = chrono::Utc::now().to_rfc3339();
         if comparison["changes"].is_array() {
             Ok(json!({"project_id":project_id,"observed_at":observed_at,
@@ -1653,9 +1755,11 @@ impl Gateway {
         }
     }
 
-    /// Read native work by UUID or a native Issue link. Legacy type/ID calls keep their original
-    /// response; optional lead/reviewer views add a bounded assignment and evidence projection.
-    /// Derived counts are withheld when native membership differs from the recorded graph.
+    /// Read native work, a Project, Document or ProjectUpdate by UUID or supported native
+    /// permalink; a URL alone infers the entity type, and a stated type must agree with it.
+    /// Legacy type/ID calls keep their original response; optional lead/reviewer views add a
+    /// bounded assignment and evidence projection. Derived counts are withheld when native
+    /// membership differs from the recorded graph.
     async fn context(&self, a: &Value) -> Result<Value> {
         require(
             !(a["id"].is_string() && a["url"].is_string()),
@@ -1666,31 +1770,29 @@ impl Gateway {
             .as_str()
             .or_else(|| a["id"].as_str())
             .ok_or_else(|| Fault::new("INVALID_INPUT", "Supply id or url"))?;
-        let linked = reference.starts_with("https://") || a["url"].is_string();
-        let kind = if linked {
-            require(
-                a["type"].is_null() || a["type"] == "issue",
-                "INVALID_LINK",
-                "Issue URLs require type issue",
-            )?;
-            "issue"
-        } else {
-            text(a, "type")?
+        let parsed = crate::context::parse_reference(reference)?;
+        require(
+            !parsed.comment(),
+            "INVALID_LINK",
+            "Comment permalinks are read with get_comment",
+        )?;
+        let linked = a["url"].is_string() || parsed.entity().is_some();
+        let kind = match (parsed.entity(), a["type"].as_str()) {
+            (None, None) => text(a, "type")?,
+            (None, Some(kind)) => kind,
+            (Some(entity), None) => entity,
+            (Some(entity), Some(kind)) => {
+                require(
+                    entity == kind,
+                    "INVALID_LINK",
+                    "Permalink type differs from the requested type",
+                )?;
+                kind
+            }
         };
         let resolved;
         let id = if linked {
-            let identifier = crate::context::issue_identifier(reference)?;
-            let issue = self
-                .store
-                .linear
-                .object("QIssue", "issue", &identifier)
-                .await?;
-            require(
-                issue["identifier"] == identifier,
-                "INVALID_LINK",
-                "Issue URL resolved to another item",
-            )?;
-            resolved = issue["id"].as_str().unwrap_or("").to_owned();
+            resolved = self.resolve(kind, reference).await?;
             resolved.as_str()
         } else {
             reference
@@ -1840,19 +1942,24 @@ impl Gateway {
             "Issue filters do not apply to comments",
         )?;
         let mut filter = json!({});
+        let mut resolved_target = None;
         if let Some(target_type) = a["target_type"].as_str() {
+            let target_id = self.resolve(target_type, text(a, "target_id")?).await?;
             let key = match target_type {
                 "issue" => "issue",
                 "project" => "project",
                 _ => "projectUpdate",
             };
-            filter[key] = json!({"id":{"eq":a["target_id"]}});
+            filter[key] = json!({"id":{"eq":target_id}});
+            if target_type == "issue" {
+                resolved_target = Some(target_id);
+            }
         }
         if let Some(parent) = a.get("parent_id") {
             filter["parent"] = if parent.is_null() {
                 json!({"null":true})
             } else {
-                json!({"id":{"eq":parent}})
+                json!({"id":{"eq":self.resolve("comment", parent.as_str().unwrap()).await?}})
             };
         }
         let mut page = self.store.linear.call("QComments", json!({
@@ -1866,13 +1973,9 @@ impl Gateway {
             "INCOMPLETE_DATA",
             "Comment page is missing",
         )?;
-        let current = if a["target_type"] == "issue" {
-            self.store
-                .meta(text(a, "target_id")?)
-                .await?
-                .and_then(|m| m.review)
-        } else {
-            None
+        let current = match &resolved_target {
+            Some(target_id) => self.store.meta(target_id).await?.and_then(|m| m.review),
+            None => None,
         };
         page["activity_records"] = json!(
             page["nodes"]
@@ -1917,7 +2020,7 @@ impl Gateway {
             )?;
             let mut filter = json!({});
             if let Some(project_id) = a["project_id"].as_str() {
-                filter["project"] = json!({"id":{"eq":project_id}});
+                filter["project"] = json!({"id":{"eq":self.resolve("project", project_id).await?}});
             }
             let mut page = self.store.linear.call("QProjectUpdates",json!({
                 "filter":filter,
@@ -1967,8 +2070,13 @@ impl Gateway {
                     )?;
                     filter[field] = if key == "parent_id" && id.is_null() {
                         json!({"null":true})
-                    } else {
+                    } else if key == "team_id" {
+                        // team_id stays a plain UUID and is never a resolved reference.
                         json!({"id":{"eq":id}})
+                    } else {
+                        json!({"id":{"eq":self
+                            .resolve(if key == "project_id" { "project" } else { "issue" }, id.as_str().unwrap())
+                            .await?}})
                     };
                 }
             }
@@ -2005,12 +2113,18 @@ impl Gateway {
                 "INVALID_INPUT",
                 "Priority ordering requires issue type, project_id and kind",
             )?;
-            let project = a["project_id"].as_str().unwrap();
+            let project = self
+                .resolve("project", a["project_id"].as_str().unwrap())
+                .await?;
             let k: Kind = serde_json::from_value(a["kind"].clone()).unwrap();
-            let parent = a["parent_id"].as_str();
+            let parent = match a["parent_id"].as_str() {
+                Some(reference) => Some(self.resolve("issue", reference).await?),
+                None => None,
+            };
+            let parent = parent.as_deref();
             let group = json!({"project_id":project,"parent_id":parent,"kind":k,"team_id":a.get("team_id"),"status":a.get("status"),"include_archived":a.get("include_archived").and_then(Value::as_bool).unwrap_or(false),"priority":a.get("priority")});
             if let Some(pid) = parent {
-                let graph = self.store.graph(project).await?;
+                let graph = self.store.graph(&project).await?;
                 let p = rules::find(&graph, pid).ok_or_else(|| {
                     Fault::new("INVALID_PARENT", "Parent must belong to this Project")
                 })?;

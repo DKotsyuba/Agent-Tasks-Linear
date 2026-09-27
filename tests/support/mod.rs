@@ -122,7 +122,18 @@ async fn graphql(
             json!({"relations":issue_page(db.relations.values().filter(|r| r["issue"]["id"] == id).cloned().collect(),v)}),
         )),
         "QAttachmentById" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
-        "QDocument" => db.documents.get(id).cloned().map(|v| ("document", v)),
+        "QDocument" => db
+            .documents
+            .get(id)
+            .or_else(|| {
+                db.documents.values().find(|d| {
+                    d["url"]
+                        .as_str()
+                        .is_some_and(|url| url.rsplit('/').next() == Some(id))
+                })
+            })
+            .cloned()
+            .map(|v| ("document", v)),
         "QComment" => db.comments.get(id).cloned().map(|v| ("comment", v)),
         "QProjectUpdate" => db
             .project_updates
@@ -386,8 +397,9 @@ async fn graphql(
             assert!(db.projects.contains_key(project));
             assert!(!db.project_updates.contains_key(id));
             db.tick += 1;
+            let project_url = db.projects[project]["url"].as_str().unwrap().to_owned();
             let item = json!({
-                "id":id,"url":format!("https://linear.app/project/{project}/updates/{id}"),
+                "id":id,"url":format!("{project_url}/activity#project-update-{}", &id[..8]),
                 "body":input["body"],"health":input["health"],
                 "createdAt":format!("2026-09-25T00:00:{:02}Z",db.tick),
                 "updatedAt":format!("2026-09-25T00:00:{:02}Z",db.tick),

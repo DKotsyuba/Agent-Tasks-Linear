@@ -161,6 +161,143 @@ async fn role_context_includes_issue_ancestry_documents() {
     assert_eq!(ids.len(), task_links.len());
 }
 
+/// Native permalinks resolve Project, Issue, Document and ProjectUpdate references to the
+/// same identity as UUID calls, while wrong types, decorated links and unknown or ambiguous
+/// ProjectUpdate short tokens fail explicitly.
+#[tokio::test]
+async fn native_permalinks_resolve_typed_references() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let project_slug = "passport-a1b2c3d4e5";
+    let (issue_link, project_url) = {
+        let mut db = f.db.lock().await;
+        let issue = db.issues.get_mut(&epic).unwrap();
+        let link = format!(
+            "https://linear.app/example/issue/{}/readable-epic",
+            issue["identifier"].as_str().unwrap()
+        );
+        issue["url"] = json!(link);
+        let url = format!("https://linear.app/example/project/{project_slug}");
+        db.projects.get_mut(&project).unwrap()["url"] = json!(url);
+        (link, url)
+    };
+    let document = f
+        .ok(
+            "save_document",
+            json!({"project_id":project,"title":"Guide","content":"Body"}),
+        )
+        .await;
+    let document_url = {
+        let mut db = f.db.lock().await;
+        let slug = format!("guide-{}", &document["id"].as_str().unwrap()[..8]);
+        let url = format!("https://linear.app/example/document/{slug}");
+        db.documents
+            .get_mut(document["id"].as_str().unwrap())
+            .unwrap()["url"] = json!(url);
+        url
+    };
+    let update = f
+        .ok(
+            "save_project_update",
+            json!({"project_id":project,"health":"onTrack","reason":"Steady progress"}),
+        )
+        .await;
+    let update_url = update["url"].as_str().unwrap().to_owned();
+    assert!(update_url.contains("/activity#project-update-"));
+
+    let project_by_link = f.ok("get_context", json!({"url":project_url})).await;
+    let project_by_uuid = f
+        .ok("get_context", json!({"type":"project","id":project}))
+        .await;
+    assert_eq!(
+        project_by_link["project"]["id"],
+        project_by_uuid["project"]["id"]
+    );
+    assert_eq!(
+        f.ok("get_overview", json!({"project_id":project_url}))
+            .await["project_id"],
+        json!(project)
+    );
+    let document_context = f.ok("get_context", json!({"url":document_url})).await;
+    assert_eq!(document_context["id"], document["id"]);
+    let update_context = f.ok("get_context", json!({"url":update_url})).await;
+    assert_eq!(
+        update_context["project_update"]["id"],
+        update["project_update"]["id"]
+    );
+    assert_eq!(
+        update_context["activity"]["id"],
+        update_context["project_update"]["id"]
+    );
+    let issue_context = f.ok("get_context", json!({"url":issue_link})).await;
+    assert_eq!(issue_context["issue"]["id"], json!(epic));
+    assert_eq!(issue_context["agent_context"]["view"], "lead");
+    let typed_issue_context = f
+        .ok("get_context", json!({"id":issue_link,"type":"issue"}))
+        .await;
+    assert_eq!(typed_issue_context["issue"]["id"], json!(epic));
+    let module = f.work("module", &project, Some(&epic)).await;
+    let listed = f
+        .ok(
+            "list_items",
+            json!({"type":"issue","project_id":project_url,"parent_id":issue_link,"kind":"module"}),
+        )
+        .await;
+    assert_eq!(listed["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["nodes"][0]["id"], json!(module));
+
+    for (arguments, code) in [
+        // The catalogue already rejects a Project field carrying a foreign permalink shape.
+        (json!({"project_id":issue_link}), "INVALID_INPUT"),
+        (json!({"project_id":document_url}), "INVALID_INPUT"),
+        (
+            json!({"url":format!("{document_url}?refresh=1")}),
+            "INVALID_LINK",
+        ),
+        (
+            json!({"url":document_url.replace("https://", "https://user:secret@")}),
+            "INVALID_LINK",
+        ),
+        (
+            json!({"url":format!("{project_url}#comment-abcdefgh")}),
+            "INVALID_LINK",
+        ),
+        (json!({"url":issue_link,"type":"project"}), "INVALID_LINK"),
+        (
+            json!({"url":format!("{project_url}/activity#project-update-deadbeef")}),
+            "RECORD_MISSING",
+        ),
+    ] {
+        let tool = if arguments.get("project_id").is_some() {
+            "get_overview"
+        } else {
+            "get_context"
+        };
+        let rejected = f.call(tool, arguments).await;
+        assert_eq!(rejected.status, "blocked", "{tool}: {}", rejected.data);
+        assert_eq!(rejected.data["code"], code, "{tool}: {}", rejected.data);
+    }
+
+    let shared_prefix = "abcdef01";
+    for suffix in ["1111-4111-8111-000000000001", "2222-4222-8222-000000000002"] {
+        f.ok(
+            "save_project_update",
+            json!({"request_id":format!("{shared_prefix}-{suffix}"),"project_id":project,
+                "health":"atRisk","reason":"Two updates share a short token"}),
+        )
+        .await;
+    }
+    let ambiguous = f
+        .call(
+            "get_context",
+            json!({"url":format!("{project_url}/activity#project-update-{shared_prefix}")}),
+        )
+        .await;
+    assert_eq!(ambiguous.status, "blocked");
+    assert_eq!(ambiguous.data["code"], "INVALID_LINK");
+}
+
 /// A child with uncertain native Done and pending recorded transition is never counted as exact.
 #[tokio::test]
 async fn pending_child_done_suppresses_module_progress() {

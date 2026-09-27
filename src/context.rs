@@ -20,33 +20,186 @@ const BASELINE_TTL: Duration = Duration::from_secs(30 * 60);
 /// Bound each compact comparison point before it enters process memory.
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 
-/// Resolve a native Linear Issue URL to its human identifier without fetching the URL.
-/// Only HTTPS links on linear.app with an issue path are accepted; a malformed or unrelated
-/// reference returns INVALID_LINK. The caller still resolves the identifier through Linear.
-pub fn issue_identifier(reference: &str) -> Result<String> {
+/// One supported native Linear reference shape, parsed without any network access.
+/// Ordinary Project/Issue/Document links reject query strings, credentials and irrelevant
+/// fragments; ProjectUpdate and Comment links keep exactly their observed native fragments.
+/// Parsing states what a link names, never what a tool accepts: expected-type checks and
+/// native identity verification belong to the resolver in the gateway.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reference {
+    /// Bare UUID; the expected entity type is enforced by the later native lookup.
+    Uuid(String),
+    /// `…/issue/{identifier}` plus an optional `#comment-{8 hex}` fragment.
+    Issue {
+        /// Human issue identifier such as `TEAM-42`.
+        identifier: String,
+        /// Eight hex characters naming a native comment on the issue.
+        comment: Option<String>,
+    },
+    /// `…/project/{slug}` plus an optional `#comment-{8 hex}` fragment.
+    Project {
+        /// Native project URL slug.
+        slug: String,
+        /// Eight hex characters naming a native comment on the project.
+        comment: Option<String>,
+    },
+    /// `…/document/{slug}` with no fragment.
+    Document {
+        /// Native document URL slug.
+        slug: String,
+    },
+    /// `…/project/{slug}/activity#project-update-{8 hex}` with an optional `&comment-{8 hex}`.
+    ProjectUpdate {
+        /// Native project URL slug owning the update.
+        project_slug: String,
+        /// First eight hex characters of the ProjectUpdate UUID.
+        short: String,
+        /// Eight hex characters naming a native comment on the update.
+        comment: Option<String>,
+    },
+}
+
+impl Reference {
+    /// Return the referenced entity kind, or `None` for a bare UUID whose kind the caller
+    /// must state. Comment-carrying links name comments and never a context entity.
+    pub fn entity(&self) -> Option<&'static str> {
+        match self {
+            Self::Uuid(_) => None,
+            Self::Issue { .. } => Some("issue"),
+            Self::Project { .. } => Some("project"),
+            Self::Document { .. } => Some("document"),
+            Self::ProjectUpdate { .. } => Some("project_update"),
+        }
+    }
+    /// Whether the link carries a native comment fragment.
+    pub fn comment(&self) -> bool {
+        matches!(
+            self,
+            Self::Issue {
+                comment: Some(_),
+                ..
+            } | Self::Project {
+                comment: Some(_),
+                ..
+            } | Self::ProjectUpdate {
+                comment: Some(_),
+                ..
+            }
+        )
+    }
+}
+
+/// Validate one `8`-hex-character native fragment token and return it verbatim for
+/// case-insensitive comparison by the caller. `INVALID_LINK` names the failed fragment.
+fn fragment_hash(value: &str, name: &str) -> Result<String> {
+    require(
+        value.len() == 8 && value.bytes().all(|b| b.is_ascii_hexdigit()),
+        "INVALID_LINK",
+        format!("Expected an 8-hex-character {name} fragment"),
+    )?;
+    Ok(value.to_owned())
+}
+
+/// Parse one reference into a UUID or a supported native Linear permalink shape without
+/// fetching it. Foreign hosts, non-HTTPS schemes, credentials, query strings, unsupported
+/// paths and irrelevant fragments return INVALID_LINK. Leading path segments before the
+/// entity marker are the workspace name and carry no selection meaning.
+pub fn parse_reference(reference: &str) -> Result<Reference> {
+    if uuid::Uuid::parse_str(reference).is_ok() {
+        return Ok(Reference::Uuid(reference.to_owned()));
+    }
     let url = reqwest::Url::parse(reference)
-        .map_err(|_| Fault::new("INVALID_LINK", "Expected a native Linear Issue URL"))?;
-    let parts: Vec<_> = url
-        .path_segments()
-        .map(|segments| segments.collect())
-        .unwrap_or_default();
-    let identifier = parts
-        .windows(2)
-        .find_map(|pair| (pair[0] == "issue").then_some(pair[1]))
-        .unwrap_or("");
+        .map_err(|_| Fault::new("INVALID_LINK", "Expected a UUID or native Linear permalink"))?;
     require(
         url.scheme() == "https"
             && url.host_str() == Some("linear.app")
-            && url.query().is_none()
-            && url.fragment().is_none()
-            && identifier.contains('-')
-            && identifier
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none(),
         "INVALID_LINK",
-        "Expected a native Linear Issue URL",
+        "Expected a native Linear permalink without query or credentials",
     )?;
-    Ok(identifier.to_owned())
+    let segments: Vec<_> = url.path_segments().into_iter().flatten().collect();
+    let marker = segments
+        .iter()
+        .position(|segment| matches!(*segment, "issue" | "project" | "document"))
+        .ok_or_else(|| Fault::new("INVALID_LINK", "Permalink names no supported entity"))?;
+    let token: &str = segments
+        .get(marker + 1)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| Fault::new("INVALID_LINK", "Permalink names no entity identifier"))?;
+    let tail = &segments[marker + 2..];
+    let fragment = url.fragment().unwrap_or("");
+    match segments[marker] {
+        "document" => {
+            require(
+                fragment.is_empty() && tail.is_empty(),
+                "INVALID_LINK",
+                "Document permalinks carry no fragment or tail",
+            )?;
+            Ok(Reference::Document {
+                slug: token.to_owned(),
+            })
+        }
+        "issue" => {
+            require(
+                token.contains('-')
+                    && token
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+                "INVALID_LINK",
+                "Expected a native Linear Issue permalink",
+            )?;
+            let comment = if fragment.is_empty() {
+                None
+            } else {
+                Some(fragment_hash(
+                    fragment.strip_prefix("comment-").unwrap_or(""),
+                    "comment",
+                )?)
+            };
+            Ok(Reference::Issue {
+                identifier: token.to_owned(),
+                comment,
+            })
+        }
+        _ => {
+            require(
+                tail.is_empty() || tail == ["activity"],
+                "INVALID_LINK",
+                "Project permalinks carry no tail beyond activity",
+            )?;
+            if let Some(short) = fragment.strip_prefix("project-update-") {
+                let (short, comment) = match short.split_once('&') {
+                    Some((short, comment)) => (
+                        short,
+                        Some(fragment_hash(
+                            comment.strip_prefix("comment-").unwrap_or(""),
+                            "comment",
+                        )?),
+                    ),
+                    None => (short, None),
+                };
+                return Ok(Reference::ProjectUpdate {
+                    project_slug: token.to_owned(),
+                    short: fragment_hash(short, "project-update")?,
+                    comment,
+                });
+            }
+            let comment = if fragment.is_empty() {
+                None
+            } else {
+                Some(fragment_hash(
+                    fragment.strip_prefix("comment-").unwrap_or(""),
+                    "comment",
+                )?)
+            };
+            Ok(Reference::Project {
+                slug: token.to_owned(),
+                comment,
+            })
+        }
+    }
 }
 
 /// Collect native drift from a Module and every direct child before any derived count is shown.
