@@ -81,9 +81,20 @@
           "pattern": "\\S"
         },
         "id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            }
+          ]
         },
         "title": {
           "type": "string",
@@ -157,9 +168,20 @@
           "pattern": "\\S"
         },
         "project_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            }
+          ]
         },
         "team_id": {
           "type": "string",
@@ -169,9 +191,20 @@
         "parent_id": {
           "anyOf": [
             {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                },
+                {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4000,
+                  "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                  "description": "Native Linear issue permalink."
+                }
+              ]
             },
             {
               "type": "null"
@@ -473,9 +506,20 @@
           "pattern": "\\S"
         },
         "id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+              "description": "Native Linear issue permalink."
+            }
+          ]
         },
         "title": {
           "type": "string",
@@ -492,9 +536,20 @@
         "parent_id": {
           "anyOf": [
             {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                },
+                {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4000,
+                  "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                  "description": "Native Linear issue permalink."
+                }
+              ]
             },
             {
               "type": "null"
@@ -782,9 +837,20 @@
           "pattern": "\\S"
         },
         "project_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            }
+          ]
         },
         "team_id": {
           "type": "string",
@@ -794,9 +860,20 @@
         "parent_id": {
           "anyOf": [
             {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                },
+                {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4000,
+                  "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                  "description": "Native Linear issue permalink."
+                }
+              ]
             },
             {
               "type": "null"
@@ -1101,9 +1178,20 @@
             "after_epic": {
               "anyOf": [
                 {
-                  "type": "string",
-                  "format": "uuid",
-                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                    },
+                    {
+                      "type": "string",
+                      "format": "uri",
+                      "maxLength": 4000,
+                      "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                      "description": "Native Linear issue permalink."
+                    }
+                  ]
                 },
                 {
                   "type": "null"
@@ -1162,9 +1250,20 @@
           "pattern": "\\S"
         },
         "id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+              "description": "Native Linear issue permalink."
+            }
+          ]
         },
         "title": {
           "type": "string",
@@ -1181,9 +1280,20 @@
         "parent_id": {
           "anyOf": [
             {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                },
+                {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4000,
+                  "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                  "description": "Native Linear issue permalink."
+                }
+              ]
             },
             {
               "type": "null"
@@ -1476,9 +1586,20 @@
             "after_epic": {
               "anyOf": [
                 {
-                  "type": "string",
-                  "format": "uuid",
-                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                    },
+                    {
+                      "type": "string",
+                      "format": "uri",
+                      "maxLength": 4000,
+                      "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                      "description": "Native Linear issue permalink."
+                    }
+                  ]
                 },
                 {
                   "type": "null"
@@ -1535,9 +1656,20 @@
           "pattern": "\\S"
         },
         "project_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            }
+          ]
         },
         "team_id": {
           "type": "string",
@@ -1547,9 +1679,20 @@
         "parent_id": {
           "anyOf": [
             {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                },
+                {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4000,
+                  "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                  "description": "Native Linear issue permalink."
+                }
+              ]
             },
             {
               "type": "null"
@@ -1839,9 +1982,20 @@
           "pattern": "\\S"
         },
         "id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+              "description": "Native Linear issue permalink."
+            }
+          ]
         },
         "title": {
           "type": "string",
@@ -1858,9 +2012,20 @@
         "parent_id": {
           "anyOf": [
             {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                },
+                {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4000,
+                  "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                  "description": "Native Linear issue permalink."
+                }
+              ]
             },
             {
               "type": "null"
@@ -2135,9 +2300,20 @@
           "pattern": "\\S"
         },
         "project_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            }
+          ]
         },
         "team_id": {
           "type": "string",
@@ -2147,9 +2323,20 @@
         "parent_id": {
           "anyOf": [
             {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                },
+                {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4000,
+                  "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                  "description": "Native Linear issue permalink."
+                }
+              ]
             },
             {
               "type": "null"
@@ -2431,9 +2618,20 @@
                 {
                   "type": "array",
                   "items": {
-                    "type": "string",
-                    "format": "uuid",
-                    "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                      },
+                      {
+                        "type": "string",
+                        "format": "uri",
+                        "maxLength": 4000,
+                        "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                        "description": "Native Linear issue permalink."
+                      }
+                    ]
                   },
                   "uniqueItems": true,
                   "minItems": 2,
@@ -2483,9 +2681,20 @@
           "pattern": "\\S"
         },
         "id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+              "description": "Native Linear issue permalink."
+            }
+          ]
         },
         "title": {
           "type": "string",
@@ -2502,9 +2711,20 @@
         "parent_id": {
           "anyOf": [
             {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                },
+                {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4000,
+                  "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                  "description": "Native Linear issue permalink."
+                }
+              ]
             },
             {
               "type": "null"
@@ -2774,9 +2994,20 @@
                 {
                   "type": "array",
                   "items": {
-                    "type": "string",
-                    "format": "uuid",
-                    "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                      },
+                      {
+                        "type": "string",
+                        "format": "uri",
+                        "maxLength": 4000,
+                        "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                        "description": "Native Linear issue permalink."
+                      }
+                    ]
                   },
                   "uniqueItems": true,
                   "minItems": 2,
@@ -2808,7 +3039,7 @@
   },
   {
     "name": "get_context",
-    "description": "Read a native Project, Issue, Document or ProjectUpdate by type and ID; a native Linear Issue URL alone also selects the Issue. Optional view=lead/reviewer adds assignment, current reports, review, questions and Project/current/ancestor Issue document links. Child pending/status drift withholds exact Module counts. Existing ID/type calls keep their fields. Reads never repair Linear.",
+    "description": "Read a native Project, Issue, Document or ProjectUpdate by type and ID; a native Linear URL alone also selects the entity with its type inferred, and non-native or decorated links are rejected on resolution. Optional view=lead/reviewer adds assignment, current reports, review, questions and Project/current/ancestor Issue document links. detail=brief|full sets body depth independently of view; omitted detail keeps current behavior. Child pending/status drift withholds exact Module counts. Existing ID/type calls keep their fields. Reads never repair Linear.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2846,6 +3077,13 @@
             "lead",
             "reviewer"
           ]
+        },
+        "detail": {
+          "enum": [
+            "brief",
+            "full"
+          ],
+          "description": "brief keeps status, assignee, current result/blockers/guidance, the latest applicable handoff and routes to full documents; full returns existing complete content."
         }
       },
       "required": [],
@@ -2865,9 +3103,20 @@
       "type": "object",
       "properties": {
         "project_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            }
+          ]
         },
         "cursor": {
           "type": "string",
@@ -2903,16 +3152,38 @@
           ]
         },
         "project_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
-        },
-        "parent_id": {
           "anyOf": [
             {
               "type": "string",
               "format": "uuid",
               "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            }
+          ]
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+                },
+                {
+                  "type": "string",
+                  "format": "uri",
+                  "maxLength": 4000,
+                  "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+                  "description": "Native Linear issue permalink."
+                }
+              ]
             },
             {
               "type": "null"
@@ -2927,9 +3198,34 @@
           ]
         },
         "target_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+              "description": "Native Linear issue permalink."
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+/activity#project-update-[0-9a-fA-F]{8}$",
+              "description": "Native Linear project update permalink."
+            }
+          ]
         },
         "team_id": {
           "type": "string",
@@ -3056,19 +3352,52 @@
           "pattern": "\\S"
         },
         "id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/document/[^/?#\\s]+$",
+              "description": "Native Linear document permalink."
+            }
+          ]
         },
         "project_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            }
+          ]
         },
         "issue_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+              "description": "Native Linear issue permalink."
+            }
+          ]
         },
         "title": {
           "type": "string",
@@ -3112,9 +3441,20 @@
           "pattern": "\\S"
         },
         "id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+              "description": "Native Linear issue permalink."
+            }
+          ]
         },
         "status": {
           "enum": [
@@ -3171,9 +3511,20 @@
           "pattern": "\\S"
         },
         "id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+              "description": "Native Linear issue permalink."
+            }
+          ]
         },
         "reviewer": {
           "type": "string",
@@ -3252,9 +3603,20 @@
           "pattern": "\\S"
         },
         "work_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+              "description": "Native Linear issue permalink."
+            }
+          ]
         },
         "commits": {
           "type": "array",
@@ -3283,7 +3645,7 @@
   },
   {
     "name": "add_comment",
-    "description": "Create visible note/progress/question/decision activity on an Issue, Project or ProjectUpdate. A question needs recipient; a reply parent must be on the same target. request_id is the native Comment ID, so retry identical arguments after an unknown outcome.",
+    "description": "Create visible note/progress/question/decision activity on an Issue, Project or ProjectUpdate. A question needs recipient; a reply parent must be on the same target. kind=handoff records an explicit continuation checkpoint on a managed Issue: the server stamps the current round/revision from Activity and reads select the latest matching-round handoff. request_id is the native Comment ID, so retry identical arguments after an unknown outcome.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3306,21 +3668,58 @@
           ]
         },
         "target_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/issue/[A-Za-z0-9]+-[0-9]+(/[^?#\\s]*)?$",
+              "description": "Native Linear issue permalink."
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+/activity#project-update-[0-9a-fA-F]{8}$",
+              "description": "Native Linear project update permalink."
+            }
+          ]
         },
         "parent_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/[^?#\\s]+#(project-update-[0-9a-fA-F]{8}&)?comment-[0-9a-fA-F]{8}$",
+              "description": "Native Linear comment permalink."
+            }
+          ]
         },
         "kind": {
           "enum": [
             "note",
             "progress",
             "question",
-            "decision"
+            "decision",
+            "handoff"
           ]
         },
         "role": {
@@ -3428,17 +3827,39 @@
           "pattern": "\\S"
         },
         "id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/[^?#\\s]+#(project-update-[0-9a-fA-F]{8}&)?comment-[0-9a-fA-F]{8}$",
+              "description": "Native Linear comment permalink."
+            }
+          ]
         },
         "resolved": {
           "type": "boolean"
         },
         "resolving_comment_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/[^?#\\s]+#(project-update-[0-9a-fA-F]{8}&)?comment-[0-9a-fA-F]{8}$",
+              "description": "Native Linear comment permalink."
+            }
+          ]
         }
       },
       "required": [
@@ -3474,14 +3895,36 @@
           "pattern": "\\S"
         },
         "id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+/activity#project-update-[0-9a-fA-F]{8}$",
+              "description": "Native Linear project update permalink."
+            }
+          ]
         },
         "project_id": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+            },
+            {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 4000,
+              "pattern": "^https://linear\\.app/[0-9A-Za-z][0-9A-Za-z._-]*/project/[^/?#\\s]+$",
+              "description": "Native Linear project permalink."
+            }
+          ]
         },
         "health": {
           "enum": [

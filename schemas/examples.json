@@ -1,0 +1,273 @@
+{
+  "contract": "D2 typed-reference matrix plus detail and handoff inputs. Each case is validated against the embedded catalogue by tests/schema.rs. Notes record server-side conditions (conditional inputs, replay rules) the JSON schema deliberately does not encode; all identifiers and permalinks are synthetic examples.",
+  "cases": [
+    {
+      "tool": "get_context",
+      "valid": true,
+      "note": "Plain UUID reference with type; omitted detail keeps the current full behavior.",
+      "arguments": { "type": "issue", "id": "11111111-1111-4111-8111-111111111111" }
+    },
+    {
+      "tool": "get_context",
+      "valid": true,
+      "note": "Issue permalink alone selects the Issue and infers the type; brief keeps status, blockers, guidance and the latest applicable handoff.",
+      "arguments": { "id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract", "detail": "brief" }
+    },
+    {
+      "tool": "get_context",
+      "valid": true,
+      "note": "Document permalink with an explicit view; detail is independent of view.",
+      "arguments": { "url": "https://linear.app/example/document/d2-contract-a1b2c3d4e5f6", "view": "lead", "detail": "full" }
+    },
+    {
+      "tool": "get_context",
+      "valid": true,
+      "note": "Observed ProjectUpdate permalink shape with its native fragment.",
+      "arguments": { "url": "https://linear.app/example/project/passport/activity#project-update-deadbeef" }
+    },
+    {
+      "tool": "get_context",
+      "valid": true,
+      "note": "get_context keeps accepting any https URL at the schema level; the resolver rejects non-native or decorated links (query, credentials, irrelevant fragments) with INVALID_LINK.",
+      "arguments": { "url": "https://linear.app/example/document/d2-contract-a1b2c3d4e5f6?refresh=1" }
+    },
+    {
+      "tool": "get_context",
+      "valid": false,
+      "note": "detail is exactly brief or full.",
+      "arguments": { "detail": "summary" }
+    },
+    {
+      "tool": "get_context",
+      "valid": true,
+      "note": "Type is otherwise validated: the resolver, not the schema, requires the native project-update fragment on ProjectUpdate links.",
+      "arguments": { "type": "project_update", "id": "https://linear.app/example/project/passport/activity" }
+    },
+    {
+      "tool": "get_overview",
+      "valid": true,
+      "note": "Project reference accepts its native permalink.",
+      "arguments": { "project_id": "https://linear.app/example/project/passport" }
+    },
+    {
+      "tool": "get_overview",
+      "valid": false,
+      "note": "project_id is a Project reference; an Issue permalink is the wrong type.",
+      "arguments": { "project_id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract" }
+    },
+    {
+      "tool": "list_items",
+      "valid": true,
+      "note": "parent_id is a nullable Issue reference.",
+      "arguments": { "type": "issue", "parent_id": "https://linear.app/example/issue/EXAMPLE-7/epic-title", "kind": "module" }
+    },
+    {
+      "tool": "list_items",
+      "valid": true,
+      "note": "target_id type follows target_type; the server verifies it.",
+      "arguments": { "type": "comment", "target_type": "project_update", "target_id": "https://linear.app/example/project/passport/activity#project-update-deadbeef" }
+    },
+    {
+      "tool": "list_items",
+      "valid": false,
+      "note": "project_id is a Project reference; a Document permalink is the wrong type.",
+      "arguments": { "type": "project_update", "project_id": "https://linear.app/example/document/d2-contract-a1b2c3d4e5f6" }
+    },
+    {
+      "tool": "create_task",
+      "valid": true,
+      "note": "project_id and parent_id accept permalinks; team_id stays a plain UUID and is never normalized.",
+      "arguments": {
+        "request_id": "21111111-1111-4111-8111-111111111111",
+        "actor": "orchestrator-run",
+        "project_id": "https://linear.app/example/project/passport",
+        "team_id": "22222222-2222-4222-8222-222222222222",
+        "parent_id": "https://linear.app/example/issue/EXAMPLE-7/epic-title",
+        "title": "[TASK] Publish the input contract",
+        "fields": {}
+      }
+    },
+    {
+      "tool": "edit_module",
+      "valid": true,
+      "note": "after_epic is an Epic (Issue-shaped) reference.",
+      "arguments": {
+        "request_id": "21111111-1111-4111-8111-111111111112",
+        "actor": "worker-run",
+        "id": "https://linear.app/example/issue/EXAMPLE-8/module-one",
+        "fields": { "after_epic": "https://linear.app/example/issue/EXAMPLE-7/epic-title" }
+      }
+    },
+    {
+      "tool": "edit_atomic",
+      "valid": true,
+      "note": "integration_modules lists Module (Issue-shaped) references; request_id stays a UUID for exact retries.",
+      "arguments": {
+        "request_id": "21111111-1111-4111-8111-111111111113",
+        "actor": "worker-run",
+        "id": "https://linear.app/example/issue/EXAMPLE-9/spike",
+        "fields": {
+          "integration_modules": [
+            "https://linear.app/example/issue/EXAMPLE-8/module-one",
+            "https://linear.app/example/issue/EXAMPLE-10/module-two"
+          ]
+        }
+      }
+    },
+    {
+      "tool": "save_document",
+      "valid": true,
+      "note": "issue_id is an Issue reference; new documents use request_id as native ID.",
+      "arguments": {
+        "request_id": "21111111-1111-4111-8111-111111111114",
+        "actor": "worker-run",
+        "issue_id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract",
+        "title": "Input contract",
+        "content": "Published examples for the typed-reference matrix."
+      }
+    },
+    {
+      "tool": "save_document",
+      "valid": false,
+      "note": "id is a Document reference; a Project permalink is the wrong type.",
+      "arguments": {
+        "request_id": "21111111-1111-4111-8111-111111111115",
+        "actor": "worker-run",
+        "id": "https://linear.app/example/project/passport",
+        "title": "Wrong reference"
+      }
+    },
+    {
+      "tool": "move_status",
+      "valid": true,
+      "note": "id is an Issue reference; check_only performs no write; reuse request_id unchanged on unknown outcomes.",
+      "arguments": {
+        "request_id": "21111111-1111-4111-8111-111111111116",
+        "actor": "worker-run",
+        "actor_role": "worker",
+        "id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract",
+        "status": "In Progress",
+        "check_only": true
+      }
+    },
+    {
+      "tool": "move_status",
+      "valid": false,
+      "note": "References accept only linear.app permalinks or UUIDs, never foreign hosts.",
+      "arguments": {
+        "request_id": "21111111-1111-4111-8111-111111111117",
+        "actor": "worker-run",
+        "actor_role": "worker",
+        "id": "https://example.com/issue/EXAMPLE-42",
+        "status": "In Progress"
+      }
+    },
+    {
+      "tool": "record_review",
+      "valid": true,
+      "note": "id is an Issue reference; artifacts stay plain https URLs and are never fetched.",
+      "arguments": {
+        "request_id": "21111111-1111-4111-8111-111111111118",
+        "actor": "reviewer-run",
+        "id": "https://linear.app/example/issue/EXAMPLE-8/module-one",
+        "reviewer": "independent-reviewer",
+        "verdict": "accepted",
+        "summary": "Catalogue matches D2.",
+        "findings": "No blockers.",
+        "artifacts": ["https://example.com/reports/module-one.txt"]
+      }
+    },
+    {
+      "tool": "record_commits",
+      "valid": true,
+      "note": "work_id is an Issue reference; commit hashes stay hexadecimal and are never permalinks.",
+      "arguments": {
+        "request_id": "21111111-1111-4111-8111-111111111119",
+        "actor": "worker-run",
+        "work_id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract",
+        "commits": ["0123456789abcdef0123456789abcdef01234567"]
+      }
+    },
+    {
+      "tool": "add_comment",
+      "valid": true,
+      "note": "kind=handoff is a managed-Issue continuation checkpoint; round/revision are stamped server-side and reads never mutate.",
+      "arguments": {
+        "request_id": "33333333-3333-4333-8333-333333333331",
+        "actor": "worker-run",
+        "target_type": "issue",
+        "target_id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract",
+        "kind": "handoff",
+        "body": "Continuation point: schema artifact committed; handlers next."
+      }
+    },
+    {
+      "tool": "add_comment",
+      "valid": true,
+      "note": "A reply parent_id is a Comment reference and must sit on the same target (server-side condition).",
+      "arguments": {
+        "request_id": "33333333-3333-4333-8333-333333333332",
+        "actor": "orchestrator-run",
+        "target_type": "issue",
+        "target_id": "11111111-1111-4111-8111-111111111111",
+        "parent_id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract#comment-deadbeef",
+        "body": "Reply on the same thread."
+      }
+    },
+    {
+      "tool": "add_comment",
+      "valid": true,
+      "note": "A question needs a recipient; the condition is enforced by the server, not the schema.",
+      "arguments": {
+        "request_id": "33333333-3333-4333-8333-333333333333",
+        "actor": "worker-run",
+        "target_type": "issue",
+        "target_id": "11111111-1111-4111-8111-111111111111",
+        "kind": "question",
+        "recipient": "module-lead",
+        "body": "Which branch carries the artifact?"
+      }
+    },
+    {
+      "tool": "resolve_comment",
+      "valid": true,
+      "note": "Combined ProjectUpdate+comment fragment is the observed native shape; resolving_comment_id may stay a UUID.",
+      "arguments": {
+        "request_id": "44444444-4444-4444-8444-444444444441",
+        "actor": "orchestrator-run",
+        "id": "https://linear.app/example/project/passport/activity#project-update-deadbeef&comment-feedface",
+        "resolved": true,
+        "resolving_comment_id": "44444444-4444-4444-8444-444444444442"
+      }
+    },
+    {
+      "tool": "resolve_comment",
+      "valid": false,
+      "note": "Comment fragments carry an eight-hex-character hash.",
+      "arguments": {
+        "request_id": "44444444-4444-4444-8444-444444444443",
+        "actor": "orchestrator-run",
+        "id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract#comment-feedfac",
+        "resolved": true
+      }
+    },
+    {
+      "tool": "save_project_update",
+      "valid": true,
+      "note": "project_id is a Project reference and id a ProjectUpdate reference; edits additionally need body and expected_updated_at (server-side condition).",
+      "arguments": {
+        "request_id": "55555555-5555-4555-8555-555555555551",
+        "actor": "orchestrator-run",
+        "project_id": "https://linear.app/example/project/passport",
+        "health": "onTrack",
+        "reason": "Input contract published ahead of consumers."
+      }
+    },
+    {
+      "tool": "get_comment",
+      "valid": true,
+      "note": "get_comment.id keeps accepting a UUID or any observed native permalink.",
+      "arguments": { "id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract#comment-deadbeef" }
+    }
+  ]
+}
