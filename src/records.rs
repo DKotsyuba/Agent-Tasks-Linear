@@ -292,9 +292,9 @@ pub fn markdown_key(value: &str) -> String {
 }
 
 /// Compare requested Markdown with Linear's native rendering without losing intentional labels.
-/// A bare HTTP(S) URL may gain a native title; a prose domain may become the same-label
-/// `http://` link at its original word boundary. Different destinations or labels, code,
-/// extra prose and list boundaries still differ.
+/// A bare HTTP(S) URL may gain a native title even when closing prose punctuation follows it;
+/// a prose domain may become the same-label `http://` link at its original word boundary.
+/// Different destinations or labels, code, extra prose and list boundaries still differ.
 /// The comparison is directional and never rewrites either source.
 pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
     let expected_key = markdown_key(expected);
@@ -321,9 +321,29 @@ pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
             .all(|(expected, actual)| same_text_with_native_link_title(expected, actual))
 }
 
+/// Report whether a requested bare URL or domain token ends at `rest`, the remainder of the
+/// requested text starting exactly after that token. A token ends at end of input, whitespace,
+/// or one of the closing prose punctuation characters `,;:!?)]}`; a period also ends it only
+/// when no alphanumeric follows, so a URL that genuinely continues (for example `…/a.foo`)
+/// is never split at an interior-looking dot. Linear's autolinker closes generated links
+/// before exactly this punctuation, so requiring the boundary keeps destinations exact while
+/// tolerating where native serialization places the link end.
+fn prose_boundary(rest: &str) -> bool {
+    rest.chars().next().is_none_or(|c| {
+        c.is_whitespace()
+            || matches!(c, ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}')
+            || (c == '.'
+                && rest[1..]
+                    .chars()
+                    .next()
+                    .is_none_or(|next| !next.is_ascii_alphanumeric()))
+    })
+}
+
 /// Compare normalized text while consuming only a native link aligned to a requested bare URL
 /// or a same-label prose domain. URL destinations and domain word boundaries must match exactly;
-/// explicit labels, changed destinations and surrounding prose remain visible.
+/// explicit labels, changed destinations and surrounding prose remain visible. Both bare forms
+/// may end at any closing prose punctuation, exactly where Linear's autolinker closes a link.
 fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> bool {
     let mut previous = None;
     while !expected.is_empty() && !actual.is_empty() {
@@ -339,10 +359,7 @@ fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> boo
                 .trim_end_matches('>');
             let bare_url = expected.starts_with(destination)
                 && (destination.starts_with("https://") || destination.starts_with("http://"))
-                && expected[destination.len()..]
-                    .chars()
-                    .next()
-                    .is_none_or(char::is_whitespace);
+                && prose_boundary(&expected[destination.len()..]);
             let bare_domain = previous.is_none_or(|c: char| {
                 c.is_whitespace() || matches!(c, '(' | '[' | '{' | '"' | '\'')
             }) && label.contains('.')
@@ -363,16 +380,7 @@ fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> boo
                 })
                 && destination == format!("http://{label}")
                 && expected.starts_with(label)
-                && expected[label.len()..].chars().next().is_none_or(|c| {
-                    let rest = &expected[label.len()..];
-                    c.is_whitespace()
-                        || matches!(c, ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}')
-                        || (c == '.'
-                            && rest[1..]
-                                .chars()
-                                .next()
-                                .is_none_or(|next| !next.is_ascii_alphanumeric()))
-                });
+                && prose_boundary(&expected[label.len()..]);
             if bare_url || bare_domain {
                 let consumed = if bare_url {
                     destination.len()

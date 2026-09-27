@@ -643,6 +643,30 @@ fn markdown_native_link_title_preserves_meaningful_differences() {
         &format!("`{url}`"),
         &format!("`[Spec title](<{url}>)`"),
     ));
+    // A sentence period, comma or closing bracket directly after the bare URL is where
+    // Linear closes its generated title link; the URL itself is unchanged.
+    let sentence = format!("D2 {url}. Consume existing semantics at BASE4d0f5f7.");
+    let native_sentence = sentence.replace(url, &format!("[Spec title](<{url}>)"));
+    assert!(markdown_equivalent(&sentence, &native_sentence));
+    assert!(markdown_equivalent(
+        &format!("See {url}, then continue."),
+        &format!("See [Spec title](<{url}>), then continue.")
+    ));
+    assert!(markdown_equivalent(
+        &format!("(see {url}) done."),
+        &format!("(see [Spec title](<{url}>)) done.")
+    ));
+    for changed in [
+        native_sentence.replace("spec-123", "spec-124"),
+        native_sentence.replace("Consume existing", "Adopt and consume existing"),
+    ] {
+        assert!(!markdown_equivalent(&sentence, &changed), "{changed}");
+    }
+    // A period followed by alphanumeric continues the requested URL, so it is not a boundary.
+    assert!(!markdown_equivalent(
+        &format!("See {url}.foo next."),
+        &format!("See [Spec title](<{url}>).foo next.")
+    ));
 }
 
 /// A pending Issue edit accepts Linear's title for an originally bare document URL without
@@ -666,6 +690,46 @@ async fn markdown_document_title_pending_retry_preserves_content() {
         .unwrap()
         .replace(url, &format!("[Spec title](<{url}>)"));
     f.db.lock().await.issues.get_mut(&module).unwrap()["description"] = json!(native);
+    f.restart();
+    f.ok("edit_module", request.clone()).await;
+    f.ok("edit_module", request).await;
+    let context = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    assert!(context["workflow"]["pending"].is_null());
+    assert_eq!(context["discrepancies"], json!([]));
+    assert_eq!(context["issue"]["description"], native);
+}
+
+/// A pending Issue edit accepts Linear's titled link when the requested bare document URL is
+/// followed directly by sentence punctuation, and a same-sentence domain autolink, as in the
+/// MYT-70 contract edit; the exact retry finalizes without conflicts or drift.
+#[tokio::test]
+async fn markdown_punctuation_url_pending_retry_preserves_content() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    let url = "https://linear.app/example/document/spec-123";
+    let request = json!({"request_id":id(),"id":module,"fields":{
+        "required_contract":format!(
+            "D2 {url}. Coordinate lib.rs registration and [Role](https://example.com/role)."
+        )
+    }});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("edit_module", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    let native = f.db.lock().await.issues[&module]["description"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+        .replace(url, &format!("[Spec title](<{url}>)"))
+        .replace(
+            "Coordinate lib.rs registration",
+            "Coordinate [lib.rs](<http://lib.rs>) registration",
+        );
+    f.db.lock().await.issues.get_mut(&module).unwrap()["description"] = json!(native.clone());
     f.restart();
     f.ok("edit_module", request.clone()).await;
     f.ok("edit_module", request).await;
