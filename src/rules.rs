@@ -71,7 +71,8 @@ pub fn integration_current(w: &Work, graph: &[Work]) -> bool {
     w.status().ok() == Some(Status::Done) && integration_matches(w, graph)
 }
 /// Require all recorded integration inputs to remain merged, unchanged and free of native drift.
-fn integration_matches(w: &Work, graph: &[Work]) -> bool {
+/// Public for pure guidance projections; enforcement behaviour is unchanged.
+pub fn integration_matches(w: &Work, graph: &[Work]) -> bool {
     let Some(m) = &w.meta else { return false };
     let ids = module_ids(&w.fields);
     w.fields["work_type"] == "integration"
