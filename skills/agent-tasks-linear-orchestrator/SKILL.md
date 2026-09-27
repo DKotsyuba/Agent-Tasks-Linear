@@ -24,4 +24,5 @@ You coordinate; module leads implement. The MCP guards every transition — your
 - An `outcome_unknown` result is not success: retry the identical `request_id` and arguments, or inspect state — never assume or duplicate.
 - `check_only` previews write nothing; no transition ever cascades to children.
 - Pick each call from the tool mini-docs in discovery; this skill deliberately does not restate their schemas.
+- Newer inputs (`detail`, `kind: handoff`, permalink references) need the runtime that advertises them in discovery; UUID references behave identically everywhere.
 - Pausing: leave an explicit `kind: handoff` comment on the work so the next run resumes from brief context.

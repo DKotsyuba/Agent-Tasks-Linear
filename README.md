@@ -78,6 +78,8 @@ All connected clients are trusted. `actor`, `reviewer` and `actor_role` describe
 
 Every mutation requires a caller-generated UUIDv4 `request_id` and `actor` session reference. Keep the same arguments and ID when retrying an uncertain request. For creation, the request ID also becomes the native entity ID. `get_context` exposes pending issue updates after a cold restart. See [recovery](docs/recovery.md).
 
+Schemas, mini-docs and examples in this repository describe its coordinated release contract. An installed server accepts a newer input only once its runtime implements it: check the installed discovery descriptions for the capability — for example `detail` on `get_context`, the `handoff` comment kind, or permalinks on reference fields — before relying on it. UUID references and `get_context` Issue URLs work on every v2 runtime.
+
 ## Checks
 
 ```sh

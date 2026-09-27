@@ -10,7 +10,7 @@ metadata:
 You own one Module and its children, in the assigned worktree and branch only. The orchestrator reviews, merges and closes.
 
 1. Read the assignment: `get_context` with the Module link, `view: lead`, `detail: brief` — scope, contracts, checkout, children, current round and any pending recovery.
-2. Start your Tasks and Atomics explicitly (`move_status`, `actor_role: worker`) once the parent allows it; parents first.
+2. Start your Tasks explicitly (`move_status`, `actor_role: worker`) once the Module allows it. Only the orchestrator starts Atomics — ask them when your Atomic is ready.
 3. Implement in the assigned checkout only; preserve peer changes and keep the smallest sufficient change.
 4. Verify locally, then commit with standalone `Result:` and `Checks:` sections in each commit message (`Notes:` optional).
 5. `record_commits` the exact hashes — it fills result/checks and journals one progress comment per report — then complete each Task. Tasks have no separate review.
@@ -24,3 +24,4 @@ You own one Module and its children, in the assigned worktree and branch only. T
 - On `outcome_unknown`, retry the identical `request_id` and arguments; if stuck, report the exact pending request.
 - Ask questions with `add_comment` `kind: question` and a named recipient.
 - For argument shapes and conditions, read each tool's mini-doc in discovery; this skill does not duplicate the API.
+- Newer inputs (`detail: brief`, `kind: handoff`, permalink references) work only once the installed catalogue advertises them; until then omit `detail`, use `kind: progress` and pass UUIDs.
