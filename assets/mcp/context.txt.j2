@@ -1,9 +1,9 @@
-{% from "common" import line, body, entity, heading %}
+{% from "common" import line, body, entity, heading, advice %}
 {% if kind == "brief" %}
 Brief{{ "\n" }}{{ entity(item) }}{{ line("Kind", item.kind|default(none)) }}{{ line("Lead", fields.lead|default(none)) }}{{ line("Executor", fields.executor|default(none)) }}{{ body("Result", fields.result) }}{{ body("Reported checks", fields.check_result) }}
 {% if handoff.current %}{{ heading("Handoff") }}{{ line("URL", handoff.current.url) }}{{ line("Created at", handoff.current.created_at) }}{{ line("Round", handoff.current.round) }}{{ line("Revision", handoff.current.revision) }}{{ line("Revision changed", handoff.revision_changed) }}{{ body("Checkpoint", handoff.current.body) }}{% else %}{{ heading("Handoff") }}No current-round checkpoint.{{ "\n" }}{% endif %}
 {% for document in documents %}{{ line("Document", document.title) }}{{ line("Document URL", document.url) }}{% if document.archived %}{{ line("Archived", document.archived) }}{% endif %}{% endfor %}
-{% if pending_call %}{{ "\n" }}## Pending mutation recovery{{ "\n" }}Retry the same tool with these exact argument values after inspecting native state:{{ "\n" }}```json{{ "\n" }}{{ pending_call }}{{ "\n" }}```{{ "\n" }}{% endif %}
+{{ advice(guidance|default(none)) }}{% if pending_call %}{{ "\n" }}## Pending mutation recovery{{ "\n" }}Retry the same tool with these exact argument values after inspecting native state:{{ "\n" }}```json{{ "\n" }}{{ pending_call }}{{ "\n" }}```{{ "\n" }}{% endif %}
 {% for problem in discrepancies %}{{ line("Discrepancy", problem) }}{% endfor %}
 {% for transition in transitions %}Transition {{ transition.status }}: {{ "allowed" if transition.allowed else "blocked" }}{% if transition.conditions %} — {{ transition.conditions|join("; ") }}{% endif %}{{ "\n" }}{% endfor %}
 ## Full content{{ "\n" }}{{ line("Issue context", routes.issue) }}{{ line("Project documents", routes.project_documents) }}{{ line("Archive", routes.archive) }}{{ line("Server version", runtime.version) }}{{ line("Tools", runtime.tools) }}
@@ -22,7 +22,7 @@ Issue{{ "\n" }}{{ entity(item) }}{{ body("Description", description) }}
 {% if review %}{{ heading("Latest review") }}{{ line("URL", review.url|default(none)) }}{{ line("Verdict", review.verdict|default(none)) }}{{ body("Summary", review.summary|default(none)) }}{{ body("Findings", review.findings|default(none)) }}{% endif %}
 {% for question in questions %}{{ body("Open question", question.body) }}{{ line("URL", question.url) }}{{ line("Recipient", question.recipient|default(none)) }}{% endfor %}
 {% for document in documents %}{{ line("Document", document.title) }}{{ line("Document ID", document.id) }}{{ line("Document URL", document.url) }}{% endfor %}
-{% for peer in peers %}{{ line("Priority peer", peer.identifier) }}{{ line("Peer ID", peer.id) }}{{ line("Peer status", peer.status) }}{% endfor %}
+{{ advice(guidance|default(none)) }}{% for peer in peers %}{{ line("Priority peer", peer.identifier) }}{{ line("Peer ID", peer.id) }}{{ line("Peer status", peer.status) }}{% endfor %}
 {% if pending_call %}{{ "\n" }}## Pending mutation recovery{{ "\n" }}Retry the same tool with these exact argument values after inspecting native state:{{ "\n" }}```json{{ "\n" }}{{ pending_call }}{{ "\n" }}```{{ "\n" }}{% endif %}
 {% for problem in discrepancies %}{{ line("Discrepancy", problem) }}{% endfor %}
 {% for transition in transitions %}Transition {{ transition.status }}: {{ "allowed" if transition.allowed else "blocked" }}{% if transition.conditions %} — {{ transition.conditions|join("; ") }}{% endif %}{{ "\n" }}{% endfor %}

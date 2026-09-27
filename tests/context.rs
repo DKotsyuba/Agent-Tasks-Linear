@@ -484,6 +484,77 @@ async fn pending_child_done_suppresses_module_progress() {
     assert_eq!(overview.data["code"], "INCOMPLETE_DATA");
 }
 
+/// Overview attention comes from the same guidance helper as reads and ACKs: awaiting review,
+/// an accepted review without a reported merge, and a pending write each surface their stage,
+/// responsible role and next tool without masking incomplete data.
+#[tokio::test]
+async fn overview_attention_lists_unfinished_actions() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, Some(&epic)).await;
+    f.mv(&epic, "In Progress").await;
+    f.mv(&module, "In Progress").await;
+    f.result("module", &module).await;
+    f.mv(&module, "In Review").await;
+
+    let stage_of = |overview: &serde_json::Value, id: &str| {
+        overview["attention"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == json!(id))
+            .map(|entry| entry["stage"].as_str().unwrap().to_owned())
+    };
+    let awaiting = f.ok("get_overview", json!({"project_id":project})).await;
+    assert_eq!(stage_of(&awaiting, &module), Some("review".to_owned()));
+    let entry = awaiting["attention"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == json!(module))
+        .unwrap();
+    assert_eq!(entry["next_action"]["tool"], "record_review");
+    assert_eq!(entry["next_action"]["actor_role"], "reviewer");
+
+    f.review(&module, "accepted").await;
+    let merging = f.ok("get_overview", json!({"project_id":project})).await;
+    assert_eq!(stage_of(&merging, &module), Some("merge".to_owned()));
+
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"merge_report":"PR merged into main"}}),
+    )
+    .await;
+    f.mv(&module, "Done").await;
+    let closed = f.ok("get_overview", json!({"project_id":project})).await;
+    assert_eq!(stage_of(&closed, &module), None);
+
+    let atomic = f.work("atomic", &project, Some(&epic)).await;
+    f.mv(&atomic, "In Progress").await;
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call(
+            "edit_atomic",
+            json!({"id":atomic,"fields":{"description":"Uncertain write"}}),
+        )
+        .await
+        .status,
+        "outcome_unknown"
+    );
+    let recovering = f.ok("get_overview", json!({"project_id":project})).await;
+    let attention = stage_of(&recovering, &atomic);
+    assert_eq!(attention, Some("recovery".to_owned()));
+    let entry = recovering["attention"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == json!(atomic))
+        .unwrap();
+    assert_eq!(entry["next_action"]["kind"], "retry_operation");
+    assert_eq!(entry["next_action"]["tool"], "edit_atomic");
+}
+
 /// A mixed Project yields exact progress and an unpublished draft; publication stays explicit.
 #[tokio::test]
 async fn overview_groups_work_and_only_explicit_update_writes() {

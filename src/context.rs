@@ -534,10 +534,30 @@ pub fn project_overview(
         "REPORT_LIMIT",
         "ProjectUpdate draft exceeds the native body limit",
     )?;
+    // Attention comes from the same pure guidance helper as every read and ACK; it is only
+    // computed here because the complete graph is already verified, so pending and drift
+    // keep their explicit failure semantics and never collapse into silent counts.
+    let attention: Vec<Value> = graph
+        .iter()
+        .filter(|work| work.meta.is_some())
+        .filter_map(|work| {
+            let advice = crate::guidance::guidance(work, graph);
+            matches!(
+                advice["stage"].as_str(),
+                Some("recovery" | "review" | "merge" | "fixes" | "closure")
+            )
+            .then(|| {
+                json!({"id":work.id(),"identifier":work.native["identifier"],"url":work.native["url"],
+                    "status":work.native["state"]["name"],"stage":advice["stage"],
+                    "next_action":advice["next_action"],"conditions":advice["conditions"]})
+            })
+        })
+        .collect();
     Ok(
         json!({"project_id":project["id"],"project_title":project["name"],"project_url":project["url"],
         "active_epics":epic_cards,"standalone_modules":standalone,"atomics":atomics,"excluded":excluded,
-        "awaiting_review":awaiting_review,"open_questions":questions,"project_update_draft":draft}),
+        "awaiting_review":awaiting_review,"open_questions":questions,"attention":attention,
+        "project_update_draft":draft}),
     )
 }
 

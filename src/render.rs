@@ -239,6 +239,7 @@ fn context_projection(request: &Value, data: &Value) -> Value {
                 .expect("JSON values serialize")
             });
         return json!({"kind":"brief","item":item,"fields":data["fields"],
+            "guidance":data["guidance"],
             "handoff":data["handoff"],"documents":data["documents"].as_array().cloned().unwrap_or_default(),
             "routes":data["full_context"],"runtime":data["runtime"],"pending_call":pending_call,
             "discrepancies":data["discrepancies"].as_array().cloned().unwrap_or_default(),
@@ -338,6 +339,7 @@ fn context_projection(request: &Value, data: &Value) -> Value {
         "documents":if kind=="project" {data["documents"].as_array().cloned().unwrap_or_default()} else {agent["documents"].as_array().cloned().unwrap_or_default()},
         "teams":item["teams"]["nodes"].as_array().cloned().unwrap_or_default(),
         "peers":data["priority_group"]["peers"].as_array().cloned().unwrap_or_default(),
+        "guidance":data["guidance"],
         "pending_call":pending_call,
         "discrepancies":data["discrepancies"].as_array().cloned().unwrap_or_default(),
         "transitions":data["transitions"].as_array().cloned().unwrap_or_default(),
@@ -355,6 +357,7 @@ fn overview_projection(data: &Value) -> Value {
     }).collect();
     json!({"project_id":data["project_id"],"project_title":data["project_title"],"project_url":data["project_url"],
         "cursor":data["cursor"],"baseline_expired":data["baseline_expired"],
+        "attention":data["attention"].as_array().cloned().unwrap_or_default(),
         "is_delta":data["changes"].is_array(),"changes":changes,
         "epics":data["active_epics"].as_array().cloned().unwrap_or_default(),
         "modules":data["standalone_modules"].as_array().cloned().unwrap_or_default(),
@@ -469,6 +472,61 @@ mod tests {
                 "{name}: {text}"
             );
         }
+    }
+
+    /// Acknowledgements and previews render guidance, effect plans and overview attention.
+    #[test]
+    fn acknowledgements_render_guidance_effects_and_attention() {
+        let acknowledged = render_outcome(
+            "move_status",
+            &json!({"id":"issue-1","request_id":"req-1","actor_role":"orchestrator"}),
+            &Outcome::ok(
+                json!({"issue":{"id":"issue-1","identifier":"MYT-1","title":"Module","url":"https://linear.app/issue-1","state":{"name":"In Review"}},
+                "guidance":{"work_id":"issue-1","stage":"review",
+                    "next_action":{"kind":"record_review","actor_role":"reviewer","tool":"record_review","target_status":null},
+                    "conditions":[]}}),
+            ),
+        );
+        assert!(acknowledged.contains("confirmed"), "{acknowledged}");
+        assert!(acknowledged.contains("Stage: review"));
+        assert!(acknowledged.contains("Next action: record_review"));
+        assert!(acknowledged.contains("Next tool: record_review"));
+        assert!(acknowledged.contains("Responsible role: reviewer"));
+
+        let previewed = render_outcome(
+            "move_status",
+            &json!({"id":"issue-1","request_id":"req-1","actor_role":"orchestrator","check_only":true}),
+            &Outcome::ok(json!({"allowed":true,"conditions":[],
+                "effects":{"clears":["result","pr_url"],"review_invalidated":true,
+                    "affected_integrations":["MYT-2"],"round_changes":true},
+                "status":"In Progress"})),
+        );
+        assert!(
+            previewed.contains("preview (check_only; no mutation)"),
+            "{previewed}"
+        );
+        assert!(previewed.contains("Clears: result, pr_url"));
+        assert!(previewed.contains("Review invalidated: true"));
+        assert!(previewed.contains("Affected integrations: MYT-2"));
+        assert!(previewed.contains("Round changes: true"));
+
+        let overview = render_outcome(
+            "get_overview",
+            &json!({"project_id":"project-1"}),
+            &Outcome::ok(
+                json!({"project_id":"project-1","project_title":"Product","project_url":"https://linear.app/project-1",
+                "cursor":"cursor-1","baseline_expired":false,
+                "attention":[{"id":"issue-1","identifier":"MYT-1","url":"https://linear.app/issue-1","status":"In Review","stage":"merge",
+                    "next_action":{"kind":"record_merge","actor_role":"orchestrator","tool":"edit_module","target_status":null},
+                    "conditions":[]}],
+                "active_epics":[],"standalone_modules":[],"atomics":[],"excluded":[],
+                "awaiting_review":[],"open_questions":[],"project_update_draft":"## Project overview"}),
+            ),
+        );
+        assert!(overview.contains("Attention: MYT-1"), "{overview}");
+        assert!(overview.contains("Stage: merge"));
+        assert!(overview.contains("Next action: record_merge"));
+        assert!(overview.contains("Next tool: edit_module"));
     }
 
     /// A brief read renders one compact current slice with handoff, routes and recovery payload.

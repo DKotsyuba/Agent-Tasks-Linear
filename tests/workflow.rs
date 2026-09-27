@@ -983,6 +983,134 @@ async fn permalink_arguments_replay_exact_operations() {
     );
 }
 
+/// check_only previews the exact effects of an allowed transition without writing, and the
+/// executing transition clears exactly the previewed fields; a blocked preview carries only
+/// conditions and no effect plan.
+#[tokio::test]
+async fn check_only_preview_matches_executed_effects() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, Some(&epic)).await;
+    f.mv(&epic, "In Progress").await;
+    f.mv(&module, "In Progress").await;
+    f.result("module", &module).await;
+    f.mv(&module, "In Review").await;
+    f.review(&module, "accepted").await;
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"merge_report":"PR merged into main"}}),
+    )
+    .await;
+    f.mv(&module, "Done").await;
+
+    let before = f.db.lock().await.issues[&module].clone();
+    let preview = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"In Progress","actor_role":"orchestrator","check_only":true}),
+        )
+        .await;
+    assert_eq!(preview["allowed"], true);
+    assert_eq!(preview["status"], "In Progress");
+    let effects = &preview["effects"];
+    let clears: Vec<&str> = effects["clears"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    for field in ["result", "check_result", "merge_report", "pr_url"] {
+        assert!(clears.contains(&field), "{clears:?}");
+    }
+    assert_eq!(effects["round_changes"], true);
+    assert_eq!(effects["review_invalidated"], true);
+    assert_eq!(f.db.lock().await.issues[&module], before);
+
+    f.mv(&module, "In Progress").await;
+    let reopened = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    for field in ["result", "check_result", "merge_report", "pr_url"] {
+        assert!(reopened["fields"][field].is_null(), "{field}");
+    }
+    assert_eq!(reopened["workflow"]["round"], 2);
+    assert!(reopened["workflow"]["review"].is_null());
+
+    let blocked = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"Done","actor_role":"worker","check_only":true}),
+        )
+        .await;
+    assert_eq!(blocked["allowed"], false);
+    assert!(blocked["effects"].is_null());
+    assert!(!blocked["conditions"].as_array().unwrap().is_empty());
+    assert_eq!(
+        f.db.lock().await.issues[&module]["state"]["name"],
+        "In Progress"
+    );
+}
+
+/// Confirmed mutations carry post-write guidance from the same helper as reads, a lost
+/// response keeps its recovery advice with the exact retry tool, and the confirmed status
+/// never degrades into a failure.
+#[tokio::test]
+async fn acknowledgements_carry_next_action_guidance() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, Some(&epic)).await;
+    f.mv(&epic, "In Progress").await;
+    f.mv(&module, "In Progress").await;
+    f.result("module", &module).await;
+    let moved = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"In Review","actor_role":"orchestrator"}),
+        )
+        .await;
+    assert_eq!(moved["guidance"]["work_id"], json!(module));
+    assert_eq!(moved["guidance"]["stage"], "review");
+    assert_eq!(moved["guidance"]["next_action"]["kind"], "record_review");
+    assert_eq!(moved["guidance"]["next_action"]["tool"], "record_review");
+    assert_eq!(moved["guidance"]["next_action"]["actor_role"], "reviewer");
+
+    let edited = f
+        .ok(
+            "edit_module",
+            json!({"id":module,"title":"Refined direction"}),
+        )
+        .await;
+    assert_eq!(edited["guidance"]["stage"], "review");
+
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    let request = json!({"request_id":id(),"id":module,"title":"Still reviewing"});
+    assert_eq!(
+        f.call("edit_module", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    let context = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":module,"view":"lead"}),
+        )
+        .await;
+    assert_eq!(context["guidance"]["stage"], "recovery");
+    assert_eq!(
+        context["guidance"]["next_action"]["kind"],
+        "retry_operation"
+    );
+    assert_eq!(context["guidance"]["next_action"]["tool"], "edit_module");
+    let brief = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":module,"detail":"brief"}),
+        )
+        .await;
+    assert_eq!(brief["guidance"]["stage"], "recovery");
+}
+
 /// Duplicate transfers attachments with native provenance; lost responses recover without altering the original's record.
 #[tokio::test]
 async fn duplicate_transition_recovers_relation_write() {

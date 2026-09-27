@@ -611,7 +611,15 @@ impl Gateway {
             )?;
             self.register_child(meta.parent_id.as_deref(), id, true)
                 .await?;
-            return Ok(json!({"issue":existing,"replayed":true}));
+            let graph = self.store.graph(&meta.project_id).await?;
+            return Ok(self
+                .with_guidance(
+                    json!({"issue":existing,"replayed":true}),
+                    id,
+                    &graph,
+                    "orchestrator",
+                )
+                .await);
         }
         let graph = self.store.graph(&project).await?;
         let parent = match a["parent_id"].as_str() {
@@ -732,7 +740,14 @@ impl Gateway {
         self.register_child(parent, id, true)
             .await
             .map_err(Fault::uncertain)?;
-        Ok(json!({"issue":native,"kind":kind}))
+        Ok(self
+            .with_guidance(
+                json!({"issue":native,"kind":kind}),
+                id,
+                &graph,
+                "orchestrator",
+            )
+            .await)
     }
     /// Record a known native child on its parent, preserving other state and refusing pending parent writes.
     /// Repeated registration/removal is a no-op; it changes no native relationship or status.
@@ -818,6 +833,40 @@ impl Gateway {
     /// Normalize a mutation request for replay, including its public tool identity.
     fn request(name: &str, a: &Value) -> Value {
         json!({"tool":name,"arguments":a})
+    }
+    /// Attach post-write guidance to a confirmed work-item outcome, computed from the known
+    /// post-write state: the freshly read item replaces its stale copy in the loaded graph.
+    /// No mandatory full graph re-fetch runs after a confirmed write, and a failed post-write
+    /// read never turns the confirmed mutation into a failure — the advice degrades to one
+    /// refresh_context action instead of replaying stale pre-write advice.
+    /// ponytail: only the written item is replaced in the pre-write graph; a fresh complete
+    /// graph is read by get_context when exact breadth matters.
+    async fn with_guidance(
+        &self,
+        mut outcome: Value,
+        work_id: &str,
+        graph: &[Work],
+        role: &str,
+    ) -> Value {
+        outcome["guidance"] = match self.store.work(work_id).await {
+            Ok(fresh) => {
+                let updated: Vec<Work> = graph
+                    .iter()
+                    .map(|item| {
+                        if item.id() == work_id {
+                            fresh.clone()
+                        } else {
+                            item.clone()
+                        }
+                    })
+                    .collect();
+                crate::guidance::guidance(&fresh, &updated)
+            }
+            Err(_) => json!({"work_id":work_id,"stage":"recovery",
+                "next_action":{"kind":"refresh_context","actor_role":role,"tool":"get_context","target_status":null},
+                "conditions":["Post-write state could not be re-read; call get_context"]}),
+        };
+        outcome
     }
     /// Continue only the identical prepared write; another request must resolve the uncertainty first.
     async fn resume(&self, w: &Work, request: &Value) -> Result<Option<Value>> {
@@ -1035,7 +1084,7 @@ impl Gateway {
         )?;
         let request = Self::request(&format!("edit_{}", kind.label().to_lowercase()), a);
         if let Some(v) = self.resume(&w, &request).await? {
-            return Ok(v);
+            return Ok(self.with_guidance(v, w.id(), &graph, "worker").await);
         }
         let mut errors = rules::discrepancies(&w, &graph);
         errors.retain(|e| !e.starts_with("Description changed"));
@@ -1147,7 +1196,10 @@ impl Gateway {
             "INVALID_INPUT",
             "No issue fields to edit",
         )?;
-        self.update(&w, next, input, request).await
+        let confirmed = self.update(&w, next, input, request).await?;
+        Ok(self
+            .with_guidance(confirmed, w.id(), &graph, "worker")
+            .await)
     }
     /// Publish each persisted current-round Git report once through the normal comment writer.
     /// Deterministic native IDs make lost comment replies recoverable without rereading Git.
@@ -1200,7 +1252,7 @@ impl Gateway {
             let reports: Vec<_> = restored.managed()?.current_git_reports().cloned().collect();
             outcome["journal"] = json!(self.ensure_commit_comments(w.id(), &reports).await?);
             outcome["git_reports"] = json!(reports);
-            return Ok(outcome);
+            return Ok(self.with_guidance(outcome, w.id(), &graph, "worker").await);
         }
         let m = w.managed()?;
         require(
@@ -1293,7 +1345,7 @@ impl Gateway {
         let mut outcome = self.update(&w, next, input, request).await?;
         outcome["journal"] = json!(self.ensure_commit_comments(w.id(), &reports).await?);
         outcome["git_reports"] = json!(reports);
-        Ok(outcome)
+        Ok(self.with_guidance(outcome, w.id(), &graph, "worker").await)
     }
 
     /// Guard and explicitly move work; check_only never persists intent, labels or changes.
@@ -1308,16 +1360,30 @@ impl Gateway {
         if a["check_only"] != true
             && let Some(v) = self.resume(&w, &request).await?
         {
-            return Ok(v);
+            return Ok(self
+                .with_guidance(v, w.id(), &graph, text(a, "actor_role")?)
+                .await);
         }
         let errors = rules::transition(&w, &graph, target, text(a, "actor_role")?);
         if a["check_only"] == true {
-            return Ok(json!({"allowed":errors.is_empty(),"conditions":errors,"status":target}));
+            // The preview shares the exact guards and, when allowed, the exact effect plan
+            // the executing transition follows; it performs no write.
+            let mut preview =
+                crate::guidance::preview_effects(&w, &graph, target, text(a, "actor_role")?);
+            preview["status"] = json!(target);
+            return Ok(preview);
         }
         rules::enforce(errors)?;
         let m = w.managed()?;
         if w.status()? == target && m.status == target && !rules::restart_integration(&w, &graph) {
-            return Ok(json!({"issue":w.native,"unchanged":true}));
+            return Ok(self
+                .with_guidance(
+                    json!({"issue":w.native,"unchanged":true}),
+                    w.id(),
+                    &graph,
+                    text(a, "actor_role")?,
+                )
+                .await);
         }
         if target == Status::Duplicate {
             self.duplicate_target(&w, &m.fields).await?;
@@ -1379,7 +1445,10 @@ impl Gateway {
                     .collect();
             }
         }
-        self.update(&w, next, input, request).await
+        let confirmed = self.update(&w, next, input, request).await?;
+        Ok(self
+            .with_guidance(confirmed, w.id(), &graph, text(a, "actor_role")?)
+            .await)
     }
 
     /// Create a comment with caller-allocated native ID, checking target and reply parent first,
@@ -1692,9 +1761,14 @@ impl Gateway {
                 .object("QComment", "comment", text(a, "request_id")?)
                 .await
                 .map_err(Fault::uncertain)?;
-            return Ok(
-                json!({"review":restored.managed()?.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":true}),
-            );
+            return Ok(self
+                .with_guidance(
+                    json!({"review":restored.managed()?.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":true}),
+                    w.id(),
+                    &graph,
+                    "reviewer",
+                )
+                .await);
         }
         rules::enforce(rules::discrepancies(&w, &graph))?;
         require(
@@ -1758,9 +1832,14 @@ impl Gateway {
             .save(&w.native, &next)
             .await
             .map_err(Fault::uncertain)?;
-        Ok(
-            json!({"review":next.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":false}),
-        )
+        Ok(self
+            .with_guidance(
+                json!({"review":next.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":false}),
+                w.id(),
+                &graph,
+                "reviewer",
+            )
+            .await)
     }
     /// Load one complete Project graph and bounded native activity, then compose a read-only view.
     /// The limit prevents a large Project from turning a single overview into unbounded API reads.
@@ -2020,6 +2099,7 @@ impl Gateway {
                         "workflow":w.meta,
                         "discrepancies":discrepancies,
                         "transitions":rules::actions(&w,&g),
+                        "guidance":crate::guidance::guidance(&w,&g),
                         "handoff":crate::context::handoff_selection(m, &activity),
                         "documents":documents.iter().map(Self::document_link).collect::<Vec<_>>(),
                         "full_context":Self::full_routes(&m.project_id, Some(w.id())),
@@ -2073,7 +2153,7 @@ impl Gateway {
                 peers.sort_by(|a, b| priority_cmp(&a.native, &b.native));
                 let priority_group = json!({"project_id":m.project_id,"parent_id":m.parent_id,"kind":m.kind,"peers":peers.iter().map(|p|json!({"id":p.id(),"identifier":p.native["identifier"],"title":p.native["title"],"status":p.native["state"]["name"],"priority":p.native["priority"],"priorityLabel":p.native["priorityLabel"]})).collect::<Vec<_>>()});
                 Ok(
-                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"module_report":module_report,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":discrepancies,"transitions":rules::actions(&w,&g),"agent_context":agent_view}),
+                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"module_report":module_report,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":discrepancies,"transitions":rules::actions(&w,&g),"guidance":crate::guidance::guidance(&w,&g),"agent_context":agent_view}),
                 )
             }
         }
