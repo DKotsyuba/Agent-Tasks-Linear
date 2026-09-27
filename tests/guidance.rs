@@ -2,7 +2,7 @@
 //! No Linear transport is involved: every case fixes a complete Project graph in memory and
 //! checks the advisory projection against the same guards the mutations enforce.
 use agent_tasks_linear::git::GitCommit;
-use agent_tasks_linear::guidance::guidance;
+use agent_tasks_linear::guidance::{guidance, preview_effects};
 use agent_tasks_linear::model::{Kind, LocalGitReport, Meta, Pending, Review, Status, Work};
 use agent_tasks_linear::rules;
 use serde_json::{Value, json};
@@ -564,4 +564,222 @@ fn guidance_cases_agree_with_transition_guards() {
     let g = guidance(&f.works[retired], f.graph());
     assert_eq!(g["stage"], "excluded");
     assert_eq!(f.identifier(seam), "F-8");
+    // Previews agree with the same guards for every status and both trusted roles, and
+    // promise effects exactly when the transition is allowed.
+    for work in f.graph() {
+        for target in rules::STATUSES {
+            for role in ["orchestrator", "worker"] {
+                let errors = rules::transition(work, f.graph(), target, role);
+                let preview = preview_effects(work, f.graph(), target, role);
+                assert_eq!(preview["allowed"], json!(errors.is_empty()));
+                assert_eq!(preview["conditions"], json!(errors));
+                assert_eq!(preview["effects"].is_object(), errors.is_empty());
+            }
+        }
+    }
+}
+
+/// Previews mirror the mutation path exactly: blocked transitions show conditions only,
+/// first starts and no-ops change nothing, reopens clear recorded results and invalidate
+/// only currently valid integration snapshots.
+#[test]
+fn preview_cases_mirror_execution_effects() {
+    let mut f = Fixture::new();
+    let epic = f.add(
+        Kind::Epic,
+        Status::InProgress,
+        None,
+        json!({"expected_result":"Deliver","acceptance_criteria":"Guards agree","business_requirements":"B"}),
+    );
+    // A blocked transition keeps its conditions and never promises effects.
+    let bare = f.add(Kind::Module, Status::Todo, Some(epic), json!({}));
+    let p = preview_effects(
+        &f.works[bare],
+        f.graph(),
+        Status::InProgress,
+        "orchestrator",
+    );
+    assert_eq!(p["allowed"], json!(false));
+    assert!(p["effects"].is_null());
+    assert!(
+        p["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c.as_str().unwrap().contains("Required field: lead"))
+    );
+    // A first start advances the round but clears nothing.
+    let fresh = f.add(Kind::Module, Status::Todo, Some(epic), module_fields());
+    let p = preview_effects(
+        &f.works[fresh],
+        f.graph(),
+        Status::InProgress,
+        "orchestrator",
+    );
+    assert_eq!(p["allowed"], json!(true));
+    assert_eq!(p["conditions"], json!([]));
+    assert_eq!(
+        p["effects"],
+        json!({"clears": [], "review_invalidated": false, "affected_integrations": [], "round_changes": true})
+    );
+    // A same-state repeat is a no-op with empty effects.
+    let active = f.add(
+        Kind::Module,
+        Status::InProgress,
+        Some(epic),
+        module_fields(),
+    );
+    let p = preview_effects(
+        &f.works[active],
+        f.graph(),
+        Status::InProgress,
+        "orchestrator",
+    );
+    assert_eq!(p["allowed"], json!(true));
+    assert_eq!(
+        p["effects"],
+        json!({"clears": [], "review_invalidated": false, "affected_integrations": [], "round_changes": false})
+    );
+    // Reopening a merged Module clears its recorded results and the completion stamp,
+    // invalidates its review and reports only the still-valid integration snapshot.
+    let done = f.add(
+        Kind::Module,
+        Status::Done,
+        Some(epic),
+        merged_module_fields(),
+    );
+    f.meta_mut(done).review = Some(review(1, 0, true));
+    let other = f.add(
+        Kind::Module,
+        Status::Done,
+        Some(epic),
+        merged_module_fields(),
+    );
+    f.meta_mut(other).review = Some(review(1, 0, true));
+    let current = f.add(
+        Kind::Atomic,
+        Status::Done,
+        Some(epic),
+        integration_fields(&[f.id(done).to_owned(), f.id(other).to_owned()]),
+    );
+    f.meta_mut(current).review = Some(review(1, 0, true));
+    f.meta_mut(current).integration = BTreeMap::from([
+        (f.id(done).to_owned(), rules::completion(&f.works[done])),
+        (f.id(other).to_owned(), rules::completion(&f.works[other])),
+    ]);
+    let stale = f.add(
+        Kind::Atomic,
+        Status::Done,
+        Some(epic),
+        integration_fields(&[f.id(done).to_owned(), f.id(other).to_owned()]),
+    );
+    f.meta_mut(stale).review = Some(review(1, 0, true));
+    f.meta_mut(stale).integration = BTreeMap::from([
+        (f.id(done).to_owned(), "0:0:old".to_owned()),
+        (f.id(other).to_owned(), rules::completion(&f.works[other])),
+    ]);
+    let p = preview_effects(
+        &f.works[done],
+        f.graph(),
+        Status::InProgress,
+        "orchestrator",
+    );
+    assert_eq!(p["allowed"], json!(true));
+    assert_eq!(
+        p["effects"]["clears"],
+        json!([
+            "result",
+            "check_result",
+            "commit_url",
+            "artifact_url",
+            "merge_report",
+            "pr_url",
+            "completed_at"
+        ])
+    );
+    assert_eq!(p["effects"]["review_invalidated"], json!(true));
+    assert_eq!(p["effects"]["round_changes"], json!(true));
+    assert_eq!(
+        p["effects"]["affected_integrations"],
+        json!([f.identifier(current)])
+    );
+    // Retiring the same merged Module also invalidates only the current snapshot.
+    f.set_field(done, "reason", json!("Scope retired"));
+    let p = preview_effects(&f.works[done], f.graph(), Status::Canceled, "orchestrator");
+    assert_eq!(p["allowed"], json!(true));
+    assert_eq!(
+        p["effects"],
+        json!({"clears": [], "review_invalidated": false, "affected_integrations": [f.identifier(current)], "round_changes": false})
+    );
+}
+
+/// A Module submission that rebinds its derived result invalidates the recorded review
+/// without touching the round, and an integration restart clears its own results only.
+#[test]
+fn preview_cases_for_submission_rebind_and_integration_restart() {
+    let mut f = Fixture::new();
+    let epic = f.add(
+        Kind::Epic,
+        Status::InProgress,
+        None,
+        json!({"expected_result":"Deliver","acceptance_criteria":"Guards agree","business_requirements":"B"}),
+    );
+    // Submission with a changed derived report drops the recorded review.
+    let module = f.add(Kind::Module, Status::InProgress, Some(epic), {
+        let mut fields = module_fields();
+        fields["pr_url"] = json!("https://example.test/pull/1");
+        fields
+    });
+    // The Done child supplies the derived submission report the Module rebinds to.
+    let _task = f.add(
+        Kind::Task,
+        Status::Done,
+        Some(module),
+        json!({"expected_result":"Deliver","acceptance_criteria":"Guards agree","local_check":"cargo test","artifact_url":"https://example.test/report","result":"Child result","check_result":"Child checks"}),
+    );
+    f.meta_mut(module).review = Some(review(1, 0, true));
+    let p = preview_effects(&f.works[module], f.graph(), Status::InReview, "worker");
+    assert_eq!(p["allowed"], json!(true));
+    assert_eq!(
+        p["effects"],
+        json!({"clears": [], "review_invalidated": true, "affected_integrations": [], "round_changes": false})
+    );
+    // Restarting an active integration after a module change clears its own recorded
+    // results and advances the round; no integration references the seam itself.
+    let done = f.add(
+        Kind::Module,
+        Status::Done,
+        Some(epic),
+        merged_module_fields(),
+    );
+    f.meta_mut(done).review = Some(review(1, 0, true));
+    let other = f.add(
+        Kind::Module,
+        Status::Done,
+        Some(epic),
+        merged_module_fields(),
+    );
+    f.meta_mut(other).review = Some(review(1, 0, true));
+    let seam = f.add(
+        Kind::Atomic,
+        Status::InProgress,
+        Some(epic),
+        integration_fields(&[f.id(done).to_owned(), f.id(other).to_owned()]),
+    );
+    f.meta_mut(seam).round = 2;
+    f.meta_mut(seam).integration = BTreeMap::from([
+        (f.id(done).to_owned(), "0:0:old".to_owned()),
+        (f.id(other).to_owned(), rules::completion(&f.works[other])),
+    ]);
+    let p = preview_effects(
+        &f.works[seam],
+        f.graph(),
+        Status::InProgress,
+        "orchestrator",
+    );
+    assert_eq!(p["allowed"], json!(true));
+    assert_eq!(
+        p["effects"],
+        json!({"clears": ["result", "check_result", "commit_url", "artifact_url", "merge_report"], "review_invalidated": false, "affected_integrations": [], "round_changes": true})
+    );
 }

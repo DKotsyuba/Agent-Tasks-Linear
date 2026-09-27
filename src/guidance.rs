@@ -326,3 +326,109 @@ fn restart(w: &Work, graph: &[Work]) -> Advised {
         blockers,
     )
 }
+
+/// Preview the consequences of an explicit transition without changing any data.
+///
+/// Evaluates the exact guards `move_status` enforces for the trusted `role`; the result
+/// always carries `allowed` and `conditions` exactly like a check-only call. When, and only
+/// when, the transition is allowed for that role it also carries `effects`:
+/// `clears` lists the readable field names the execution path removes (empty for a
+/// same-state no-op and for a first start), `review_invalidated` reports that a recorded
+/// review would be discarded, `affected_integrations` names the currently valid integration
+/// records whose module snapshot this transition makes stale (already stale or unfinished
+/// records are never listed), and `round_changes` reports that the work round advances.
+/// Nothing here executes a transition, cascades statuses, or implies any write.
+pub fn preview_effects(w: &Work, graph: &[Work], target: Status, role: &str) -> Value {
+    let conditions = rules::transition(w, graph, target, role);
+    if conditions.is_empty() {
+        json!({"allowed": true, "conditions": conditions, "effects": effects(w, graph, target)})
+    } else {
+        json!({"allowed": false, "conditions": conditions})
+    }
+}
+
+/// Compute the effect summary for an allowed transition by mirroring the mutation path:
+/// a (re)start advances the round and clears recorded results on reopen, a Module
+/// submission may rebind its derived result, and no other status changes workflow data.
+fn effects(w: &Work, graph: &[Work], target: Status) -> Value {
+    let Some(m) = &w.meta else {
+        return empty_effects();
+    };
+    let current = w.status().unwrap_or(m.status);
+    if current == target && m.status == target && !rules::restart_integration(w, graph) {
+        // A same-state no-op reports no changes at all.
+        return empty_effects();
+    }
+    let mut clears: Vec<&str> = vec![];
+    if target == Status::InProgress {
+        if m.round > 0 {
+            clears = [
+                "result",
+                "check_result",
+                "commit_url",
+                "artifact_url",
+                "merge_report",
+            ]
+            .into();
+            if m.kind == Kind::Module && m.status == Status::Done {
+                clears.push("pr_url");
+            }
+        }
+        if m.completed_at.is_some() {
+            clears.push("completed_at");
+        }
+    }
+    json!({
+        "clears": clears,
+        "review_invalidated": m.review.is_some()
+            && (target == Status::InProgress
+                || (target == Status::InReview
+                    && m.kind == Kind::Module
+                    && report_rebinds(w, graph))),
+        "affected_integrations": newly_stale_integrations(w, m, graph, target),
+        "round_changes": target == Status::InProgress,
+    })
+}
+
+/// Effect summary for transitions that change nothing.
+fn empty_effects() -> Value {
+    json!({"clears": [], "review_invalidated": false, "affected_integrations": [], "round_changes": false})
+}
+
+/// Whether submitting this Module to review would replace its recorded result and advance
+/// the content revision, exactly as the submission path does when the derived report
+/// differs from the stored fields.
+fn report_rebinds(w: &Work, graph: &[Work]) -> bool {
+    crate::reports::module_report(w, graph).is_ok_and(|report| {
+        w.fields["result"] != report.summary || w.fields["check_result"] != report.reported_checks
+    })
+}
+
+/// Human identifiers of currently valid integration records whose recorded module snapshot
+/// this transition invalidates. Only currently valid records are listed: an integration
+/// that is already stale or unfinished was invalidated earlier and is not reported again.
+fn newly_stale_integrations(w: &Work, m: &Meta, graph: &[Work], target: Status) -> Vec<String> {
+    let current = w.status().unwrap_or(m.status);
+    // Any change to a work item's completion identity — round, revision or completion
+    // timestamp — or the loss of its merged Done state breaks matching snapshots.
+    let invalidates = match target {
+        Status::InProgress | Status::Done => true,
+        Status::InReview => m.kind == Kind::Module && report_rebinds(w, graph),
+        Status::Canceled | Status::Duplicate => current == Status::Done,
+        _ => false,
+    };
+    if !invalidates {
+        return vec![];
+    }
+    graph
+        .iter()
+        .filter(|a| a.fields["work_type"] == "integration" && rules::integration_current(a, graph))
+        .filter(|a| rules::module_ids(&a.fields).iter().any(|id| id == w.id()))
+        .map(|a| {
+            a.native["identifier"]
+                .as_str()
+                .unwrap_or_else(|| a.id())
+                .to_owned()
+        })
+        .collect()
+}
