@@ -302,9 +302,46 @@ pub fn agent_context(
         "epic":epic.map(|item| json!({"id":item.id(),"url":item.native["url"],"business_requirements":item.fields["business_requirements"],"acceptance_criteria":item.fields["acceptance_criteria"]})),
         "checkout":checkout,"tasks":tasks,"module_report":report,"current_git_reports":meta.current_git_reports().collect::<Vec<_>>(),
         "latest_review":latest_review,"open_questions":open_questions,"documents":links,"discrepancies":discrepancies,
+        "handoff":handoff_selection(meta, activity.get(work.id())),
         "next_work":if view == "lead" {json!(tasks.iter().filter(|task| !matches!(task["status"].as_str(),Some("Done"|"Canceled"|"Duplicate"))).collect::<Vec<_>>())} else {Value::Null},
         "review_evidence":if view == "reviewer" {json!({"module_report":report,"latest_review":latest_review})} else {Value::Null}
     }))
+}
+
+/// Select the explicit continuation checkpoint from one Issue's activity: the newest
+/// current-round handoff by creation time then ID, while superseded checkpoints stay visible
+/// as history with their own round and revision. `revision_changed` marks a current-round
+/// handoff whose stamped revision no longer matches the work record, so changed-after-revision
+/// prose is never silently treated as the next instruction. Manual comments and imported Git
+/// progress are never classified as handoffs. The selection performs no writes.
+fn handoff_selection(meta: &crate::model::Meta, records: Option<&Vec<ActivityRecord>>) -> Value {
+    let mut handoffs: Vec<_> = records
+        .map(|records| {
+            records
+                .iter()
+                .filter(|record| record.kind == "handoff")
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    handoffs.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let mut history = Vec::new();
+    let mut current = None;
+    let mut revision_changed = false;
+    for record in handoffs.into_iter().rev() {
+        let card = json!({"id":record.id,"url":record.url,"created_at":record.created_at,
+            "round":record.round,"revision":record.revision,"actor":record.actor,"body":record.body});
+        if current.is_none() && record.round == Some(meta.round) {
+            revision_changed = record.revision != Some(meta.revision);
+            current = Some(card);
+        } else {
+            history.push(card);
+        }
+    }
+    json!({"current":current,"revision_changed":revision_changed,"history":history})
 }
 
 /// Compose one Module card from the shared current-round report and native assignment.

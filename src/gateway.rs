@@ -1435,18 +1435,54 @@ impl Gateway {
             "INVALID_INPUT",
             "Questions require a recipient",
         )?;
+        // A handoff checkpoint targets one managed Issue and stamps the work record's current
+        // round/revision itself; the caller never supplies those values.
+        let mut render_meta = a.clone();
+        if kind == "handoff" {
+            require(
+                target_type == "issue",
+                "INVALID_INPUT",
+                "Handoff checkpoints target a managed Issue",
+            )?;
+            let meta = self.store.meta(&target_id).await?.ok_or_else(|| {
+                Fault::new(
+                    "UNMANAGED_ITEM",
+                    "Handoff checkpoints target a managed Issue",
+                )
+            })?;
+            render_meta["round"] = json!(meta.round);
+            render_meta["revision"] = json!(meta.revision);
+        }
         let body = crate::activity::render(
             kind,
             a["role"].as_str().unwrap_or("participant"),
             text(a, "actor")?,
             text(a, "body")?,
-            a,
+            &render_meta,
         )?;
         if let Some(comment) = self.store.optional("QComment", "comment", id).await? {
+            // A handoff created in an older round/revision replays against its own stamped
+            // header, so the original comment is returned unchanged after later rounds.
+            let comparison = if kind == "handoff" {
+                let record = crate::activity::record(&comment, None)?;
+                let mut stamped = render_meta.clone();
+                stamped["round"] = json!(record.round);
+                stamped["revision"] = json!(record.revision);
+                crate::activity::render(
+                    kind,
+                    a["role"].as_str().unwrap_or("participant"),
+                    text(a, "actor")?,
+                    text(a, "body")?,
+                    &stamped,
+                )?
+            } else {
+                body.clone()
+            };
             require(
                 crate::activity::target(&comment)? == (target_type, target_id.as_str())
                     && comment["parent"]["id"] == json!(resolved_parent)
-                    && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(&body),
+                    && markdown_key(comment["body"].as_str().unwrap_or(""))
+                        == markdown_key(&comparison),
                 "REQUEST_CONFLICT",
                 "Comment request_id already names different content",
             )?;

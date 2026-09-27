@@ -27,7 +27,7 @@ pub struct ActivityRecord {
     pub target: ActivityTarget,
     /// Parent comment UUID for a reply.
     pub parent_id: Option<String>,
-    /// note, progress, question, decision, review or project_update; manual comments become notes.
+    /// note, progress, question, decision, review, handoff or project_update; manual comments become notes.
     pub kind: String,
     /// Reported role, or user/reviewer for native manual/current review comments.
     pub role: Option<String>,
@@ -86,12 +86,13 @@ pub fn target(comment: &Value) -> Result<(&'static str, &str)> {
 }
 
 /// Render a visible one-line-per-field activity header. Extra fields in `meta` are optional
-/// session, recipient, reviewer, verdict, round, revision and source_links; unsafe line breaks fail.
+/// session, recipient, reviewer, verdict, round, revision and source_links; the caller stamps
+/// handoff round/revision from the work record. Unsafe line breaks fail.
 pub fn render(kind: &str, role: &str, actor: &str, body: &str, meta: &Value) -> Result<String> {
     require(
         matches!(
             kind,
-            "note" | "progress" | "question" | "decision" | "review"
+            "note" | "progress" | "question" | "decision" | "review" | "handoff"
         ),
         "INVALID_INPUT",
         "Unknown activity kind",
@@ -176,7 +177,7 @@ pub fn record(comment: &Value, current_review: Option<&Review>) -> Result<Activi
     } else if marked
         && matches!(
             value("Kind"),
-            Some("note" | "progress" | "question" | "decision" | "review")
+            Some("note" | "progress" | "question" | "decision" | "review" | "handoff")
         )
     {
         value("Kind").unwrap()
