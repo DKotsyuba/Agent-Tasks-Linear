@@ -401,8 +401,8 @@ impl Gateway {
     /// Null removes either repository field; supplied paths must be existing local Git checkouts.
     /// Returns the native project or a validation/API fault without changing work statuses.
     async fn edit_project(&self, a: &Value) -> Result<Value> {
-        let id = text(a, "id")?;
-        let p = self.project(id).await?;
+        let id = self.resolve("project", text(a, "id")?).await?;
+        let p = self.project(&id).await?;
         let mut input = json!({});
         if let Some(v) = a.get("title") {
             input["name"] = v.clone();
@@ -440,8 +440,8 @@ impl Gateway {
     /// New updates use request_id as native ID; edits compare expected_updated_at before writing,
     /// and identical native content makes a lost response replay safe without a second state store.
     async fn save_project_update(&self, a: &Value) -> Result<Value> {
-        let project_id = text(a, "project_id")?;
-        self.project(project_id).await?;
+        let project_id = self.resolve("project", text(a, "project_id")?).await?;
+        self.project(&project_id).await?;
         let health = text(a, "health")?;
         let actor = text(a, "actor")?;
         let reason = text(a, "reason")?;
@@ -452,18 +452,18 @@ impl Gateway {
             "Edits need an explicit body so the same request remains replayable",
         )?;
         let id = if editing {
-            text(a, "id")?
+            self.resolve("project_update", text(a, "id")?).await?
         } else {
             require(
                 a.get("expected_updated_at").is_none(),
                 "INVALID_INPUT",
                 "Creation has no prior update timestamp",
             )?;
-            text(a, "request_id")?
+            text(a, "request_id")?.to_owned()
         };
         let existing = self
             .store
-            .optional("QProjectUpdate", "projectUpdate", id)
+            .optional("QProjectUpdate", "projectUpdate", &id)
             .await?;
         if !editing
             && a["body"].is_null()
@@ -483,7 +483,7 @@ impl Gateway {
             );
         }
         let generated = if a["body"].is_null() {
-            Some(self.overview_data(project_id).await?.0)
+            Some(self.overview_data(&project_id).await?.0)
         } else {
             None
         };
@@ -560,16 +560,34 @@ impl Gateway {
         }))
     }
 
+    /// Resolve typed permalink field values to canonical UUIDs before validation and storage:
+    /// `after_epic` (an Epic Issue) and each `integration_modules` entry (a Module Issue).
+    /// All other field values pass through unchanged; the caller keeps the original request
+    /// arguments for replay equality, so retries resolve identically.
+    async fn resolve_fields(&self, fields: Value) -> Result<Value> {
+        let mut fields = fields;
+        if let Some(after_epic) = fields["after_epic"].as_str() {
+            fields["after_epic"] = json!(self.resolve("issue", after_epic).await?);
+        }
+        if let Some(modules) = fields["integration_modules"].as_array() {
+            let mut resolved = Vec::with_capacity(modules.len());
+            for module in modules {
+                resolved.push(self.resolve("issue", module.as_str().unwrap()).await?);
+            }
+            fields["integration_modules"] = json!(resolved);
+        }
+        Ok(fields)
+    }
     /// Create a native issue, then its small attachment. Same-ID retries resume incomplete creation.
     /// Modules and standalone code Atomics inherit omitted repository fields from Project;
     /// legacy repository prose is not inherited as a URL. Tasks use their Module's checkout.
     async fn create_work(&self, kind: Kind, a: &Value) -> Result<Value> {
         let id = text(a, "request_id")?;
-        let project = text(a, "project_id")?;
+        let project = self.resolve("project", text(a, "project_id")?).await?;
         let team = text(a, "team_id")?;
         let title = kind.title(text(a, "title")?)?;
         let priority = a.get("priority").and_then(Value::as_u64).unwrap_or(0);
-        let p = self.project(project).await?;
+        let p = self.project(&project).await?;
         require(
             p["teams"]["nodes"]
                 .as_array()
@@ -595,8 +613,12 @@ impl Gateway {
                 .await?;
             return Ok(json!({"issue":existing,"replayed":true}));
         }
-        let graph = self.store.graph(project).await?;
-        let parent = a["parent_id"].as_str();
+        let graph = self.store.graph(&project).await?;
+        let parent = match a["parent_id"].as_str() {
+            Some(reference) => Some(self.resolve("issue", reference).await?),
+            None => None,
+        };
+        let parent = parent.as_deref();
         rules::enforce(rules::hierarchy(kind, parent, &graph, None))?;
         if let Some(id) = parent {
             let parent = rules::find(&graph, id).unwrap();
@@ -620,7 +642,9 @@ impl Gateway {
         };
         let state = Self::state_id(&states, initial)?;
         let label = self.label(team, kind).await?;
-        let mut fields = a.get("fields").cloned().unwrap_or(json!({}));
+        let mut fields = self
+            .resolve_fields(a.get("fields").cloned().unwrap_or(json!({})))
+            .await?;
         if fields.get("work_type").is_none() {
             fields["work_type"] = json!(if kind == Kind::Epic {
                 "non_code"
@@ -669,7 +693,7 @@ impl Gateway {
             )?;
             existing
         } else {
-            self.store.linear.call("MCreateIssue",json!({"input":{"id":id,"title":title,"priority":priority,"description":description,"projectId":project,"teamId":team,"parentId":a.get("parent_id").unwrap_or(&Value::Null),"stateId":state,"labelIds":[label]}})).await?["issueCreate"]["issue"].clone()
+            self.store.linear.call("MCreateIssue",json!({"input":{"id":id,"title":title,"priority":priority,"description":description,"projectId":project,"teamId":team,"parentId":parent.map(Value::from).unwrap_or(Value::Null),"stateId":state,"labelIds":[label]}})).await?["issueCreate"]["issue"].clone()
         };
         require(
             native["title"] == title && native_priority(&native["priority"]) == Some(priority),
@@ -685,7 +709,7 @@ impl Gateway {
             schema: 2,
             kind,
             fields,
-            project_id: project.into(),
+            project_id: project,
             parent_id: parent.map(str::to_owned),
             children: vec![],
             status: initial,
@@ -1000,7 +1024,9 @@ impl Gateway {
     /// Empty or title/priority-only edits preserve native descriptions, stored fields and review identity in any status, without validating or adopting legacy content; requirement/parent edits validate content, invalidate review and require reopening reviewed work, except the existing Module merge-report allowance. Returns the confirmed issue outcome or a safe conflict/write fault.
     /// Explicit repository_path edits validate the local Git checkout before preparing a write.
     async fn edit_work(&self, kind: Kind, a: &Value) -> Result<Value> {
-        let (w, graph) = self.loaded(text(a, "id")?).await?;
+        let (w, graph) = self
+            .loaded(&self.resolve("issue", text(a, "id")?).await?)
+            .await?;
         let m = w.managed()?;
         require(
             m.kind == kind,
@@ -1015,10 +1041,18 @@ impl Gateway {
         errors.retain(|e| !e.starts_with("Description changed"));
         rules::enforce(errors)?;
         let mut next = m.clone();
-        let patch = a.get("fields").cloned().unwrap_or(json!({}));
-        let presentation_only = patch.as_object().is_some_and(|o| o.is_empty())
-            && a.get("parent_id")
-                .is_none_or(|v| v.as_str() == m.parent_id.as_deref());
+        let patch = self
+            .resolve_fields(a.get("fields").cloned().unwrap_or(json!({})))
+            .await?;
+        // An absent parent edits nothing; an explicit null detaches; a reference resolves first.
+        let parent_supplied = a.get("parent_id").is_some();
+        let resolved_parent = match a.get("parent_id") {
+            Some(Value::Null) | None => None,
+            Some(value) => Some(self.resolve("issue", value.as_str().unwrap()).await?),
+        };
+        let parent_changed =
+            parent_supplied && resolved_parent.as_deref() != m.parent_id.as_deref();
+        let presentation_only = patch.as_object().is_some_and(|o| o.is_empty()) && !parent_changed;
         let mut fields = if w.native["description"] == m.description || presentation_only {
             m.fields.clone()
         } else {
@@ -1030,19 +1064,17 @@ impl Gateway {
                 .is_some_and(|o| !o.is_empty() && o.keys().all(|k| k == "merge_report"))
             && a.get("title").is_none()
             && a.get("priority").is_none()
-            && a.get("parent_id").is_none()
+            && !parent_supplied
             && w.native["description"] == m.description;
-        let content_edit = !patch.as_object().unwrap().is_empty()
-            || a.get("parent_id")
-                .is_some_and(|v| v.as_str() != m.parent_id.as_deref());
+        let content_edit = !patch.as_object().unwrap().is_empty() || parent_changed;
         require(
             !matches!(m.status, Status::InReview | Status::Done) || merge_only || !content_edit,
             "REOPEN_REQUIRED",
             "Reopen reviewed work before editing its requirements or result",
         )?;
-        if a.get("parent_id").is_some() {
-            let parent = a["parent_id"].as_str();
-            if parent != m.parent_id.as_deref() {
+        if parent_supplied {
+            let parent = resolved_parent.as_deref();
+            if parent_changed {
                 require(
                     m.round == 0,
                     "REOPEN_REQUIRED",
@@ -1107,8 +1139,8 @@ impl Gateway {
         if content_edit {
             input["description"] = json!(next.description.clone());
         }
-        if a.get("parent_id").is_some() {
-            input["parentId"] = a["parent_id"].clone();
+        if parent_supplied {
+            input["parentId"] = json!(resolved_parent);
         }
         require(
             !input.as_object().unwrap().is_empty(),
@@ -1159,7 +1191,9 @@ impl Gateway {
     /// Journals persisted reports through native comments, then returns reports and permalinks
     /// without changing status; uncertain native outcomes retry from the same snapshot.
     async fn record_commits(&self, a: &Value) -> Result<Value> {
-        let (w, graph) = self.loaded(text(a, "work_id")?).await?;
+        let (w, graph) = self
+            .loaded(&self.resolve("issue", text(a, "work_id")?).await?)
+            .await?;
         let request = Self::request("record_commits", a);
         if let Some(mut outcome) = self.resume(&w, &request).await? {
             let restored = self.store.work(w.id()).await.map_err(Fault::uncertain)?;
@@ -1266,7 +1300,9 @@ impl Gateway {
     /// Module submission stores the same derived current-child result used by context/readiness,
     /// preserving a real PR requirement and binding review to the resulting content revision.
     async fn move_status(&self, a: &Value) -> Result<Value> {
-        let (w, graph) = self.loaded(text(a, "id")?).await?;
+        let (w, graph) = self
+            .loaded(&self.resolve("issue", text(a, "id")?).await?)
+            .await?;
         let target: Status = serde_json::from_value(a["status"].clone()).unwrap();
         let request = Self::request("move_status", a);
         if a["check_only"] != true
@@ -1350,26 +1386,34 @@ impl Gateway {
     /// then confirming returned target, parent and normalized body. Identical replay returns its permalink.
     async fn add_comment(&self, a: &Value) -> Result<Value> {
         let id = text(a, "request_id")?;
-        let target_id = text(a, "target_id")?;
+        let target_id = self
+            .resolve(text(a, "target_type")?, text(a, "target_id")?)
+            .await?;
         let target_type = text(a, "target_type")?;
         match target_type {
             "issue" => {
                 self.store
                     .linear
-                    .object("QIssue", "issue", target_id)
+                    .object("QIssue", "issue", &target_id)
                     .await?;
             }
             "project" => {
-                self.project(target_id).await?;
+                self.project(&target_id).await?;
             }
             _ => {
                 self.store
                     .linear
-                    .object("QProjectUpdate", "projectUpdate", target_id)
+                    .object("QProjectUpdate", "projectUpdate", &target_id)
                     .await?;
             }
         }
-        if let Some(parent_id) = a["parent_id"].as_str() {
+        // A reply parent resolves once; replay and confirmation compare this identity, not the
+        // raw reference, so permalink arguments replay exactly like UUID arguments.
+        let resolved_parent = match a["parent_id"].as_str() {
+            Some(supplied) => Some(self.comment_id(supplied).await?),
+            None => None,
+        };
+        if let Some(parent_id) = resolved_parent.as_deref() {
             let parent = self
                 .store
                 .linear
@@ -1377,7 +1421,7 @@ impl Gateway {
                 .await?;
             require(
                 parent["parent"].is_null()
-                    && crate::activity::target(&parent)? == (target_type, target_id),
+                    && crate::activity::target(&parent)? == (target_type, target_id.as_str()),
                 "INVALID_PARENT",
                 "Reply parent must be a root comment on the same target",
             )?;
@@ -1400,8 +1444,8 @@ impl Gateway {
         )?;
         if let Some(comment) = self.store.optional("QComment", "comment", id).await? {
             require(
-                crate::activity::target(&comment)? == (target_type, target_id)
-                    && comment["parent"]["id"] == a["parent_id"]
+                crate::activity::target(&comment)? == (target_type, target_id.as_str())
+                    && comment["parent"]["id"] == json!(resolved_parent)
                     && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(&body),
                 "REQUEST_CONFLICT",
                 "Comment request_id already names different content",
@@ -1415,7 +1459,7 @@ impl Gateway {
             _ => "projectUpdateId",
         };
         input[key] = json!(target_id);
-        if let Some(parent_id) = a["parent_id"].as_str() {
+        if let Some(parent_id) = resolved_parent.as_ref() {
             input["parentId"] = json!(parent_id);
         }
         let comment = self
@@ -1426,8 +1470,8 @@ impl Gateway {
             .clone();
         require(
             crate::activity::target(&comment).map_err(Fault::uncertain)?
-                == (target_type, target_id)
-                && comment["parent"]["id"] == a["parent_id"]
+                == (target_type, target_id.as_str())
+                && comment["parent"]["id"] == json!(resolved_parent)
                 && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(&body),
             "NATIVE_STATE_MISMATCH",
             "Linear did not confirm comment content and ownership",
@@ -1537,14 +1581,18 @@ impl Gateway {
 
     /// Resolve or reopen a native top-level thread; checking current state makes retry safe.
     async fn resolve_comment(&self, a: &Value) -> Result<Value> {
-        let id = text(a, "id")?;
-        let comment = self.store.linear.object("QComment", "comment", id).await?;
+        let id = self.comment_id(text(a, "id")?).await?;
+        let comment = self.store.linear.object("QComment", "comment", &id).await?;
         require(
             comment["parent"].is_null(),
             "INVALID_PARENT",
             "Resolve the root comment",
         )?;
-        if let Some(reply_id) = a["resolving_comment_id"].as_str() {
+        let resolved_reply = match a["resolving_comment_id"].as_str() {
+            Some(reply_reference) => Some(self.comment_id(reply_reference).await?),
+            None => None,
+        };
+        if let Some(reply_id) = resolved_reply.as_deref() {
             require(
                 a["resolved"] == true,
                 "INVALID_INPUT",
@@ -1566,8 +1614,8 @@ impl Gateway {
         if comment["resolvedAt"].is_string() == resolved {
             require(
                 !resolved
-                    || a["resolving_comment_id"].is_null()
-                    || comment["resolvingCommentId"] == a["resolving_comment_id"],
+                    || resolved_reply.is_none()
+                    || comment["resolvingCommentId"] == json!(resolved_reply),
                 "REQUEST_CONFLICT",
                 "Thread was resolved with another reply",
             )?;
@@ -1576,7 +1624,7 @@ impl Gateway {
         let (operation, variables, field) = if resolved {
             (
                 "MResolveComment",
-                json!({"id":id,"resolvingCommentId":a["resolving_comment_id"]}),
+                json!({"id":id,"resolvingCommentId":resolved_reply}),
                 "commentResolve",
             )
         } else {
@@ -1595,7 +1643,9 @@ impl Gateway {
     /// Persist a native review activity comment and current-round decision, returning its
     /// permalink without implicitly transitioning work or adding Task review.
     async fn review(&self, a: &Value) -> Result<Value> {
-        let (w, graph) = self.loaded(text(a, "id")?).await?;
+        let (w, graph) = self
+            .loaded(&self.resolve("issue", text(a, "id")?).await?)
+            .await?;
         let m = w.managed()?;
         let request = Self::request("record_review", a);
         if self.resume(&w, &request).await?.is_some() {
@@ -2201,13 +2251,15 @@ impl Gateway {
         }
         Ok(self.store.linear.call(query, args).await?[field].clone())
     }
-    /// Save one native document, using the caller's UUID to recover uncertain creation without duplicates.
+    /// Save one native document, using the caller's UUID to recover uncertain creation without
+    /// duplicates. Reference arguments resolve to native identities first; the replay check
+    /// compares the resolved parent, so permalink retries behave exactly like UUID retries.
     async fn document(&self, a: &Value) -> Result<Value> {
         let editing = a["id"].is_string();
         let id = if editing {
-            text(a, "id")?
+            self.resolve("document", text(a, "id")?).await?
         } else {
-            text(a, "request_id")?
+            text(a, "request_id")?.to_owned()
         };
         if editing {
             require(
@@ -2217,7 +2269,7 @@ impl Gateway {
             )?;
             self.store
                 .linear
-                .object("QDocument", "document", id)
+                .object("QDocument", "document", &id)
                 .await?;
             let mut input = json!({});
             for k in ["title", "content"] {
@@ -2248,29 +2300,37 @@ impl Gateway {
             "INVALID_INPUT",
             "New Document requires content",
         )?;
-        if let Some(p) = a["project_id"].as_str() {
-            self.project(p).await?;
+        let parent = match a["project_id"].as_str() {
+            Some(reference) => ("projectId", self.resolve("project", reference).await?),
+            None => (
+                "issueId",
+                self.resolve("issue", text(a, "issue_id")?).await?,
+            ),
+        };
+        if parent.0 == "projectId" {
+            self.project(&parent.1).await?;
         } else {
-            self.store.work(text(a, "issue_id")?).await?;
+            self.store.work(&parent.1).await?;
         }
-        if let Some(d) = self.store.optional("QDocument", "document", id).await? {
+        if let Some(d) = self.store.optional("QDocument", "document", &id).await? {
+            let (native_key, other_key) = if parent.0 == "projectId" {
+                ("project", "issue")
+            } else {
+                ("issue", "project")
+            };
             require(
                 d["title"] == a["title"]
                     && markdown_key(d["content"].as_str().unwrap_or(""))
                         == markdown_key(a["content"].as_str().unwrap())
-                    && d["project"]["id"] == a["project_id"]
-                    && d["issue"]["id"] == a["issue_id"],
+                    && d[native_key]["id"] == json!(parent.1)
+                    && d[other_key]["id"].is_null(),
                 "REQUEST_CONFLICT",
                 "Document request_id already names different content",
             )?;
             return Ok(d);
         }
         let mut input = json!({"id":id,"title":a["title"],"content":a["content"]});
-        if a["project_id"].is_string() {
-            input["projectId"] = a["project_id"].clone();
-        } else {
-            input["issueId"] = a["issue_id"].clone();
-        }
+        input[parent.0] = json!(parent.1);
         Ok(self
             .store
             .linear

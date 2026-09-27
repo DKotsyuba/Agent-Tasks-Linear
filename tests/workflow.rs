@@ -821,7 +821,7 @@ async fn markdown_punctuation_url_pending_retry_preserves_content() {
     let url = "https://linear.app/example/document/spec-123";
     let request = json!({"request_id":id(),"id":module,"fields":{
         "required_contract":format!(
-            "D2 {url}. Coordinate lib.rs registration and [Role](https://example.com/role)."
+            "Plan {url}. Coordinate lib.rs registration and [Role](https://example.com/role)."
         )
     }});
     f.db.lock().await.lose = Some("MUpdateIssue".into());
@@ -848,6 +848,139 @@ async fn markdown_punctuation_url_pending_retry_preserves_content() {
     assert!(context["workflow"]["pending"].is_null());
     assert_eq!(context["discrepancies"], json!([]));
     assert_eq!(context["issue"]["description"], native);
+}
+
+/// Typed permalink arguments drive guarded operations through resolved identities while the
+/// exact original arguments stay the replay key: a lost edit reply retries without conflict
+/// or duplicate, comment replies compare resolved parents, and field references store UUIDs.
+#[tokio::test]
+async fn permalink_arguments_replay_exact_operations() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, Some(&epic)).await;
+    let standalone = f.work("module", &project, None).await;
+    let project_slug = "passport-b1b2c3d4e5";
+    let (epic_link, module_link, project_link) = {
+        let mut db = f.db.lock().await;
+        let epic_link = format!(
+            "https://linear.app/example/issue/{}/readable-epic",
+            db.issues[&epic]["identifier"].as_str().unwrap()
+        );
+        db.issues.get_mut(&epic).unwrap()["url"] = json!(epic_link);
+        let module_link = format!(
+            "https://linear.app/example/issue/{}/readable-module",
+            db.issues[&module]["identifier"].as_str().unwrap()
+        );
+        db.issues.get_mut(&module).unwrap()["url"] = json!(module_link);
+        let project_link = format!("https://linear.app/example/project/{project_slug}");
+        db.projects.get_mut(&project).unwrap()["url"] = json!(project_link);
+        (epic_link, module_link, project_link)
+    };
+    f.mv(&epic, "In Progress").await;
+    f.ok(
+        "move_status",
+        json!({"id":module_link,"status":"In Progress","actor_role":"orchestrator"}),
+    )
+    .await;
+
+    // Field references resolve to canonical UUIDs before validation and storage.
+    f.ok(
+        "edit_module",
+        json!({"id":standalone,"fields":{"after_epic":epic_link}}),
+    )
+    .await;
+    let atomic = f.work("atomic", &project, Some(&epic)).await;
+    f.ok(
+        "edit_atomic",
+        json!({"id":atomic,"fields":{
+            "work_type":"integration",
+            "integration_modules":[module_link, epic_link]
+        }}),
+    )
+    .await;
+    let stored = f
+        .ok("get_context", json!({"type":"issue","id":standalone}))
+        .await;
+    assert_eq!(stored["fields"]["after_epic"], json!(epic));
+    let integration = f
+        .ok("get_context", json!({"type":"issue","id":atomic}))
+        .await;
+    assert_eq!(
+        integration["fields"]["integration_modules"],
+        json!([module, epic])
+    );
+
+    // A permalink parent creates work; the created record stores the resolved parent UUID.
+    let task = f
+        .ok(
+            "create_task",
+            json!({"project_id":project_link,"team_id":f.team,"parent_id":module_link,
+                "title":"Permalink driven","fields":{"work_type":"non_code"}}),
+        )
+        .await["issue"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let task_link = {
+        let mut db = f.db.lock().await;
+        let link = format!(
+            "https://linear.app/example/issue/{}/readable-task",
+            db.issues[&task]["identifier"].as_str().unwrap()
+        );
+        db.issues.get_mut(&task).unwrap()["url"] = json!(link);
+        link
+    };
+    let created = f
+        .ok("get_context", json!({"type":"issue","id":&task}))
+        .await;
+    assert_eq!(created["workflow"]["parent_id"], json!(module));
+
+    // A lost edit reply recovers from the exact permalink arguments without a duplicate write.
+    let request = json!({"request_id":id(),"id":task_link,"fields":{
+        "description":"Continued by permalink","expected_result":"Same identity"
+    }});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("edit_task", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    f.restart();
+    f.ok("edit_task", request.clone()).await;
+    let replayed = f.ok("edit_task", request).await;
+    assert_eq!(replayed["replayed"], true);
+    let recovered = f
+        .ok("get_context", json!({"type":"issue","id":&task}))
+        .await;
+    assert!(recovered["workflow"]["pending"].is_null());
+    assert_eq!(recovered["fields"]["description"], "Continued by permalink");
+
+    // Comment targets and reply parents compare resolved identities on create and replay.
+    let root = f
+        .ok(
+            "add_comment",
+            json!({"target_type":"issue","target_id":module_link,"body":"Root note"}),
+        )
+        .await["comment"]
+        .clone();
+    let reply_request = json!({"request_id":id(),"target_type":"issue","target_id":module_link,
+        "parent_id":root["url"],"body":"Reply by permalink"});
+    let reply = f.ok("add_comment", reply_request.clone()).await;
+    assert_eq!(reply["comment"]["parent"]["id"], root["id"]);
+    assert_eq!(
+        f.ok("add_comment", reply_request).await["replayed"],
+        json!(true)
+    );
+
+    // A permalink document parent replays its resolved ownership without a duplicate document.
+    let document_request = json!({"request_id":id(),"issue_id":module_link,
+        "title":"Permalink guide","content":"Body"});
+    let document = f.ok("save_document", document_request.clone()).await;
+    assert_eq!(document["issue"]["id"], json!(module));
+    assert_eq!(
+        f.ok("save_document", document_request).await["id"],
+        document["id"]
+    );
 }
 
 /// Duplicate transfers attachments with native provenance; lost responses recover without altering the original's record.
