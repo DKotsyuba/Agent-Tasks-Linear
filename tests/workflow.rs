@@ -735,6 +735,38 @@ fn markdown_mailto_autolink_preserves_meaning() {
         "see <a@localhost> now",
         "see [a@localhost](<mailto:a@localhost>) now",
     ));
+
+    // A bare email address in prose becomes the same native mailto link as the
+    // angle-bracketed autolink; altered destinations, labels and prose still differ.
+    let bare = format!("Contact {email}; end.");
+    let bare_native = bare.replace(email, &format!("[{email}](<mailto:{email}>)"));
+    assert!(markdown_equivalent(&bare, &bare_native));
+    for changed in [
+        bare_native.replace("mailto:noreply", "mailto:different"),
+        bare_native.replace(&format!("[{email}]"), "[different@example.test]"),
+        format!("{bare} extra"),
+    ] {
+        assert!(!markdown_equivalent(&bare, &changed), "{changed}");
+    }
+    assert!(!markdown_equivalent(
+        &format!("see {email} now"),
+        &format!("see [{email}](<mailto:different@example.test>) now"),
+    ));
+
+    // The exact live combination: bare email, bare domain and a bare document URL that
+    // Linear serialized in one stored body all compare as the same meaning.
+    let url =
+        "https://linear.app/example/document/proverka-sohrannosti-teksta-dokumenta-9f462721f57d";
+    let segment = format!("Control: {email}; docs.rs; {url} . Retry.");
+    let native_segment = segment
+        .replace(email, &format!("[{email}](<mailto:{email}>)"))
+        .replace("docs.rs", "[docs.rs](<http://docs.rs>)")
+        .replace(url, &format!("[Проверка сохранности текста](<{url}>)"));
+    assert!(markdown_equivalent(&segment, &native_segment));
+    assert!(!markdown_equivalent(
+        &segment,
+        &native_segment.replace("mailto:noreply", "mailto:different"),
+    ));
 }
 
 /// A pending commit import accepts Linear's mailto autolink for a co-author footer while the
@@ -1012,6 +1044,40 @@ async fn native_serialization_replays_exact_operations() {
     ));
     let confirmed_update = f.ok("save_project_update", confirm_update).await;
     assert_eq!(confirmed_update["replayed"], json!(false));
+}
+
+/// A document whose stored body carries Linear's autolinks for a bare email address, a bare
+/// domain and a bare document URL replays its exact creation request after a cold restart.
+#[tokio::test]
+async fn bare_email_document_serialization_replays_after_cold_restart() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    let email = "noreply@anthropic.com";
+    let url =
+        "https://linear.app/example/document/proverka-sohrannosti-teksta-dokumenta-9f462721f57d";
+    let document_request = json!({"request_id":id(),"issue_id":module,
+        "title":"Установка и квалификация",
+        "content":format!(
+            "Контроль native serialization: {email}; docs.rs; {url} . Точный повтор после холодного запуска.")});
+    let document = f.ok("save_document", document_request.clone()).await;
+    {
+        let mut db = f.db.lock().await;
+        let stored = db
+            .documents
+            .get_mut(document["id"].as_str().unwrap())
+            .unwrap();
+        let native = stored["content"]
+            .as_str()
+            .unwrap()
+            .replace(email, &format!("[{email}](<mailto:{email}>)"))
+            .replace("docs.rs", "[docs.rs](<http://docs.rs>)")
+            .replace(url, &format!("[Проверка сохранности текста](<{url}>)"));
+        stored["content"] = json!(native);
+    }
+    f.restart();
+    let replayed = f.ok("save_document", document_request).await;
+    assert_eq!(replayed["id"], document["id"]);
 }
 
 /// Typed permalink arguments drive guarded operations through resolved identities while the

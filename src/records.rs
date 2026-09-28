@@ -294,7 +294,8 @@ pub fn markdown_key(value: &str) -> String {
 /// Compare requested Markdown with Linear's native rendering without losing intentional labels.
 /// A bare HTTP(S) URL may gain a native title even when closing prose punctuation follows it;
 /// a prose domain may become the same-label `http://` link at its original word boundary;
-/// an email autolink `<address>` may become the same-label `mailto:` link.
+/// an email address, angle-bracketed `<address>` or bare in prose, may become the
+/// same-label `mailto:` link.
 /// Different destinations or labels, code, extra prose and list boundaries still differ.
 /// The comparison is directional and never rewrites either source.
 pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
@@ -375,10 +376,10 @@ fn prose_boundary(rest: &str) -> bool {
 }
 
 /// Compare normalized text while consuming only a native link aligned to a requested bare URL,
-/// a same-label prose domain or a same-label email autolink. URL destinations, email addresses
-/// and domain word boundaries must match exactly; explicit labels, changed destinations and
-/// surrounding prose remain visible. Bare forms may end at any closing prose punctuation,
-/// exactly where Linear's autolinker closes a link.
+/// a same-label prose domain or a same-label email address (angle-bracketed autolink or bare
+/// prose). URL destinations, email addresses and domain word boundaries must match exactly;
+/// explicit labels, changed destinations and surrounding prose remain visible. Bare forms may
+/// end at any closing prose punctuation, exactly where Linear's autolinker closes a link.
 fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> bool {
     let mut previous = None;
     while !expected.is_empty() && !actual.is_empty() {
@@ -401,14 +402,16 @@ fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> boo
                 && destination == format!("http://{label}")
                 && expected.starts_with(label)
                 && prose_boundary(&expected[label.len()..]);
+            let angle_email = expected.starts_with(&format!("<{label}>"))
+                && prose_boundary(&expected[label.len() + 2..]);
             let bare_email = email_address(label)
                 && destination == format!("mailto:{label}")
-                && expected.starts_with(&format!("<{label}>"))
-                && prose_boundary(&expected[label.len() + 2..]);
+                && (angle_email
+                    || (expected.starts_with(label) && prose_boundary(&expected[label.len()..])));
             if bare_url || bare_domain || bare_email {
                 let consumed = if bare_url {
                     destination.len()
-                } else if bare_email {
+                } else if bare_email && angle_email {
                     label.len() + 2
                 } else {
                     label.len()
