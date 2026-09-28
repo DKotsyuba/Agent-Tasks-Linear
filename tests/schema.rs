@@ -120,3 +120,91 @@ fn static_graphql_operations_match_official_snapshot() {
     }
     assert!(count >= 25);
 }
+
+/// The stable public tool identity: exactly these 22 names, in discovery order.
+#[test]
+fn catalog_pins_all_22_tool_names() {
+    let catalog = agent_tasks_linear::catalog::Catalog::new().unwrap();
+    let names: Vec<&str> = catalog
+        .tools
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "create_project",
+            "edit_project",
+            "create_epic",
+            "edit_epic",
+            "create_module",
+            "edit_module",
+            "create_task",
+            "edit_task",
+            "create_atomic",
+            "edit_atomic",
+            "get_context",
+            "get_overview",
+            "list_items",
+            "search",
+            "save_document",
+            "move_status",
+            "record_review",
+            "record_commits",
+            "add_comment",
+            "get_comment",
+            "resolve_comment",
+            "save_project_update",
+        ]
+    );
+}
+
+/// Every D2 input-contract example validates or fails exactly as marked, against the
+/// embedded catalogue, so schema widening never drifts from the published examples.
+#[test]
+fn catalog_examples_match_the_d2_input_contract() {
+    let catalog = agent_tasks_linear::catalog::Catalog::new().unwrap();
+    let examples: serde_json::Value =
+        serde_json::from_str(include_str!("../schemas/examples.json")).unwrap();
+    let cases = examples["cases"].as_array().unwrap();
+    assert!(cases.len() >= 20, "contract example set shrank");
+    for case in cases {
+        let tool = case["tool"].as_str().unwrap();
+        let note = case["note"].as_str().unwrap();
+        let expected_valid = case["valid"].as_bool().unwrap();
+        let outcome = catalog.validate(tool, &case["arguments"]);
+        assert_eq!(
+            outcome.is_ok(),
+            expected_valid,
+            "{tool} ({note}): {outcome:?}"
+        );
+    }
+}
+
+/// Exactly the two canonical role skills ship, each a directory-named, versioned SKILL.md.
+#[test]
+fn exactly_two_role_skills_ship() {
+    let skills = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills");
+    let mut dirs: Vec<String> = std::fs::read_dir(&skills)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    dirs.sort();
+    assert_eq!(
+        dirs,
+        vec![
+            "agent-tasks-linear-module-lead",
+            "agent-tasks-linear-orchestrator"
+        ]
+    );
+    for dir in &dirs {
+        let md = std::fs::read_to_string(skills.join(dir).join("SKILL.md")).unwrap();
+        assert!(md.starts_with("---\n"), "{dir}: missing frontmatter");
+        assert!(
+            md.contains(&format!("name: {dir}\n")),
+            "{dir}: name mismatch"
+        );
+        assert!(md.contains("  version: 1"), "{dir}: missing version");
+    }
+}
