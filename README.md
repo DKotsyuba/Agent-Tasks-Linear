@@ -11,7 +11,8 @@ Rust MCP for an explicit agent workflow using native Linear Projects, Issues and
 | `create_module`, `edit_module` | Contracts, lead session, branch/worktree, PR and merge report |
 | `create_task`, `edit_task` | Local work, checks and commit or non-code artifact |
 | `create_atomic`, `edit_atomic` | Independent work, including explicit integration checks |
-| `get_context` | Native content, workflow state, children, current reports, Module/PR draft, discrepancies and transitions |
+| `get_context` | Native content, workflow state, children, current reports, Module/PR draft, discrepancies and transitions; `view=lead/reviewer` role views, `detail=brief/full` body depth |
+| `get_overview` | Complete Project overview, change cursors, unpublished update draft and explicit drift failures |
 | `list_items`, `search` | Native lists/search with opaque pagination; optional priority ordering for one issue sibling group |
 | `save_document` | Native documents attached to a Project or Issue |
 | `move_status` | Explicit guarded transition or `check_only` validation |
@@ -21,6 +22,10 @@ Rust MCP for an explicit agent workflow using native Linear Projects, Issues and
 | `save_project_update` | Explicit native ProjectUpdate with health, reason and body |
 
 Twenty-two tools. Issue titles use one leading `[EPIC]`, `[MODULE]`, `[TASK]` or `[ATOMIC]` marker; project titles are unchanged. Issue priority uses Linear's 0–4 scale. `edit_*` never changes status. Discovery contains the complete input schemas; [the workflow reference](docs/architecture.md) explains the fields and conditions.
+
+## Role skills
+
+Two concise role skills ship as committed repository files: `skills/agent-tasks-linear-orchestrator/` for whoever coordinates the project, and `skills/agent-tasks-linear-module-lead/` for each persistent module lead. Install them through your agent's supported skill mechanism by referencing or copying those committed directories into its skills location; no plugin or framework is added. Each skill describes its role cycle only and points to the discovery mini-docs for exact call shapes.
 
 MCP tool calls return one concise plain-text block rendered from embedded MiniJinja templates. The agent-facing response has no duplicate `structuredContent`; `isError` reflects the operation outcome. Internal Gateway outcomes and input schemas remain structured. See [the output contract](docs/architecture.md#mcp-result-presentation).
 
@@ -72,6 +77,8 @@ All connected clients are trusted. `actor`, `reviewer` and `actor_role` describe
 ## Requests and recovery
 
 Every mutation requires a caller-generated UUIDv4 `request_id` and `actor` session reference. Keep the same arguments and ID when retrying an uncertain request. For creation, the request ID also becomes the native entity ID. `get_context` exposes pending issue updates after a cold restart. See [recovery](docs/recovery.md).
+
+Schemas, mini-docs and examples in this repository describe its coordinated release contract. An installed server accepts a newer input only once its runtime implements it: check the installed discovery descriptions for the capability — for example `detail` on `get_context`, the `handoff` comment kind, or permalinks on reference fields — before relying on it. UUID references and `get_context` Issue URLs work on every v2 runtime.
 
 ## Checks
 

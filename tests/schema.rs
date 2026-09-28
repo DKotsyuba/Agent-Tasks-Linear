@@ -180,3 +180,31 @@ fn catalog_examples_match_the_d2_input_contract() {
         );
     }
 }
+
+/// Exactly the two canonical role skills ship, each a directory-named, versioned SKILL.md.
+#[test]
+fn exactly_two_role_skills_ship() {
+    let skills = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills");
+    let mut dirs: Vec<String> = std::fs::read_dir(&skills)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    dirs.sort();
+    assert_eq!(
+        dirs,
+        vec![
+            "agent-tasks-linear-module-lead",
+            "agent-tasks-linear-orchestrator"
+        ]
+    );
+    for dir in &dirs {
+        let md = std::fs::read_to_string(skills.join(dir).join("SKILL.md")).unwrap();
+        assert!(md.starts_with("---\n"), "{dir}: missing frontmatter");
+        assert!(
+            md.contains(&format!("name: {dir}\n")),
+            "{dir}: name mismatch"
+        );
+        assert!(md.contains("  version: 1"), "{dir}: missing version");
+    }
+}

@@ -1,5 +1,5 @@
 {
-  "contract": "D2 typed-reference matrix plus detail and handoff inputs. Each case is validated against the embedded catalogue by tests/schema.rs. Notes record server-side conditions (conditional inputs, replay rules) the JSON schema deliberately does not encode; all identifiers and permalinks are synthetic examples.",
+  "contract": "D2 typed-reference matrix plus detail and handoff inputs. Each case is validated against the embedded catalogue by tests/schema.rs. These are the coordinated release contract, not a per-runtime guarantee: an installed server accepts permalink references, detail and handoff only once its runtime advertises them in discovery, while UUID references behave identically everywhere. Notes record server-side conditions (conditional inputs, replay rules) the JSON schema deliberately does not encode; all identifiers and permalinks are synthetic examples.",
   "cases": [
     {
       "tool": "get_context",
