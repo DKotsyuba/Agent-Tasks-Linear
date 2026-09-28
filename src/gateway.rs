@@ -3,7 +3,7 @@ use crate::{
     catalog::Catalog,
     linear::Linear,
     model::{Fault, Kind, Meta, Outcome, Pending, Result, Review, Status, Work, require, text},
-    records::{Store, child_id, markdown_equivalent, markdown_key, patch_description, read_fields},
+    records::{Store, child_id, markdown_equivalent, patch_description, read_fields},
     rules,
 };
 use serde_json::{Value, json};
@@ -354,7 +354,7 @@ impl Gateway {
         let project = if let Some(p) = self.store.optional("QProject", "project", id).await? {
             require(
                 p["name"] == title
-                    && markdown_key(p["content"].as_str().unwrap_or("")) == markdown_key(&content),
+                    && markdown_equivalent(&content, p["content"].as_str().unwrap_or("")),
                 "REQUEST_CONFLICT",
                 "Existing Project differs from this create request; edit it explicitly",
             )?;
@@ -503,7 +503,7 @@ impl Gateway {
                 "ProjectUpdate belongs to another Project",
             )?;
             if current["health"] == health
-                && markdown_key(current["body"].as_str().unwrap_or("")) == markdown_key(&body)
+                && markdown_equivalent(&body, current["body"].as_str().unwrap_or(""))
             {
                 return Ok(json!({
                     "project_update":current,
@@ -548,7 +548,7 @@ impl Gateway {
             native["id"] == id
                 && native["project"]["id"] == project_id
                 && native["health"] == health
-                && markdown_key(native["body"].as_str().unwrap_or("")) == markdown_key(&body),
+                && markdown_equivalent(&body, native["body"].as_str().unwrap_or("")),
             "NATIVE_STATE_MISMATCH",
             "Linear did not confirm ProjectUpdate content, health and ownership",
         )
@@ -692,8 +692,10 @@ impl Gateway {
                     && existing["team"]["id"] == team
                     && existing["title"] == title
                     && native_priority(&existing["priority"]) == Some(priority)
-                    && markdown_key(existing["description"].as_str().unwrap_or(""))
-                        == markdown_key(&description)
+                    && markdown_equivalent(
+                        &description,
+                        existing["description"].as_str().unwrap_or(""),
+                    )
                     && existing["parent"]["id"].as_str() == parent
                     && existing["state"]["id"] == state,
                 "REQUEST_CONFLICT",
@@ -1550,8 +1552,7 @@ impl Gateway {
             require(
                 crate::activity::target(&comment)? == (target_type, target_id.as_str())
                     && comment["parent"]["id"] == json!(resolved_parent)
-                    && markdown_key(comment["body"].as_str().unwrap_or(""))
-                        == markdown_key(&comparison),
+                    && markdown_equivalent(&comparison, comment["body"].as_str().unwrap_or("")),
                 "REQUEST_CONFLICT",
                 "Comment request_id already names different content",
             )?;
@@ -1577,7 +1578,7 @@ impl Gateway {
             crate::activity::target(&comment).map_err(Fault::uncertain)?
                 == (target_type, target_id.as_str())
                 && comment["parent"]["id"] == json!(resolved_parent)
-                && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(&body),
+                && markdown_equivalent(&body, comment["body"].as_str().unwrap_or("")),
             "NATIVE_STATE_MISMATCH",
             "Linear did not confirm comment content and ownership",
         )
@@ -1805,7 +1806,7 @@ impl Gateway {
         if let Some(comment) = self.store.optional("QComment", "comment", id).await? {
             require(
                 comment["issue"]["id"] == w.id()
-                    && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(&body),
+                    && markdown_equivalent(&body, comment["body"].as_str().unwrap_or("")),
                 "REQUEST_CONFLICT",
                 "Review request_id already names another report",
             )?;
@@ -2517,8 +2518,10 @@ impl Gateway {
             };
             require(
                 d["title"] == a["title"]
-                    && markdown_key(d["content"].as_str().unwrap_or(""))
-                        == markdown_key(a["content"].as_str().unwrap())
+                    && markdown_equivalent(
+                        a["content"].as_str().unwrap(),
+                        d["content"].as_str().unwrap_or(""),
+                    )
                     && d[native_key]["id"] == json!(parent.1)
                     && d[other_key]["id"].is_null(),
                 "REQUEST_CONFLICT",

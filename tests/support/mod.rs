@@ -35,6 +35,8 @@ pub struct Database {
     pub lose: Option<String>,
     /// Override only the next created Comment payload body, leaving native storage intact.
     pub comment_response_body: Option<String>,
+    /// Override only the next returned ProjectUpdate payload body, leaving storage intact.
+    pub update_response_body: Option<String>,
     /// Return one successful issueUpdate payload without applying its fields.
     pub stale_update: bool,
     /// Serialize unordered list markers like Linear after issue description/comment writes.
@@ -406,9 +408,13 @@ async fn graphql(
                 "archivedAt":null,"project":{"id":project},"user":{"id":"fixture","name":"Fixture"}
             });
             db.project_updates.insert(id.into(), item.clone());
+            let mut returned = item;
+            if let Some(body) = db.update_response_body.take() {
+                returned["body"] = json!(body);
+            }
             Some((
                 "projectUpdateCreate",
-                json!({"success":true,"projectUpdate":item}),
+                json!({"success":true,"projectUpdate":returned}),
             ))
         }
         "MUpdateProjectUpdate" => {

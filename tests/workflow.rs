@@ -850,6 +850,170 @@ async fn markdown_punctuation_url_pending_retry_preserves_content() {
     assert_eq!(context["issue"]["description"], native);
 }
 
+/// Native same-meaning URL serialization replays safely after a lost write across comments,
+/// reviews, documents, partial work creation and ProjectUpdates, while changed destinations
+/// still conflict. Every retry reuses the exact original arguments; only Linear's own
+/// serialization of the stored body differs.
+#[tokio::test]
+async fn native_serialization_replays_exact_operations() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    let url = "https://linear.app/example/document/spec-123";
+    let titled = format!("[Spec title](<{url}>)");
+
+    // Comment replay: the stored body gained a native title for the bare URL.
+    let comment_request = json!({"request_id":id(),"target_type":"issue","target_id":module,
+        "kind":"progress","body":format!("Read {url}. Then continue.")});
+    let comment = f.ok("add_comment", comment_request.clone()).await["comment"].clone();
+    {
+        let mut db = f.db.lock().await;
+        let stored = db
+            .comments
+            .get_mut(comment["id"].as_str().unwrap())
+            .unwrap();
+        stored["body"] = json!(stored["body"].as_str().unwrap().replace(url, &titled));
+    }
+    let replayed = f.ok("add_comment", comment_request.clone()).await;
+    assert_eq!(replayed["replayed"], json!(true));
+    assert_eq!(replayed["comment"]["id"], comment["id"]);
+    // A changed destination is a real conflict, not a serialization difference.
+    {
+        let mut db = f.db.lock().await;
+        let stored = db
+            .comments
+            .get_mut(comment["id"].as_str().unwrap())
+            .unwrap();
+        stored["body"] = json!(stored["body"].as_str().unwrap().replace(
+            &titled,
+            "[Spec title](<https://linear.app/example/document/spec-124>)",
+        ));
+    }
+    assert_eq!(
+        f.call("add_comment", comment_request).await.data["code"],
+        "REQUEST_CONFLICT"
+    );
+
+    // Comment post-create confirmation: the creation response itself carries the native
+    // serialization, which must not read as an unconfirmed write.
+    let confirm_request = json!({"request_id":id(),"target_type":"issue","target_id":module,
+        "kind":"note","body":format!("See {url}.")});
+    {
+        let mut db = f.db.lock().await;
+        db.comment_response_body = Some(format!(
+            "Activity: v1\nKind: note\nRole: participant\nActor: codex:fixture\n\nSee {titled}."
+        ));
+    }
+    let confirmed = f.ok("add_comment", confirm_request).await;
+    let stored_body =
+        f.db.lock().await.comments[confirmed["comment"]["id"].as_str().unwrap()]["body"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    assert_eq!(
+        stored_body,
+        format!("Activity: v1\nKind: note\nRole: participant\nActor: codex:fixture\n\nSee {url}.")
+    );
+
+    // Review replay: the report comment exists while its workflow record was never saved
+    // (a crash between comment creation and metadata persistence).
+    f.result("module", &module).await;
+    f.mv(&module, "In Review").await;
+    let review_request = json!({"request_id":id(),"id":module,"reviewer":"codex:reviewer",
+        "verdict":"accepted","summary":format!("Checked {url}."),"findings":"",
+        "artifacts":["https://example.com/report"]});
+    let review = f.ok("record_review", review_request.clone()).await;
+    {
+        let mut db = f.db.lock().await;
+        let stored = db
+            .comments
+            .get_mut(review["comment"]["id"].as_str().unwrap())
+            .unwrap();
+        stored["body"] = json!(stored["body"].as_str().unwrap().replace(url, &titled));
+        let attachment = db
+            .attachments
+            .values_mut()
+            .find(|a| a["issue"]["id"] == json!(module))
+            .unwrap();
+        attachment["metadata"]["workflow"]["last_request"] = serde_json::Value::Null;
+    }
+    let reviewed = f.ok("record_review", review_request).await;
+    assert!(
+        reviewed["comment"]["body"]
+            .as_str()
+            .unwrap()
+            .contains(&titled)
+    );
+
+    // Document creation retry: the stored content was serialized natively.
+    let document_request = json!({"request_id":id(),"issue_id":module,
+        "title":"Serialization guide","content":format!("See {url}.")});
+    let document = f.ok("save_document", document_request.clone()).await;
+    {
+        let mut db = f.db.lock().await;
+        let stored = db
+            .documents
+            .get_mut(document["id"].as_str().unwrap())
+            .unwrap();
+        stored["content"] = json!(format!("See {titled}."));
+    }
+    f.restart();
+    let document_replay = f.ok("save_document", document_request).await;
+    assert_eq!(document_replay["id"], document["id"]);
+
+    // Partially created work: the Issue exists without its metadata attachment.
+    let work_id = id();
+    let create_request = json!({"request_id":work_id,"team_id":f.team,"project_id":project,
+        "parent_id":module,"title":"Serialization task","fields":{"work_type":"non_code",
+        "description":format!("Plan {url}.")}});
+    f.db.lock().await.lose = Some("MCreateIssue".into());
+    assert_eq!(
+        f.call("create_task", create_request.clone()).await.status,
+        "outcome_unknown"
+    );
+    {
+        let mut db = f.db.lock().await;
+        let stored = db.issues.get_mut(&work_id).unwrap();
+        stored["description"] = json!(format!(
+            "## Описание\n\nPlan {titled}.\n\n## Вид работы\n\nnon_code\n\n"
+        ));
+    }
+    f.restart();
+    let created = f.ok("create_task", create_request).await;
+    assert_eq!(created["issue"]["id"], json!(work_id));
+
+    // ProjectUpdate creation retry after a lost response, and a natively serialized
+    // creation response that must still confirm.
+    let update_id = id();
+    let update_request = json!({"request_id":update_id,"project_id":project,
+        "health":"atRisk","reason":"Verifying","body":format!("Overview {url}.")});
+    f.db.lock().await.lose = Some("MCreateProjectUpdate".into());
+    assert_eq!(
+        f.call("save_project_update", update_request.clone())
+            .await
+            .status,
+        "outcome_unknown"
+    );
+    {
+        let mut db = f.db.lock().await;
+        let stored = db.project_updates.get_mut(&update_id).unwrap();
+        stored["body"] = json!(format!(
+            "Author: codex:fixture\nReason: Verifying\n\nOverview {titled}."
+        ));
+    }
+    f.restart();
+    let update_replay = f.ok("save_project_update", update_request).await;
+    assert_eq!(update_replay["replayed"], json!(true));
+    let confirm_update = json!({"request_id":id(),"project_id":project,
+        "health":"onTrack","reason":"Confirmed","body":format!("Second {url}.")});
+    f.db.lock().await.update_response_body = Some(format!(
+        "Author: codex:fixture\nReason: Confirmed\n\nSecond {titled}."
+    ));
+    let confirmed_update = f.ok("save_project_update", confirm_update).await;
+    assert_eq!(confirmed_update["replayed"], json!(false));
+}
+
 /// Typed permalink arguments drive guarded operations through resolved identities while the
 /// exact original arguments stay the replay key: a lost edit reply retries without conflict
 /// or duplicate, comment replies compare resolved parents, and field references store UUIDs.
