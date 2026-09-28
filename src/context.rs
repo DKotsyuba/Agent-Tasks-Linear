@@ -20,33 +20,225 @@ const BASELINE_TTL: Duration = Duration::from_secs(30 * 60);
 /// Bound each compact comparison point before it enters process memory.
 const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 
-/// Resolve a native Linear Issue URL to its human identifier without fetching the URL.
-/// Only HTTPS links on linear.app with an issue path are accepted; a malformed or unrelated
-/// reference returns INVALID_LINK. The caller still resolves the identifier through Linear.
-pub fn issue_identifier(reference: &str) -> Result<String> {
+/// One supported native Linear reference shape, parsed without any network access.
+/// Ordinary Project/Issue/Document links reject query strings, credentials and irrelevant
+/// fragments; ProjectUpdate and Comment links keep exactly their observed native fragments.
+/// Parsing states what a link names, never what a tool accepts: expected-type checks and
+/// native identity verification belong to the resolver in the gateway.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reference {
+    /// Bare UUID; the expected entity type is enforced by the later native lookup.
+    Uuid(String),
+    /// `…/issue/{identifier}` plus an optional `#comment-{8 hex}` fragment.
+    Issue {
+        /// Human issue identifier such as `TEAM-42`.
+        identifier: String,
+        /// Eight hex characters naming a native comment on the issue.
+        comment: Option<String>,
+    },
+    /// `…/project/{slug}` plus an optional `#comment-{8 hex}` fragment.
+    Project {
+        /// Native project URL slug.
+        slug: String,
+        /// Eight hex characters naming a native comment on the project.
+        comment: Option<String>,
+    },
+    /// `…/document/{slug}` with no fragment.
+    Document {
+        /// Native document URL slug.
+        slug: String,
+    },
+    /// `…/project/{slug}/activity#project-update-{8 hex}` with an optional `&comment-{8 hex}`.
+    ProjectUpdate {
+        /// Native project URL slug owning the update.
+        project_slug: String,
+        /// First eight hex characters of the ProjectUpdate UUID.
+        short: String,
+        /// Eight hex characters naming a native comment on the update.
+        comment: Option<String>,
+    },
+}
+
+impl Reference {
+    /// Return the referenced entity kind, or `None` for a bare UUID whose kind the caller
+    /// must state. Comment-carrying links name comments and never a context entity.
+    pub fn entity(&self) -> Option<&'static str> {
+        match self {
+            Self::Uuid(_) => None,
+            Self::Issue { .. } => Some("issue"),
+            Self::Project { .. } => Some("project"),
+            Self::Document { .. } => Some("document"),
+            Self::ProjectUpdate { .. } => Some("project_update"),
+        }
+    }
+    /// Whether the link carries a native comment fragment.
+    pub fn comment(&self) -> bool {
+        matches!(
+            self,
+            Self::Issue {
+                comment: Some(_),
+                ..
+            } | Self::Project {
+                comment: Some(_),
+                ..
+            } | Self::ProjectUpdate {
+                comment: Some(_),
+                ..
+            }
+        )
+    }
+}
+
+/// Validate one `8`-hex-character native fragment token and return it verbatim for
+/// case-insensitive comparison by the caller. `INVALID_LINK` names the failed fragment.
+fn fragment_hash(value: &str, name: &str) -> Result<String> {
+    require(
+        value.len() == 8 && value.bytes().all(|b| b.is_ascii_hexdigit()),
+        "INVALID_LINK",
+        format!("Expected an 8-hex-character {name} fragment"),
+    )?;
+    Ok(value.to_owned())
+}
+
+/// Compare one returned native permalink with the supplied reference, ignoring ASCII case
+/// only inside native hex fragment tokens such as `comment-…`/`project-update-…`. Every
+/// other character, including the whole path and fragment prefixes, must match exactly,
+/// so no broader identity is loosened.
+pub fn same_reference_url(native: &str, supplied: &str) -> bool {
+    let (native_base, native_fragment) = native.split_once('#').unwrap_or((native, ""));
+    let (supplied_base, supplied_fragment) = supplied.split_once('#').unwrap_or((supplied, ""));
+    let native_tokens: Vec<_> = native_fragment.split('&').collect();
+    let supplied_tokens: Vec<_> = supplied_fragment.split('&').collect();
+    native_base == supplied_base
+        && native_tokens.len() == supplied_tokens.len()
+        && native_tokens
+            .iter()
+            .zip(supplied_tokens.iter())
+            .all(
+                |(native, supplied)| match (native.rsplit_once('-'), supplied.rsplit_once('-')) {
+                    (
+                        Some((native_prefix, native_hash)),
+                        Some((supplied_prefix, supplied_hash)),
+                    ) => {
+                        native_prefix == supplied_prefix
+                            && native_hash.eq_ignore_ascii_case(supplied_hash)
+                    }
+                    _ => native == supplied,
+                },
+            )
+}
+
+/// Parse one reference into a UUID or a supported native Linear permalink shape without
+/// fetching it. Foreign hosts, non-HTTPS schemes, credentials, query strings, unsupported
+/// paths and irrelevant fragments return INVALID_LINK. Leading path segments before the
+/// entity marker are the workspace name and carry no selection meaning.
+pub fn parse_reference(reference: &str) -> Result<Reference> {
+    if uuid::Uuid::parse_str(reference).is_ok() {
+        return Ok(Reference::Uuid(reference.to_owned()));
+    }
     let url = reqwest::Url::parse(reference)
-        .map_err(|_| Fault::new("INVALID_LINK", "Expected a native Linear Issue URL"))?;
-    let parts: Vec<_> = url
-        .path_segments()
-        .map(|segments| segments.collect())
-        .unwrap_or_default();
-    let identifier = parts
-        .windows(2)
-        .find_map(|pair| (pair[0] == "issue").then_some(pair[1]))
-        .unwrap_or("");
+        .map_err(|_| Fault::new("INVALID_LINK", "Expected a UUID or native Linear permalink"))?;
     require(
         url.scheme() == "https"
             && url.host_str() == Some("linear.app")
-            && url.query().is_none()
-            && url.fragment().is_none()
-            && identifier.contains('-')
-            && identifier
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+            && url.port().is_none()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none(),
         "INVALID_LINK",
-        "Expected a native Linear Issue URL",
+        "Expected a native Linear permalink without port, query or credentials",
     )?;
-    Ok(identifier.to_owned())
+    let segments: Vec<_> = url.path_segments().into_iter().flatten().collect();
+    let marker = segments
+        .iter()
+        .position(|segment| matches!(*segment, "issue" | "project" | "document"))
+        .ok_or_else(|| Fault::new("INVALID_LINK", "Permalink names no supported entity"))?;
+    require(
+        marker > 0 && segments[..marker].iter().all(|segment| !segment.is_empty()),
+        "INVALID_LINK",
+        "Permalink needs a nonempty workspace name before the entity marker",
+    )?;
+    let token: &str = segments
+        .get(marker + 1)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| Fault::new("INVALID_LINK", "Permalink names no entity identifier"))?;
+    let tail = &segments[marker + 2..];
+    let fragment = url.fragment().unwrap_or("");
+    match segments[marker] {
+        "document" => {
+            require(
+                fragment.is_empty() && tail.is_empty(),
+                "INVALID_LINK",
+                "Document permalinks carry no fragment or tail",
+            )?;
+            Ok(Reference::Document {
+                slug: token.to_owned(),
+            })
+        }
+        "issue" => {
+            require(
+                token.contains('-')
+                    && token
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+                "INVALID_LINK",
+                "Expected a native Linear Issue permalink",
+            )?;
+            let comment = if fragment.is_empty() {
+                None
+            } else {
+                Some(fragment_hash(
+                    fragment.strip_prefix("comment-").unwrap_or(""),
+                    "comment",
+                )?)
+            };
+            Ok(Reference::Issue {
+                identifier: token.to_owned(),
+                comment,
+            })
+        }
+        _ => {
+            require(
+                tail.is_empty() || tail == ["activity"],
+                "INVALID_LINK",
+                "Project permalinks carry no tail beyond activity",
+            )?;
+            if let Some(short) = fragment.strip_prefix("project-update-") {
+                require(
+                    tail == ["activity"],
+                    "INVALID_LINK",
+                    "ProjectUpdate permalinks carry the /activity tail",
+                )?;
+                let (short, comment) = match short.split_once('&') {
+                    Some((short, comment)) => (
+                        short,
+                        Some(fragment_hash(
+                            comment.strip_prefix("comment-").unwrap_or(""),
+                            "comment",
+                        )?),
+                    ),
+                    None => (short, None),
+                };
+                return Ok(Reference::ProjectUpdate {
+                    project_slug: token.to_owned(),
+                    short: fragment_hash(short, "project-update")?,
+                    comment,
+                });
+            }
+            let comment = if fragment.is_empty() {
+                None
+            } else {
+                Some(fragment_hash(
+                    fragment.strip_prefix("comment-").unwrap_or(""),
+                    "comment",
+                )?)
+            };
+            Ok(Reference::Project {
+                slug: token.to_owned(),
+                comment,
+            })
+        }
+    }
 }
 
 /// Collect native drift from a Module and every direct child before any derived count is shown.
@@ -149,9 +341,42 @@ pub fn agent_context(
         "epic":epic.map(|item| json!({"id":item.id(),"url":item.native["url"],"business_requirements":item.fields["business_requirements"],"acceptance_criteria":item.fields["acceptance_criteria"]})),
         "checkout":checkout,"tasks":tasks,"module_report":report,"current_git_reports":meta.current_git_reports().collect::<Vec<_>>(),
         "latest_review":latest_review,"open_questions":open_questions,"documents":links,"discrepancies":discrepancies,
+        "handoff":handoff_selection(meta, activity.get(work.id()).map(Vec::as_slice).unwrap_or(&[])),
         "next_work":if view == "lead" {json!(tasks.iter().filter(|task| !matches!(task["status"].as_str(),Some("Done"|"Canceled"|"Duplicate"))).collect::<Vec<_>>())} else {Value::Null},
         "review_evidence":if view == "reviewer" {json!({"module_report":report,"latest_review":latest_review})} else {Value::Null}
     }))
+}
+
+/// Select the explicit continuation checkpoint from one Issue's activity: the newest
+/// current-round handoff by creation time then ID, while superseded checkpoints stay visible
+/// as history with their own round and revision. `revision_changed` marks a current-round
+/// handoff whose stamped revision no longer matches the work record, so changed-after-revision
+/// prose is never silently treated as the next instruction. Manual comments and imported Git
+/// progress are never classified as handoffs. The selection performs no writes.
+pub(crate) fn handoff_selection(meta: &crate::model::Meta, records: &[ActivityRecord]) -> Value {
+    let mut handoffs: Vec<_> = records
+        .iter()
+        .filter(|record| record.kind == "handoff")
+        .collect::<Vec<_>>();
+    handoffs.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let mut history = Vec::new();
+    let mut current = None;
+    let mut revision_changed = false;
+    for record in handoffs.into_iter().rev() {
+        let card = json!({"id":record.id,"url":record.url,"created_at":record.created_at,
+            "round":record.round,"revision":record.revision,"actor":record.actor,"body":record.body});
+        if current.is_none() && record.round == Some(meta.round) {
+            revision_changed = record.revision != Some(meta.revision);
+            current = Some(card);
+        } else {
+            history.push(card);
+        }
+    }
+    json!({"current":current,"revision_changed":revision_changed,"history":history})
 }
 
 /// Compose one Module card from the shared current-round report and native assignment.
@@ -348,10 +573,30 @@ pub fn project_overview(
         "REPORT_LIMIT",
         "ProjectUpdate draft exceeds the native body limit",
     )?;
+    // Attention comes from the same pure guidance helper as every read and ACK; it is only
+    // computed here because the complete graph is already verified, so pending and drift
+    // keep their explicit failure semantics and never collapse into silent counts.
+    let attention: Vec<Value> = graph
+        .iter()
+        .filter(|work| work.meta.is_some())
+        .filter_map(|work| {
+            let advice = crate::guidance::guidance(work, graph);
+            matches!(
+                advice["stage"].as_str(),
+                Some("recovery" | "review" | "merge" | "fixes" | "closure")
+            )
+            .then(|| {
+                json!({"id":work.id(),"identifier":work.native["identifier"],"url":work.native["url"],
+                    "status":work.native["state"]["name"],"stage":advice["stage"],
+                    "next_action":advice["next_action"],"conditions":advice["conditions"]})
+            })
+        })
+        .collect();
     Ok(
         json!({"project_id":project["id"],"project_title":project["name"],"project_url":project["url"],
         "active_epics":epic_cards,"standalone_modules":standalone,"atomics":atomics,"excluded":excluded,
-        "awaiting_review":awaiting_review,"open_questions":questions,"project_update_draft":draft}),
+        "awaiting_review":awaiting_review,"open_questions":questions,"attention":attention,
+        "project_update_draft":draft}),
     )
 }
 
@@ -493,6 +738,83 @@ impl SnapshotCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the agreed native permalink shapes parse; ports, missing or empty workspace
+    /// segments and a ProjectUpdate fragment without its /activity tail are malformed.
+    #[test]
+    fn parse_reference_rejects_unsupported_shapes() {
+        for rejected in [
+            "https://linear.app:8443/example/issue/TEAM-1/a-task",
+            "https://linear.app/example/issue/TEAM-1/a-task?refresh=1",
+            "https://user:secret@linear.app/example/issue/TEAM-1/a-task",
+            "https://linear.app/issue/TEAM-1/a-task",
+            "https://linear.app//example/issue/TEAM-1/a-task",
+            "https://linear.app/example//issue/TEAM-1/a-task",
+            "https://linear.app/example/project/proverka#project-update-c1c32217",
+            "https://example.com/example/issue/TEAM-1/a-task",
+        ] {
+            assert_eq!(
+                parse_reference(rejected).unwrap_err().code,
+                "INVALID_LINK",
+                "{rejected}"
+            );
+        }
+        assert_eq!(
+            parse_reference("https://linear.app/example/issue/TEAM-1/a-task").unwrap(),
+            Reference::Issue {
+                identifier: "TEAM-1".into(),
+                comment: None
+            }
+        );
+        assert_eq!(
+            parse_reference("https://linear.app/example/issue/TEAM-1/a-task#comment-AbCdEf99")
+                .unwrap(),
+            Reference::Issue {
+                identifier: "TEAM-1".into(),
+                comment: Some("AbCdEf99".into())
+            }
+        );
+        assert_eq!(
+            parse_reference(
+                "https://linear.app/example/project/proverka/activity#project-update-c1c32217&comment-DeAdBeEf"
+            )
+            .unwrap(),
+            Reference::ProjectUpdate {
+                project_slug: "proverka".into(),
+                short: "c1c32217".into(),
+                comment: Some("DeAdBeEf".into())
+            }
+        );
+        assert_eq!(
+            parse_reference("https://linear.app/example/document/spec-123").unwrap(),
+            Reference::Document {
+                slug: "spec-123".into()
+            }
+        );
+    }
+
+    /// Fragment hex tokens compare ASCII case-insensitively while every other character,
+    /// including the path and the fragment prefixes, stays exact.
+    #[test]
+    fn same_reference_url_normalizes_only_fragment_hex() {
+        let native = "https://linear.app/example/issue/TEAM-1/a-task#comment-abcdef01";
+        assert!(same_reference_url(
+            native,
+            "https://linear.app/example/issue/TEAM-1/a-task#comment-ABCDEF01"
+        ));
+        assert!(same_reference_url(
+            "https://linear.app/example/project/proverka/activity#project-update-c1c32217&comment-abcdef01",
+            "https://linear.app/example/project/proverka/activity#project-update-C1C32217&comment-ABCDEF01"
+        ));
+        for different in [
+            "https://linear.app/example/issue/TEAM-1/a-task#comment-abcdef02",
+            "https://linear.app/example/issue/TEAM-2/a-task#comment-ABCDEF01",
+            "https://linear.app/example/issue/TEAM-1/a-task#issuecomment-ABCDEF01",
+            "https://linear.app/example/issue/TEAM-1/a-task#comment-ABCDEF01&extra",
+        ] {
+            assert!(!same_reference_url(native, different), "{different}");
+        }
+    }
 
     /// Capacity, scope and monotonic expiry never turn a missing baseline into no changes.
     #[test]

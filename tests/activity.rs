@@ -242,6 +242,123 @@ async fn question_activity_is_addressed_and_readable() {
     assert_eq!(record["formal_review"], false);
 }
 
+/// Handoff checkpoints target managed Issues, stamp the current round/revision server-side,
+/// replay their original stamp after later rounds, and select the newest current-round entry
+/// while ordinary progress stays a separate kind.
+#[tokio::test]
+async fn handoff_checkpoints_stamp_replay_and_select() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.mv(&task, "In Progress").await;
+    assert_eq!(
+        f.call(
+            "add_comment",
+            json!({"target_type":"project","target_id":project,"kind":"handoff","body":"Where"}),
+        )
+        .await
+        .data["code"],
+        "INVALID_INPUT"
+    );
+    let first_request = json!({"request_id":id(),"target_type":"issue","target_id":task,
+        "kind":"handoff","body":"Round one checkpoint"});
+    let first = f.ok("add_comment", first_request.clone()).await;
+    let record = f
+        .ok("get_comment", json!({"id":first["comment"]["id"]}))
+        .await["activity"]
+        .clone();
+    assert_eq!(record["kind"], "handoff");
+    assert_eq!(record["round"], 1);
+    assert_eq!(record["revision"], 1);
+
+    let progress = f
+        .ok(
+            "add_comment",
+            json!({"target_type":"issue","target_id":task,"kind":"progress","body":"Imported progress"}),
+        )
+        .await["comment"]
+        .clone();
+    let context = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":task,"view":"lead"}),
+        )
+        .await;
+    let handoff = &context["agent_context"]["handoff"];
+    assert_eq!(handoff["current"]["id"], first["comment"]["id"]);
+    assert_eq!(handoff["current"]["round"], 1);
+    assert_eq!(handoff["revision_changed"], false);
+    assert_eq!(
+        handoff["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["id"] == progress["id"])
+            .count(),
+        0
+    );
+
+    // A content edit advances the revision; the same-round checkpoint stays selected but is
+    // explicitly marked as written before the current revision.
+    f.ok(
+        "edit_task",
+        json!({"id":task,"fields":{"description":"Changed direction"}}),
+    )
+    .await;
+    let changed = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":task,"view":"lead"}),
+        )
+        .await;
+    assert_eq!(
+        changed["agent_context"]["handoff"]["current"]["id"],
+        first["comment"]["id"]
+    );
+    assert_eq!(
+        changed["agent_context"]["handoff"]["revision_changed"],
+        true
+    );
+
+    // A reopened round selects its own newest checkpoint and keeps the old one as history.
+    f.result("task", &task).await;
+    f.mv(&task, "Done").await;
+    f.mv(&task, "In Progress").await;
+    let second_request = json!({"request_id":id(),"target_type":"issue","target_id":task,
+        "kind":"handoff","body":"Round two checkpoint"});
+    let second = f.ok("add_comment", second_request.clone()).await;
+    let reopened = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":task,"view":"lead"}),
+        )
+        .await;
+    let reopened_handoff = &reopened["agent_context"]["handoff"];
+    assert_eq!(reopened_handoff["current"]["id"], second["comment"]["id"]);
+    assert_eq!(reopened_handoff["current"]["round"], 2);
+    assert_eq!(reopened_handoff["revision_changed"], false);
+    assert_eq!(reopened_handoff["history"].as_array().unwrap().len(), 1);
+    assert_eq!(reopened_handoff["history"][0]["id"], first["comment"]["id"]);
+
+    // Replaying the first request after round changes returns the original comment unchanged.
+    let replayed = f.ok("add_comment", first_request).await;
+    assert_eq!(replayed["replayed"], true);
+    assert_eq!(replayed["comment"]["id"], first["comment"]["id"]);
+    assert_eq!(
+        f.ok(
+            "list_items",
+            json!({"type":"comment","target_type":"issue","target_id":task}),
+        )
+        .await["nodes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
 /// Native ProjectUpdates preserve all health values, native cursors and explicit author/reason
 /// while leaving issue status and ordinary project comments separate.
 #[tokio::test]

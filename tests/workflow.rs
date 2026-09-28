@@ -643,6 +643,30 @@ fn markdown_native_link_title_preserves_meaningful_differences() {
         &format!("`{url}`"),
         &format!("`[Spec title](<{url}>)`"),
     ));
+    // A sentence period, comma or closing bracket directly after the bare URL is where
+    // Linear closes its generated title link; the URL itself is unchanged.
+    let sentence = format!("Plan {url}. Consume existing semantics at the pinned base.");
+    let native_sentence = sentence.replace(url, &format!("[Spec title](<{url}>)"));
+    assert!(markdown_equivalent(&sentence, &native_sentence));
+    assert!(markdown_equivalent(
+        &format!("See {url}, then continue."),
+        &format!("See [Spec title](<{url}>), then continue.")
+    ));
+    assert!(markdown_equivalent(
+        &format!("(see {url}) done."),
+        &format!("(see [Spec title](<{url}>)) done.")
+    ));
+    for changed in [
+        native_sentence.replace("spec-123", "spec-124"),
+        native_sentence.replace("Consume existing", "Adopt and consume existing"),
+    ] {
+        assert!(!markdown_equivalent(&sentence, &changed), "{changed}");
+    }
+    // A period followed by alphanumeric continues the requested URL, so it is not a boundary.
+    assert!(!markdown_equivalent(
+        &format!("See {url}.foo next."),
+        &format!("See [Spec title](<{url}>).foo next.")
+    ));
 }
 
 /// A pending Issue edit accepts Linear's title for an originally bare document URL without
@@ -675,6 +699,646 @@ async fn markdown_document_title_pending_retry_preserves_content() {
     assert!(context["workflow"]["pending"].is_null());
     assert_eq!(context["discrepancies"], json!([]));
     assert_eq!(context["issue"]["description"], native);
+}
+
+/// A native same-label mailto link may represent a requested email autolink in prose, but
+/// altered destinations, labels, extra prose and code literals cannot.
+#[test]
+fn markdown_mailto_autolink_preserves_meaning() {
+    use agent_tasks_linear::records::markdown_equivalent;
+    let email = "noreply@anthropic.com";
+    let expected = format!(
+        "Checks:\ncargo test --workspace --locked\n\nCo-Authored-By: Claude Code <{email}>"
+    );
+    let native = expected.replace(
+        &format!("<{email}>"),
+        &format!("[{email}](<mailto:{email}>)"),
+    );
+    assert!(markdown_equivalent(&expected, &native));
+    for changed in [
+        native.replace("mailto:noreply", "mailto:different"),
+        native.replace(&format!("[{email}]"), "[different@example.test]"),
+        native.replace("Co-Authored-By", "Also reviewed by"),
+        format!("{expected} extra"),
+    ] {
+        assert!(!markdown_equivalent(&expected, &changed), "{changed}");
+    }
+    assert!(!markdown_equivalent(
+        &format!("`<{email}>`"),
+        &format!("`[{email}](<mailto:{email}>)`"),
+    ));
+    assert!(!markdown_equivalent(
+        &format!("see <{email}> now"),
+        &format!("see [{email}](<mailto:different@example.test>) now"),
+    ));
+    assert!(!markdown_equivalent(
+        "see <a@localhost> now",
+        "see [a@localhost](<mailto:a@localhost>) now",
+    ));
+
+    // A bare email address in prose becomes the same native mailto link as the
+    // angle-bracketed autolink; altered destinations, labels and prose still differ.
+    let bare = format!("Contact {email}; end.");
+    let bare_native = bare.replace(email, &format!("[{email}](<mailto:{email}>)"));
+    assert!(markdown_equivalent(&bare, &bare_native));
+    for changed in [
+        bare_native.replace("mailto:noreply", "mailto:different"),
+        bare_native.replace(&format!("[{email}]"), "[different@example.test]"),
+        format!("{bare} extra"),
+    ] {
+        assert!(!markdown_equivalent(&bare, &changed), "{changed}");
+    }
+    assert!(!markdown_equivalent(
+        &format!("see {email} now"),
+        &format!("see [{email}](<mailto:different@example.test>) now"),
+    ));
+
+    // The exact live combination: bare email, bare domain and a bare document URL that
+    // Linear serialized in one stored body all compare as the same meaning.
+    let url =
+        "https://linear.app/example/document/proverka-sohrannosti-teksta-dokumenta-9f462721f57d";
+    let segment = format!("Control: {email}; docs.rs; {url} . Retry.");
+    let native_segment = segment
+        .replace(email, &format!("[{email}](<mailto:{email}>)"))
+        .replace("docs.rs", "[docs.rs](<http://docs.rs>)")
+        .replace(url, &format!("[Проверка сохранности текста](<{url}>)"));
+    assert!(markdown_equivalent(&segment, &native_segment));
+    assert!(!markdown_equivalent(
+        &segment,
+        &native_segment.replace("mailto:noreply", "mailto:different"),
+    ));
+}
+
+/// A pending commit import accepts Linear's mailto autolink for a co-author footer while the
+/// exact retry finalizes without conflicts or drift.
+#[tokio::test]
+async fn markdown_mailto_pending_retry_preserves_content() {
+    use std::{fs, path::Path, process::Command};
+    /// Execute literal Git fixture setup arguments and return trimmed stdout, requiring success.
+    fn git(path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+    let root = std::env::temp_dir().join(format!("commit mailto {}", id()));
+    let repo = root.join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    let message = "feat(catalog): accept typed permalinks\n\nResult:\nAdded reference inputs.\n\nChecks:\ncargo test --workspace --locked\n\nCo-Authored-By: Claude Code <noreply@anthropic.com>\n";
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        ],
+    );
+    let hash = git(&repo, &["rev-parse", "HEAD"]);
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.ok("edit_module", json!({"id":module,"fields":{"repository_path":repo,"repository_url":null,"worktree":repo}})).await;
+    f.mv(&module, "In Progress").await;
+    let task = f.work("task", &project, Some(&module)).await;
+    f.ok(
+        "edit_task",
+        json!({"id":task,"fields":{"work_type":"code"}}),
+    )
+    .await;
+    f.mv(&task, "In Progress").await;
+    let request = json!({"request_id":id(),"work_id":task,"commits":[hash]});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("record_commits", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    let email = "noreply@anthropic.com";
+    let native = f.db.lock().await.issues[&task]["description"]
+        .as_str()
+        .unwrap()
+        .replace(
+            &format!("<{email}>"),
+            &format!("[{email}](<mailto:{email}>)"),
+        );
+    f.db.lock().await.issues.get_mut(&task).unwrap()["description"] = json!(native.clone());
+    f.restart();
+    f.ok("record_commits", request.clone()).await;
+    f.ok("record_commits", request).await;
+    let context = f.ok("get_context", json!({"id":task,"type":"issue"})).await;
+    assert!(context["workflow"]["pending"].is_null());
+    assert_eq!(context["discrepancies"], json!([]));
+    assert_eq!(context["issue"]["description"], native);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A pending Issue edit accepts Linear's titled link when the requested bare document URL is
+/// followed directly by sentence punctuation, and a same-sentence domain autolink; the exact
+/// retry finalizes without conflicts or drift.
+#[tokio::test]
+async fn markdown_punctuation_url_pending_retry_preserves_content() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    let url = "https://linear.app/example/document/spec-123";
+    let request = json!({"request_id":id(),"id":module,"fields":{
+        "required_contract":format!(
+            "Plan {url}. Coordinate lib.rs registration and [Role](https://example.com/role)."
+        )
+    }});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("edit_module", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    let native = f.db.lock().await.issues[&module]["description"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+        .replace(url, &format!("[Spec title](<{url}>)"))
+        .replace(
+            "Coordinate lib.rs registration",
+            "Coordinate [lib.rs](<http://lib.rs>) registration",
+        );
+    f.db.lock().await.issues.get_mut(&module).unwrap()["description"] = json!(native.clone());
+    f.restart();
+    f.ok("edit_module", request.clone()).await;
+    f.ok("edit_module", request).await;
+    let context = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    assert!(context["workflow"]["pending"].is_null());
+    assert_eq!(context["discrepancies"], json!([]));
+    assert_eq!(context["issue"]["description"], native);
+}
+
+/// Native same-meaning URL serialization replays safely after a lost write across comments,
+/// reviews, documents, partial work creation and ProjectUpdates, while changed destinations
+/// still conflict. Every retry reuses the exact original arguments; only Linear's own
+/// serialization of the stored body differs.
+#[tokio::test]
+async fn native_serialization_replays_exact_operations() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    let url = "https://linear.app/example/document/spec-123";
+    let titled = format!("[Spec title](<{url}>)");
+
+    // Comment replay: the stored body gained a native title for the bare URL.
+    let comment_request = json!({"request_id":id(),"target_type":"issue","target_id":module,
+        "kind":"progress","body":format!("Read {url}. Then continue.")});
+    let comment = f.ok("add_comment", comment_request.clone()).await["comment"].clone();
+    {
+        let mut db = f.db.lock().await;
+        let stored = db
+            .comments
+            .get_mut(comment["id"].as_str().unwrap())
+            .unwrap();
+        stored["body"] = json!(stored["body"].as_str().unwrap().replace(url, &titled));
+    }
+    let replayed = f.ok("add_comment", comment_request.clone()).await;
+    assert_eq!(replayed["replayed"], json!(true));
+    assert_eq!(replayed["comment"]["id"], comment["id"]);
+    // A changed destination is a real conflict, not a serialization difference.
+    {
+        let mut db = f.db.lock().await;
+        let stored = db
+            .comments
+            .get_mut(comment["id"].as_str().unwrap())
+            .unwrap();
+        stored["body"] = json!(stored["body"].as_str().unwrap().replace(
+            &titled,
+            "[Spec title](<https://linear.app/example/document/spec-124>)",
+        ));
+    }
+    assert_eq!(
+        f.call("add_comment", comment_request).await.data["code"],
+        "REQUEST_CONFLICT"
+    );
+
+    // Comment post-create confirmation: the creation response itself carries the native
+    // serialization, which must not read as an unconfirmed write.
+    let confirm_request = json!({"request_id":id(),"target_type":"issue","target_id":module,
+        "kind":"note","body":format!("See {url}.")});
+    {
+        let mut db = f.db.lock().await;
+        db.comment_response_body = Some(format!(
+            "Activity: v1\nKind: note\nRole: participant\nActor: codex:fixture\n\nSee {titled}."
+        ));
+    }
+    let confirmed = f.ok("add_comment", confirm_request).await;
+    let stored_body =
+        f.db.lock().await.comments[confirmed["comment"]["id"].as_str().unwrap()]["body"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    assert_eq!(
+        stored_body,
+        format!("Activity: v1\nKind: note\nRole: participant\nActor: codex:fixture\n\nSee {url}.")
+    );
+
+    // Review replay: the report comment exists while its workflow record was never saved
+    // (a crash between comment creation and metadata persistence).
+    f.result("module", &module).await;
+    f.mv(&module, "In Review").await;
+    let review_request = json!({"request_id":id(),"id":module,"reviewer":"codex:reviewer",
+        "verdict":"accepted","summary":format!("Checked {url}."),"findings":"",
+        "artifacts":["https://example.com/report"]});
+    let review = f.ok("record_review", review_request.clone()).await;
+    {
+        let mut db = f.db.lock().await;
+        let stored = db
+            .comments
+            .get_mut(review["comment"]["id"].as_str().unwrap())
+            .unwrap();
+        stored["body"] = json!(stored["body"].as_str().unwrap().replace(url, &titled));
+        let attachment = db
+            .attachments
+            .values_mut()
+            .find(|a| a["issue"]["id"] == json!(module))
+            .unwrap();
+        attachment["metadata"]["workflow"]["last_request"] = serde_json::Value::Null;
+    }
+    let reviewed = f.ok("record_review", review_request).await;
+    assert!(
+        reviewed["comment"]["body"]
+            .as_str()
+            .unwrap()
+            .contains(&titled)
+    );
+
+    // Document creation retry: the stored content was serialized natively.
+    let document_request = json!({"request_id":id(),"issue_id":module,
+        "title":"Serialization guide","content":format!("See {url}.")});
+    let document = f.ok("save_document", document_request.clone()).await;
+    {
+        let mut db = f.db.lock().await;
+        let stored = db
+            .documents
+            .get_mut(document["id"].as_str().unwrap())
+            .unwrap();
+        stored["content"] = json!(format!("See {titled}."));
+    }
+    f.restart();
+    let document_replay = f.ok("save_document", document_request).await;
+    assert_eq!(document_replay["id"], document["id"]);
+
+    // Partially created work: the Issue exists without its metadata attachment.
+    let work_id = id();
+    let create_request = json!({"request_id":work_id,"team_id":f.team,"project_id":project,
+        "parent_id":module,"title":"Serialization task","fields":{"work_type":"non_code",
+        "description":format!("Plan {url}.")}});
+    f.db.lock().await.lose = Some("MCreateIssue".into());
+    assert_eq!(
+        f.call("create_task", create_request.clone()).await.status,
+        "outcome_unknown"
+    );
+    {
+        let mut db = f.db.lock().await;
+        let stored = db.issues.get_mut(&work_id).unwrap();
+        stored["description"] = json!(format!(
+            "## Описание\n\nPlan {titled}.\n\n## Вид работы\n\nnon_code\n\n"
+        ));
+    }
+    f.restart();
+    let created = f.ok("create_task", create_request).await;
+    assert_eq!(created["issue"]["id"], json!(work_id));
+
+    // ProjectUpdate creation retry after a lost response, and a natively serialized
+    // creation response that must still confirm.
+    let update_id = id();
+    let update_request = json!({"request_id":update_id,"project_id":project,
+        "health":"atRisk","reason":"Verifying","body":format!("Overview {url}.")});
+    f.db.lock().await.lose = Some("MCreateProjectUpdate".into());
+    assert_eq!(
+        f.call("save_project_update", update_request.clone())
+            .await
+            .status,
+        "outcome_unknown"
+    );
+    {
+        let mut db = f.db.lock().await;
+        let stored = db.project_updates.get_mut(&update_id).unwrap();
+        stored["body"] = json!(format!(
+            "Author: codex:fixture\nReason: Verifying\n\nOverview {titled}."
+        ));
+    }
+    f.restart();
+    let update_replay = f.ok("save_project_update", update_request).await;
+    assert_eq!(update_replay["replayed"], json!(true));
+    let confirm_update = json!({"request_id":id(),"project_id":project,
+        "health":"onTrack","reason":"Confirmed","body":format!("Second {url}.")});
+    f.db.lock().await.update_response_body = Some(format!(
+        "Author: codex:fixture\nReason: Confirmed\n\nSecond {titled}."
+    ));
+    let confirmed_update = f.ok("save_project_update", confirm_update).await;
+    assert_eq!(confirmed_update["replayed"], json!(false));
+}
+
+/// A document whose stored body carries Linear's autolinks for a bare email address, a bare
+/// domain and a bare document URL replays its exact creation request after a cold restart.
+#[tokio::test]
+async fn bare_email_document_serialization_replays_after_cold_restart() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    let email = "noreply@anthropic.com";
+    let url =
+        "https://linear.app/example/document/proverka-sohrannosti-teksta-dokumenta-9f462721f57d";
+    let document_request = json!({"request_id":id(),"issue_id":module,
+        "title":"Установка и квалификация",
+        "content":format!(
+            "Контроль native serialization: {email}; docs.rs; {url} . Точный повтор после холодного запуска.")});
+    let document = f.ok("save_document", document_request.clone()).await;
+    {
+        let mut db = f.db.lock().await;
+        let stored = db
+            .documents
+            .get_mut(document["id"].as_str().unwrap())
+            .unwrap();
+        let native = stored["content"]
+            .as_str()
+            .unwrap()
+            .replace(email, &format!("[{email}](<mailto:{email}>)"))
+            .replace("docs.rs", "[docs.rs](<http://docs.rs>)")
+            .replace(url, &format!("[Проверка сохранности текста](<{url}>)"));
+        stored["content"] = json!(native);
+    }
+    f.restart();
+    let replayed = f.ok("save_document", document_request).await;
+    assert_eq!(replayed["id"], document["id"]);
+}
+
+/// Typed permalink arguments drive guarded operations through resolved identities while the
+/// exact original arguments stay the replay key: a lost edit reply retries without conflict
+/// or duplicate, comment replies compare resolved parents, and field references store UUIDs.
+#[tokio::test]
+async fn permalink_arguments_replay_exact_operations() {
+    let mut f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, Some(&epic)).await;
+    let standalone = f.work("module", &project, None).await;
+    let project_slug = "passport-b1b2c3d4e5";
+    let (epic_link, module_link, project_link) = {
+        let mut db = f.db.lock().await;
+        let epic_link = format!(
+            "https://linear.app/example/issue/{}/readable-epic",
+            db.issues[&epic]["identifier"].as_str().unwrap()
+        );
+        db.issues.get_mut(&epic).unwrap()["url"] = json!(epic_link);
+        let module_link = format!(
+            "https://linear.app/example/issue/{}/readable-module",
+            db.issues[&module]["identifier"].as_str().unwrap()
+        );
+        db.issues.get_mut(&module).unwrap()["url"] = json!(module_link);
+        let project_link = format!("https://linear.app/example/project/{project_slug}");
+        db.projects.get_mut(&project).unwrap()["url"] = json!(project_link);
+        (epic_link, module_link, project_link)
+    };
+    f.mv(&epic, "In Progress").await;
+    f.ok(
+        "move_status",
+        json!({"id":module_link,"status":"In Progress","actor_role":"orchestrator"}),
+    )
+    .await;
+
+    // Field references resolve to canonical UUIDs before validation and storage.
+    f.ok(
+        "edit_module",
+        json!({"id":standalone,"fields":{"after_epic":epic_link}}),
+    )
+    .await;
+    let atomic = f.work("atomic", &project, Some(&epic)).await;
+    f.ok(
+        "edit_atomic",
+        json!({"id":atomic,"fields":{
+            "work_type":"integration",
+            "integration_modules":[module_link, epic_link]
+        }}),
+    )
+    .await;
+    let stored = f
+        .ok("get_context", json!({"type":"issue","id":standalone}))
+        .await;
+    assert_eq!(stored["fields"]["after_epic"], json!(epic));
+    let integration = f
+        .ok("get_context", json!({"type":"issue","id":atomic}))
+        .await;
+    assert_eq!(
+        integration["fields"]["integration_modules"],
+        json!([module, epic])
+    );
+
+    // A permalink parent creates work; the created record stores the resolved parent UUID.
+    let task = f
+        .ok(
+            "create_task",
+            json!({"project_id":project_link,"team_id":f.team,"parent_id":module_link,
+                "title":"Permalink driven","fields":{"work_type":"non_code"}}),
+        )
+        .await["issue"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let task_link = {
+        let mut db = f.db.lock().await;
+        let link = format!(
+            "https://linear.app/example/issue/{}/readable-task",
+            db.issues[&task]["identifier"].as_str().unwrap()
+        );
+        db.issues.get_mut(&task).unwrap()["url"] = json!(link);
+        link
+    };
+    let created = f
+        .ok("get_context", json!({"type":"issue","id":&task}))
+        .await;
+    assert_eq!(created["workflow"]["parent_id"], json!(module));
+
+    // A lost edit reply recovers from the exact permalink arguments without a duplicate write.
+    let request = json!({"request_id":id(),"id":task_link,"fields":{
+        "description":"Continued by permalink","expected_result":"Same identity"
+    }});
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    assert_eq!(
+        f.call("edit_task", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    f.restart();
+    f.ok("edit_task", request.clone()).await;
+    let replayed = f.ok("edit_task", request).await;
+    assert_eq!(replayed["replayed"], true);
+    let recovered = f
+        .ok("get_context", json!({"type":"issue","id":&task}))
+        .await;
+    assert!(recovered["workflow"]["pending"].is_null());
+    assert_eq!(recovered["fields"]["description"], "Continued by permalink");
+
+    // Comment targets and reply parents compare resolved identities on create and replay.
+    let root = f
+        .ok(
+            "add_comment",
+            json!({"target_type":"issue","target_id":module_link,"body":"Root note"}),
+        )
+        .await["comment"]
+        .clone();
+    let reply_request = json!({"request_id":id(),"target_type":"issue","target_id":module_link,
+        "parent_id":root["url"],"body":"Reply by permalink"});
+    let reply = f.ok("add_comment", reply_request.clone()).await;
+    assert_eq!(reply["comment"]["parent"]["id"], root["id"]);
+    assert_eq!(
+        f.ok("add_comment", reply_request).await["replayed"],
+        json!(true)
+    );
+
+    // A permalink document parent replays its resolved ownership without a duplicate document.
+    let document_request = json!({"request_id":id(),"issue_id":module_link,
+        "title":"Permalink guide","content":"Body"});
+    let document = f.ok("save_document", document_request.clone()).await;
+    assert_eq!(document["issue"]["id"], json!(module));
+    assert_eq!(
+        f.ok("save_document", document_request).await["id"],
+        document["id"]
+    );
+}
+
+/// check_only previews the exact effects of an allowed transition without writing, and the
+/// executing transition clears exactly the previewed fields; a blocked preview carries only
+/// conditions and no effect plan.
+#[tokio::test]
+async fn check_only_preview_matches_executed_effects() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, Some(&epic)).await;
+    f.mv(&epic, "In Progress").await;
+    f.mv(&module, "In Progress").await;
+    f.result("module", &module).await;
+    f.mv(&module, "In Review").await;
+    f.review(&module, "accepted").await;
+    f.ok(
+        "edit_module",
+        json!({"id":module,"fields":{"merge_report":"PR merged into main"}}),
+    )
+    .await;
+    f.mv(&module, "Done").await;
+
+    let before = f.db.lock().await.issues[&module].clone();
+    let preview = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"In Progress","actor_role":"orchestrator","check_only":true}),
+        )
+        .await;
+    assert_eq!(preview["allowed"], true);
+    assert_eq!(preview["status"], "In Progress");
+    let effects = &preview["effects"];
+    let clears: Vec<&str> = effects["clears"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    for field in ["result", "check_result", "merge_report", "pr_url"] {
+        assert!(clears.contains(&field), "{clears:?}");
+    }
+    assert_eq!(effects["round_changes"], true);
+    assert_eq!(effects["review_invalidated"], true);
+    assert_eq!(f.db.lock().await.issues[&module], before);
+
+    f.mv(&module, "In Progress").await;
+    let reopened = f
+        .ok("get_context", json!({"type":"issue","id":module}))
+        .await;
+    for field in ["result", "check_result", "merge_report", "pr_url"] {
+        assert!(reopened["fields"][field].is_null(), "{field}");
+    }
+    assert_eq!(reopened["workflow"]["round"], 2);
+    assert!(reopened["workflow"]["review"].is_null());
+
+    let blocked = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"Done","actor_role":"worker","check_only":true}),
+        )
+        .await;
+    assert_eq!(blocked["allowed"], false);
+    assert!(blocked["effects"].is_null());
+    assert!(!blocked["conditions"].as_array().unwrap().is_empty());
+    assert_eq!(
+        f.db.lock().await.issues[&module]["state"]["name"],
+        "In Progress"
+    );
+}
+
+/// Confirmed mutations carry post-write guidance from the same helper as reads, a lost
+/// response keeps its recovery advice with the exact retry tool, and the confirmed status
+/// never degrades into a failure.
+#[tokio::test]
+async fn acknowledgements_carry_next_action_guidance() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+    let module = f.work("module", &project, Some(&epic)).await;
+    f.mv(&epic, "In Progress").await;
+    f.mv(&module, "In Progress").await;
+    f.result("module", &module).await;
+    let moved = f
+        .ok(
+            "move_status",
+            json!({"id":module,"status":"In Review","actor_role":"orchestrator"}),
+        )
+        .await;
+    assert_eq!(moved["guidance"]["work_id"], json!(module));
+    assert_eq!(moved["guidance"]["stage"], "review");
+    assert_eq!(moved["guidance"]["next_action"]["kind"], "record_review");
+    assert_eq!(moved["guidance"]["next_action"]["tool"], "record_review");
+    assert_eq!(moved["guidance"]["next_action"]["actor_role"], "reviewer");
+
+    let edited = f
+        .ok(
+            "edit_module",
+            json!({"id":module,"title":"Refined direction"}),
+        )
+        .await;
+    assert_eq!(edited["guidance"]["stage"], "review");
+
+    f.db.lock().await.lose = Some("MUpdateIssue".into());
+    let request = json!({"request_id":id(),"id":module,"title":"Still reviewing"});
+    assert_eq!(
+        f.call("edit_module", request.clone()).await.status,
+        "outcome_unknown"
+    );
+    let context = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":module,"view":"lead"}),
+        )
+        .await;
+    assert_eq!(context["guidance"]["stage"], "recovery");
+    assert_eq!(
+        context["guidance"]["next_action"]["kind"],
+        "retry_operation"
+    );
+    assert_eq!(context["guidance"]["next_action"]["tool"], "edit_module");
+    let brief = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":module,"detail":"brief"}),
+        )
+        .await;
+    assert_eq!(brief["guidance"]["stage"], "recovery");
 }
 
 /// Duplicate transfers attachments with native provenance; lost responses recover without altering the original's record.

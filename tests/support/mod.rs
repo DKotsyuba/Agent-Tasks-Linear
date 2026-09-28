@@ -35,6 +35,8 @@ pub struct Database {
     pub lose: Option<String>,
     /// Override only the next created Comment payload body, leaving native storage intact.
     pub comment_response_body: Option<String>,
+    /// Override only the next returned ProjectUpdate payload body, leaving storage intact.
+    pub update_response_body: Option<String>,
     /// Return one successful issueUpdate payload without applying its fields.
     pub stale_update: bool,
     /// Serialize unordered list markers like Linear after issue description/comment writes.
@@ -122,7 +124,18 @@ async fn graphql(
             json!({"relations":issue_page(db.relations.values().filter(|r| r["issue"]["id"] == id).cloned().collect(),v)}),
         )),
         "QAttachmentById" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
-        "QDocument" => db.documents.get(id).cloned().map(|v| ("document", v)),
+        "QDocument" => db
+            .documents
+            .get(id)
+            .or_else(|| {
+                db.documents.values().find(|d| {
+                    d["url"]
+                        .as_str()
+                        .is_some_and(|url| url.rsplit('/').next() == Some(id))
+                })
+            })
+            .cloned()
+            .map(|v| ("document", v)),
         "QComment" => db.comments.get(id).cloned().map(|v| ("comment", v)),
         "QProjectUpdate" => db
             .project_updates
@@ -245,7 +258,7 @@ async fn graphql(
         )),
         "MCreateProject" => {
             let id = input["id"].as_str().unwrap();
-            let item = json!({"id":id,"name":input["name"],"content":input["content"],"url":format!("https://linear.app/project/{id}"),"archivedAt":null,"teams":page(input["teamIds"].as_array().unwrap().iter().map(|i|json!({"id":i})).collect())});
+            let item = json!({"id":id,"name":input["name"],"content":input["content"],"url":format!("https://linear.app/example/project/{id}"),"archivedAt":null,"teams":page(input["teamIds"].as_array().unwrap().iter().map(|i|json!({"id":i})).collect())});
             assert!(!db.projects.contains_key(id));
             db.projects.insert(id.into(), item.clone());
             Some(("projectCreate", json!({"success":true,"project":item})))
@@ -272,7 +285,7 @@ async fn graphql(
                 .iter()
                 .map(|i| db.labels[i.as_str().unwrap()].clone())
                 .collect();
-            let item = json!({"id":id,"identifier":format!("TEST-{}",db.issues.len()+1),"title":input["title"],"description":input["description"],"priority":input.get("priority").cloned().unwrap_or(json!(0)),"priorityLabel":match input["priority"].as_u64().unwrap_or(0){1=>"Urgent",2=>"High",3=>"Medium",4=>"Low",_=>"No priority"},"prioritySortOrder":-(db.issues.len() as i64),"team":{"id":input["teamId"]},"project":{"id":input["projectId"]},"parent":input.get("parentId").filter(|v|!v.is_null()).map(|id|json!({"id":id})),"state":state(input["stateId"].as_str().unwrap()),"url":format!("https://linear.app/issue/{id}"),"labels":page(labels),"archivedAt":null,"startedAt":null,"completedAt":null});
+            let item = json!({"id":id,"identifier":format!("TEST-{}",db.issues.len()+1),"title":input["title"],"description":input["description"],"priority":input.get("priority").cloned().unwrap_or(json!(0)),"priorityLabel":match input["priority"].as_u64().unwrap_or(0){1=>"Urgent",2=>"High",3=>"Medium",4=>"Low",_=>"No priority"},"prioritySortOrder":-(db.issues.len() as i64),"team":{"id":input["teamId"]},"project":{"id":input["projectId"]},"parent":input.get("parentId").filter(|v|!v.is_null()).map(|id|json!({"id":id})),"state":state(input["stateId"].as_str().unwrap()),"url":format!("https://linear.app/example/issue/{id}"),"labels":page(labels),"archivedAt":null,"startedAt":null,"completedAt":null});
             db.issues.insert(id.into(), item.clone());
             Some(("issueCreate", json!({"success":true,"issue":item})))
         }
@@ -369,7 +382,7 @@ async fn graphql(
         "MCreateDocument" => {
             let id = input["id"].as_str().unwrap();
             assert!(!db.documents.contains_key(id));
-            let item = json!({"id":id,"title":input["title"],"content":input["content"],"url":format!("https://linear.app/document/{id}"),"project":input.get("projectId").map(|id|json!({"id":id})),"issue":input.get("issueId").map(|id|json!({"id":id}))});
+            let item = json!({"id":id,"title":input["title"],"content":input["content"],"url":format!("https://linear.app/example/document/{id}"),"archivedAt":null,"project":input.get("projectId").map(|id|json!({"id":id})),"issue":input.get("issueId").map(|id|json!({"id":id}))});
             db.documents.insert(id.into(), item.clone());
             Some(("documentCreate", json!({"success":true,"document":item})))
         }
@@ -386,17 +399,22 @@ async fn graphql(
             assert!(db.projects.contains_key(project));
             assert!(!db.project_updates.contains_key(id));
             db.tick += 1;
+            let project_url = db.projects[project]["url"].as_str().unwrap().to_owned();
             let item = json!({
-                "id":id,"url":format!("https://linear.app/project/{project}/updates/{id}"),
+                "id":id,"url":format!("{project_url}/activity#project-update-{}", &id[..8]),
                 "body":input["body"],"health":input["health"],
                 "createdAt":format!("2026-09-25T00:00:{:02}Z",db.tick),
                 "updatedAt":format!("2026-09-25T00:00:{:02}Z",db.tick),
                 "archivedAt":null,"project":{"id":project},"user":{"id":"fixture","name":"Fixture"}
             });
             db.project_updates.insert(id.into(), item.clone());
+            let mut returned = item;
+            if let Some(body) = db.update_response_body.take() {
+                returned["body"] = json!(body);
+            }
             Some((
                 "projectUpdateCreate",
-                json!({"success":true,"projectUpdate":item}),
+                json!({"success":true,"projectUpdate":returned}),
             ))
         }
         "MUpdateProjectUpdate" => {

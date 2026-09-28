@@ -99,6 +99,7 @@ pub fn render_outcome(tool: &str, request: &Value, outcome: &Outcome) -> String 
 }
 
 /// Reject essential missing read fields before an otherwise empty success page can be emitted.
+/// An omitted `type` infers the same envelopes the resolver selected from a native URL.
 fn valid_success_shape(tool: &str, request: &Value, data: &Value) -> bool {
     match tool {
         "get_context" => match request["type"].as_str() {
@@ -106,7 +107,12 @@ fn valid_success_shape(tool: &str, request: &Value, data: &Value) -> bool {
             Some("project") => data["project"]["id"].is_string(),
             Some("project_update") => data["project_update"]["id"].is_string(),
             Some("issue") => data["issue"]["id"].is_string(),
-            _ => data["issue"]["id"].is_string() || data["id"].is_string(),
+            _ => {
+                data["issue"]["id"].is_string()
+                    || data["project"]["id"].is_string()
+                    || data["project_update"]["id"].is_string()
+                    || (data["id"].is_string() && data["content"].is_string())
+            }
         },
         "get_overview" => data["project_id"].is_string() && data["cursor"].is_string(),
         "list_items" | "search" => data["nodes"].is_array() && data["pageInfo"].is_object(),
@@ -147,6 +153,7 @@ fn presentation_fallback(tool: &str, request: &Value, outcome: &Outcome) -> Stri
     let kind = request["type"]
         .as_str()
         .or_else(|| request["target_type"].as_str())
+        .or_else(|| envelope_kind(&outcome.data))
         .unwrap_or_else(|| fallback_kind(tool));
     let request_id = request["request_id"].as_str().unwrap_or("");
     if matches!(outcome.status.as_str(), "ok" | "committed" | "noop") {
@@ -161,6 +168,13 @@ fn presentation_fallback(tool: &str, request: &Value, outcome: &Outcome) -> Stri
             outcome.data["code"].as_str().unwrap_or("TOOL_FAILED")
         )
     }
+}
+
+/// Infer the public entity type from a native success envelope before the tool default.
+fn envelope_kind(data: &Value) -> Option<&'static str> {
+    ["issue", "project", "project_update", "comment", "review"]
+        .into_iter()
+        .find(|key| data[*key].is_object())
 }
 
 /// Infer the public entity type for retry guidance when a mutation request has no type field.
@@ -220,6 +234,31 @@ fn ack_projection(tool: &str, request: &Value, data: &Value) -> Value {
 
 /// Select the requested entity before inspecting its native relationship objects.
 fn context_projection(request: &Value, data: &Value) -> Value {
+    if data["detail"] == "brief" {
+        // One compact current slice: state, assignment, results, handoff, document links,
+        // recovery payload and explicit routes to the complete content and archive.
+        let brief_item = if data["issue"].is_object() {
+            &data["issue"]
+        } else {
+            &data["project"]
+        };
+        let mut item = identity(brief_item);
+        item["status"] = brief_item["status"].clone();
+        item["kind"] = brief_item["kind"].clone();
+        let pending_call = data["workflow"]["pending"]["request"]
+            .as_object()
+            .map(|pending| {
+                serde_json::to_string_pretty(&json!({
+                    "tool":pending.get("tool"),"arguments":pending.get("arguments")}))
+                .expect("JSON values serialize")
+            });
+        return json!({"kind":"brief","item":item,"fields":data["fields"],
+            "guidance":data["guidance"],
+            "handoff":data["handoff"],"documents":data["documents"].as_array().cloned().unwrap_or_default(),
+            "routes":data["full_context"],"runtime":data["runtime"],"pending_call":pending_call,
+            "discrepancies":data["discrepancies"].as_array().cloned().unwrap_or_default(),
+            "transitions":data["transitions"].as_array().cloned().unwrap_or_default()});
+    }
     let kind = if request["type"] == "document" || data["id"].is_string() {
         "document"
     } else if data.get("issue").is_some() {
@@ -314,6 +353,7 @@ fn context_projection(request: &Value, data: &Value) -> Value {
         "documents":if kind=="project" {data["documents"].as_array().cloned().unwrap_or_default()} else {agent["documents"].as_array().cloned().unwrap_or_default()},
         "teams":item["teams"]["nodes"].as_array().cloned().unwrap_or_default(),
         "peers":data["priority_group"]["peers"].as_array().cloned().unwrap_or_default(),
+        "guidance":data["guidance"],
         "pending_call":pending_call,
         "discrepancies":data["discrepancies"].as_array().cloned().unwrap_or_default(),
         "transitions":data["transitions"].as_array().cloned().unwrap_or_default(),
@@ -331,6 +371,7 @@ fn overview_projection(data: &Value) -> Value {
     }).collect();
     json!({"project_id":data["project_id"],"project_title":data["project_title"],"project_url":data["project_url"],
         "cursor":data["cursor"],"baseline_expired":data["baseline_expired"],
+        "attention":data["attention"].as_array().cloned().unwrap_or_default(),
         "is_delta":data["changes"].is_array(),"changes":changes,
         "epics":data["active_epics"].as_array().cloned().unwrap_or_default(),
         "modules":data["standalone_modules"].as_array().cloned().unwrap_or_default(),
@@ -445,6 +486,201 @@ mod tests {
                 "{name}: {text}"
             );
         }
+    }
+
+    /// Acknowledgements and previews render guidance, effect plans and overview attention.
+    #[test]
+    fn acknowledgements_render_guidance_effects_and_attention() {
+        let acknowledged = render_outcome(
+            "move_status",
+            &json!({"id":"issue-1","request_id":"req-1","actor_role":"orchestrator"}),
+            &Outcome::ok(
+                json!({"issue":{"id":"issue-1","identifier":"MYT-1","title":"Module","url":"https://linear.app/issue-1","state":{"name":"In Review"}},
+                "guidance":{"work_id":"issue-1","stage":"review",
+                    "next_action":{"kind":"record_review","actor_role":"reviewer","tool":"record_review","target_status":null},
+                    "conditions":[]}}),
+            ),
+        );
+        assert!(acknowledged.contains("confirmed"), "{acknowledged}");
+        assert!(acknowledged.contains("Stage: review"));
+        assert!(acknowledged.contains("Next action: record_review"));
+        assert!(acknowledged.contains("Next tool: record_review"));
+        assert!(acknowledged.contains("Responsible role: reviewer"));
+
+        let previewed = render_outcome(
+            "move_status",
+            &json!({"id":"issue-1","request_id":"req-1","actor_role":"orchestrator","check_only":true}),
+            &Outcome::ok(json!({"allowed":true,"conditions":[],
+                "effects":{"clears":["result","pr_url"],"review_invalidated":true,
+                    "affected_integrations":["MYT-2"],"round_changes":true},
+                "status":"In Progress"})),
+        );
+        assert!(
+            previewed.contains("preview (check_only; no mutation)"),
+            "{previewed}"
+        );
+        assert!(previewed.contains("Clears: result, pr_url"));
+        assert!(previewed.contains("Review invalidated: true"));
+        assert!(previewed.contains("Affected integrations: MYT-2"));
+        assert!(previewed.contains("Round changes: true"));
+
+        let overview = render_outcome(
+            "get_overview",
+            &json!({"project_id":"project-1"}),
+            &Outcome::ok(
+                json!({"project_id":"project-1","project_title":"Product","project_url":"https://linear.app/project-1",
+                "cursor":"cursor-1","baseline_expired":false,
+                "attention":[{"id":"issue-1","identifier":"MYT-1","url":"https://linear.app/issue-1","status":"In Review","stage":"merge",
+                    "next_action":{"kind":"record_merge","actor_role":"orchestrator","tool":"edit_module","target_status":null},
+                    "conditions":[]}],
+                "active_epics":[],"standalone_modules":[],"atomics":[],"excluded":[],
+                "awaiting_review":[],"open_questions":[],"project_update_draft":"## Project overview"}),
+            ),
+        );
+        assert!(overview.contains("Attention: MYT-1"), "{overview}");
+        assert!(overview.contains("Stage: merge"));
+        assert!(overview.contains("Next action: record_merge"));
+        assert!(overview.contains("Next tool: edit_module"));
+    }
+
+    /// A brief read renders one compact current slice with handoff, routes and recovery payload.
+    #[test]
+    fn brief_context_renders_current_slice_and_routes() {
+        let brief = json!({"detail":"brief",
+            "issue":{"id":"issue-1","identifier":"MYT-1","title":"A task","url":"https://linear.app/issue-1",
+                "kind":"task","status":"In Progress","priority":0},
+            "fields":{"result":"Implemented","check_result":"All scenarios passed","lead":"codex:lead"},
+            "workflow":{"pending":{"request":{"tool":"edit_task","arguments":{"id":"issue-1"}}}},
+            "discrepancies":["A write is pending; retry the same request_id and arguments"],
+            "transitions":[{"status":"Done","allowed":false,"conditions":["Checks required"]}],
+            "handoff":{"current":{"id":"comment-1","url":"https://linear.app/issue-1#comment-aaaaaaaa",
+                "created_at":"2026-09-27T00:00:00Z","round":1,"revision":2,
+                "actor":"codex:lead","body":"Continue from the resolver"},
+                "revision_changed":true,"history":[]},
+            "documents":[{"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1","archived":false},
+                {"id":"doc-2","title":"Shared plan","url":"https://linear.app/doc-2","archived":false}],
+            "full_context":{"issue":"get_context type=issue id=issue-1",
+                "project_documents":"list_items type=document project_id=project-1",
+                "archive":"list_items type=document project_id=project-1 include_archived=true"},
+            "runtime":{"version":"0.3.0","tools":22}});
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"issue","id":"issue-1","detail":"brief"}),
+            &Outcome::ok(brief),
+        );
+        assert!(text.contains("Brief"));
+        assert!(text.contains("Status: In Progress"));
+        assert!(text.contains("Kind: task"));
+        assert!(text.contains("Lead: codex:lead"));
+        assert!(text.contains("## Reported checks"));
+        assert!(text.contains("Continue from the resolver"));
+        assert!(text.contains("Revision changed: true"));
+        // Brief lists only relevant own/ancestor links; archived documents stay behind the
+        // explicit archive route instead of being dumped into the compact slice.
+        assert!(text.contains("Document URL: https://linear.app/doc-2"));
+        assert!(!text.contains("Archived:"));
+        assert!(text.contains("\"tool\": \"edit_task\""));
+        assert!(text.contains("A write is pending"));
+        assert!(text.contains("get_context type=issue id=issue-1"));
+        assert!(text.contains("include_archived=true"));
+        assert!(text.contains("Server version: 0.3.0"));
+        assert!(text.contains("Tools: 22"));
+        assert!(!text.contains("Presentation failed"), "{text}");
+    }
+
+    /// A URL without a stated type infers its entity from the native envelope, so inferred
+    /// Project, ProjectUpdate, Document and Issue reads render their real content instead of
+    /// a generic fallback that relabels every target as an Issue.
+    #[test]
+    fn inferred_url_context_renders_every_entity_envelope() {
+        let by_url = |data: Value, url: &str| {
+            render_outcome(
+                "get_context",
+                &json!({"url":url,"request_id":"req-1"}),
+                &Outcome::ok(data),
+            )
+        };
+        let project = by_url(
+            json!({"project":{"id":"project-1","name":"Agent Tasks",
+                "url":"https://linear.app/example/project/agent-tasks",
+                "content":"## Принятые решения\nKeep the whole project body.",
+                "teams":{"nodes":[{"id":"team-1"}]}},
+                "documents":[{"id":"document-1","title":"Runbook",
+                "url":"https://linear.app/example/document/runbook"}]}),
+            "https://linear.app/example/project/agent-tasks",
+        );
+        assert!(project.starts_with("Project\n"), "{project}");
+        assert!(project.contains("ID: project-1"));
+        assert!(project.contains("Title: Agent Tasks"));
+        assert!(project.contains("Team ID: team-1"));
+        assert!(project.contains("Keep the whole project body."));
+        assert!(project.contains("Document URL: https://linear.app/example/document/runbook"));
+        assert!(!project.contains("Presentation failed"), "{project}");
+
+        let brief = by_url(
+            json!({"detail":"brief",
+                "project":{"id":"project-1","name":"Agent Tasks",
+                "url":"https://linear.app/example/project/agent-tasks"},
+                "documents":[{"id":"document-1","title":"Runbook",
+                "url":"https://linear.app/example/document/runbook","archived":false}],
+                "full_context":{"issue":null,
+                "project_documents":"list_items type=document project_id=project-1",
+                "archive":"list_items type=document project_id=project-1 include_archived=true"},
+                "runtime":{"version":"0.3.0","tools":22}}),
+            "https://linear.app/example/project/agent-tasks",
+        );
+        assert!(brief.starts_with("Brief"), "{brief}");
+        assert!(brief.contains("Title: Agent Tasks"));
+        assert!(brief.contains("include_archived=true"));
+
+        let update = by_url(
+            json!({"project_update":{"id":"c1c32217-1111-4111-8111-000000000001",
+                "url":"https://linear.app/example/project/proverka/activity#project-update-c1c32217",
+                "health":"atRisk","updatedAt":"2026-09-26T20:00:00Z"},
+                "activity":{"actor":"codex:lead","reason":"Blocked upstream",
+                "body":"The full update body."}}),
+            "https://linear.app/example/project/proverka/activity#project-update-c1c32217",
+        );
+        assert!(update.starts_with("Project update\n"), "{update}");
+        assert!(update.contains("Health: atRisk"));
+        assert!(update.contains("Updated at: 2026-09-26T20:00:00Z"));
+        assert!(update.contains("Reason: Blocked upstream"));
+        assert!(update.contains("The full update body."), "{update}");
+        assert!(!update.contains("Presentation failed"), "{update}");
+
+        let document = by_url(
+            json!({"id":"document-1","title":"Pilot plan",
+                "url":"https://linear.app/example/document/pilot",
+                "content":"Full document body with\nmultiple lines.",
+                "issue":{"id":"issue-parent"}}),
+            "https://linear.app/example/document/pilot",
+        );
+        assert!(document.starts_with("Document\n"), "{document}");
+        assert!(document.contains("Full document body with\nmultiple lines."));
+
+        let issue = by_url(
+            json!({"issue":{"id":"issue-1","identifier":"MYT-1","title":"Readable module",
+                "url":"https://linear.app/example/issue/MYT-1/readable-module",
+                "project":{"id":"project-1"},"team":{"id":"team-1"},
+                "parent":{"id":"module-1"},"state":{"name":"In Progress"}},
+                "fields":{},"transitions":[]}),
+            "https://linear.app/example/issue/MYT-1/readable-module",
+        );
+        assert!(issue.starts_with("Issue\n"), "{issue}");
+        assert!(issue.contains("Project ID: project-1"));
+        assert!(issue.contains("Team ID: team-1"));
+        assert!(issue.contains("Parent ID: module-1"));
+
+        // A failed projection still labels the inferred kind instead of defaulting to Issue.
+        let fallback = presentation_fallback(
+            "get_context",
+            &json!({"url":"https://linear.app/example/project/agent-tasks","request_id":"req-1"}),
+            &Outcome::ok(json!({"project":{"id":"project-1"}})),
+        );
+        assert!(
+            fallback.contains("target_type: project; target: project-1"),
+            "{fallback}"
+        );
     }
 
     /// Read paths preserve human prose, full requested documents and exact recovery arguments.

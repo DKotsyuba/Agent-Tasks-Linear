@@ -19,6 +19,7 @@ Project overview{{ "\n" }}{{ line("Project", project_title) }}{{ line("Project I
 {% for card in modules %}{{ module_card(card) }}{% endfor %}
 {% for atomic in atomics %}{{ heading("Atomic") }}{{ line("Identifier", atomic.identifier) }}{{ line("Title", atomic.title) }}{{ line("ID", atomic.id) }}{{ line("URL", atomic.url) }}{{ line("Status", atomic.status) }}{{ body("Result", atomic.result|default(none)) }}{{ body("Reported checks", atomic.reported_checks|default(none)) }}{% endfor %}
 {% for question in questions %}{{ body("Open question", question.body) }}{{ line("URL", question.url) }}{{ line("Recipient", question.recipient|default(none)) }}{% endfor %}
+{% for item in attention|default([]) %}{{ line("Attention", item.identifier) }}{{ line("URL", item.url) }}{{ line("Stage", item.stage) }}{% if item.next_action %}{{ line("Next action", item.next_action.kind) }}{{ line("Next tool", item.next_action.tool|default(none)) }}{{ line("Responsible role", item.next_action.actor_role) }}{% endif %}{% for condition in item.conditions|default([]) %}{{ line("Condition", condition) }}{% endfor %}{% endfor %}
 {% for item in awaiting_review %}{{ line("Awaiting review", item.identifier) }}{{ line("URL", item.url) }}{% endfor %}
 {% for item in excluded %}{{ line("Excluded", item.identifier) }}{{ line("URL", item.url) }}{{ line("Reason", item.reason|default(none)) }}{% endfor %}
 {% endif %}

@@ -3,7 +3,7 @@ use crate::{
     catalog::Catalog,
     linear::Linear,
     model::{Fault, Kind, Meta, Outcome, Pending, Result, Review, Status, Work, require, text},
-    records::{Store, child_id, markdown_equivalent, markdown_key, patch_description, read_fields},
+    records::{Store, child_id, markdown_equivalent, patch_description, read_fields},
     rules,
 };
 use serde_json::{Value, json};
@@ -132,13 +132,148 @@ impl Gateway {
     }
     /// Require an active native project and return its readable content.
     async fn project(&self, id: &str) -> Result<Value> {
-        let p = self.store.linear.object("QProject", "project", id).await?;
+        let p = self.project_object(id).await?;
         require(
             p["archivedAt"].is_null(),
             "ARCHIVED_ITEM",
             "Project is archived",
         )?;
         Ok(p)
+    }
+    /// Read one native Project by UUID or URL slug through the fixed Linear lookup and
+    /// verify the returned object is the requested one; no arbitrary URL is fetched.
+    async fn project_object(&self, id_or_slug: &str) -> Result<Value> {
+        let p = self
+            .store
+            .linear
+            .object("QProject", "project", id_or_slug)
+            .await?;
+        require(
+            p["id"] == id_or_slug
+                || p["url"]
+                    .as_str()
+                    .is_some_and(|url| url.rsplit('/').next() == Some(id_or_slug)),
+            "INVALID_LINK",
+            "Project permalink resolved to another item",
+        )?;
+        Ok(p)
+    }
+    /// Resolve one typed reference (UUID or supported native permalink) to its canonical
+    /// native UUID through fixed GraphQL lookups, verifying entity kind and returned
+    /// identity within the authenticated workspace. Plain UUIDs pass through with their
+    /// type checked by the later native lookup. Comment permalinks resolve through
+    /// `comment_id`. `request_id`, `team_id`, Git hashes and stored artifact or repository
+    /// URLs are never resolved.
+    async fn resolve(&self, expected: &str, reference: &str) -> Result<String> {
+        match crate::context::parse_reference(reference)? {
+            crate::context::Reference::Uuid(id) => Ok(id),
+            crate::context::Reference::Issue {
+                identifier,
+                comment: None,
+            } => {
+                require(
+                    expected == "issue",
+                    "INVALID_LINK",
+                    "This reference field needs a native Linear Issue permalink",
+                )?;
+                let issue = self
+                    .store
+                    .linear
+                    .object("QIssue", "issue", &identifier)
+                    .await?;
+                require(
+                    issue["id"] == identifier || issue["identifier"] == identifier,
+                    "INVALID_LINK",
+                    "Issue permalink resolved to another item",
+                )?;
+                Ok(issue["id"].as_str().unwrap_or_default().to_owned())
+            }
+            crate::context::Reference::Project {
+                slug,
+                comment: None,
+            } => {
+                require(
+                    expected == "project",
+                    "INVALID_LINK",
+                    "This reference field needs a native Linear Project permalink",
+                )?;
+                Ok(self.project_object(&slug).await?["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned())
+            }
+            crate::context::Reference::Document { slug } => {
+                require(
+                    expected == "document",
+                    "INVALID_LINK",
+                    "This reference field needs a native Linear Document permalink",
+                )?;
+                let document = self
+                    .store
+                    .linear
+                    .object("QDocument", "document", &slug)
+                    .await?;
+                require(
+                    document["id"] == slug
+                        || document["url"]
+                            .as_str()
+                            .is_some_and(|url| url.rsplit('/').next() == Some(slug.as_str())),
+                    "INVALID_LINK",
+                    "Document permalink resolved to another item",
+                )?;
+                Ok(document["id"].as_str().unwrap_or_default().to_owned())
+            }
+            crate::context::Reference::ProjectUpdate {
+                project_slug,
+                short,
+                comment: None,
+            } => {
+                require(
+                    expected == "project_update",
+                    "INVALID_LINK",
+                    "This reference field needs a native Linear ProjectUpdate permalink",
+                )?;
+                self.project_update_id(&project_slug, &short).await
+            }
+            _ => Err(Fault::new(
+                "INVALID_LINK",
+                "Comment permalinks resolve only Comment references",
+            )),
+        }
+    }
+    /// Resolve one observed ProjectUpdate permalink to its native UUID inside the link's own
+    /// Project using the bounded exact-identity fallback. Unknown tokens, ambiguous short
+    /// tokens and exhausted pagination fail explicitly; no workspace-wide title scan runs.
+    async fn project_update_id(&self, project_slug: &str, short: &str) -> Result<String> {
+        let project = self.project_object(project_slug).await?;
+        let updates = self
+            .store
+            .pages(
+                "QProjectUpdates",
+                "projectUpdates",
+                json!({"filter":{"project":{"id":{"eq":project["id"]}}},"includeArchived":true}),
+            )
+            .await?;
+        let matches: Vec<_> = updates
+            .iter()
+            .filter(|update| {
+                update["id"]
+                    .as_str()
+                    .and_then(|id| id.get(..8))
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(short))
+            })
+            .collect();
+        require(
+            !matches.is_empty(),
+            "RECORD_MISSING",
+            "ProjectUpdate permalink target was not found",
+        )?;
+        require(
+            matches.len() == 1,
+            "INVALID_LINK",
+            "ProjectUpdate short token is ambiguous",
+        )?;
+        Ok(matches[0]["id"].as_str().unwrap_or_default().to_owned())
     }
     /// Verify a team's native automation cannot cascade parent/child statuses, then resolve existing states.
     async fn states(&self, team: &str) -> Result<Vec<Value>> {
@@ -219,7 +354,7 @@ impl Gateway {
         let project = if let Some(p) = self.store.optional("QProject", "project", id).await? {
             require(
                 p["name"] == title
-                    && markdown_key(p["content"].as_str().unwrap_or("")) == markdown_key(&content),
+                    && markdown_equivalent(&content, p["content"].as_str().unwrap_or("")),
                 "REQUEST_CONFLICT",
                 "Existing Project differs from this create request; edit it explicitly",
             )?;
@@ -266,8 +401,8 @@ impl Gateway {
     /// Null removes either repository field; supplied paths must be existing local Git checkouts.
     /// Returns the native project or a validation/API fault without changing work statuses.
     async fn edit_project(&self, a: &Value) -> Result<Value> {
-        let id = text(a, "id")?;
-        let p = self.project(id).await?;
+        let id = self.resolve("project", text(a, "id")?).await?;
+        let p = self.project(&id).await?;
         let mut input = json!({});
         if let Some(v) = a.get("title") {
             input["name"] = v.clone();
@@ -305,8 +440,8 @@ impl Gateway {
     /// New updates use request_id as native ID; edits compare expected_updated_at before writing,
     /// and identical native content makes a lost response replay safe without a second state store.
     async fn save_project_update(&self, a: &Value) -> Result<Value> {
-        let project_id = text(a, "project_id")?;
-        self.project(project_id).await?;
+        let project_id = self.resolve("project", text(a, "project_id")?).await?;
+        self.project(&project_id).await?;
         let health = text(a, "health")?;
         let actor = text(a, "actor")?;
         let reason = text(a, "reason")?;
@@ -317,18 +452,18 @@ impl Gateway {
             "Edits need an explicit body so the same request remains replayable",
         )?;
         let id = if editing {
-            text(a, "id")?
+            self.resolve("project_update", text(a, "id")?).await?
         } else {
             require(
                 a.get("expected_updated_at").is_none(),
                 "INVALID_INPUT",
                 "Creation has no prior update timestamp",
             )?;
-            text(a, "request_id")?
+            text(a, "request_id")?.to_owned()
         };
         let existing = self
             .store
-            .optional("QProjectUpdate", "projectUpdate", id)
+            .optional("QProjectUpdate", "projectUpdate", &id)
             .await?;
         if !editing
             && a["body"].is_null()
@@ -348,7 +483,7 @@ impl Gateway {
             );
         }
         let generated = if a["body"].is_null() {
-            Some(self.overview_data(project_id).await?.0)
+            Some(self.overview_data(&project_id).await?.0)
         } else {
             None
         };
@@ -368,7 +503,7 @@ impl Gateway {
                 "ProjectUpdate belongs to another Project",
             )?;
             if current["health"] == health
-                && markdown_key(current["body"].as_str().unwrap_or("")) == markdown_key(&body)
+                && markdown_equivalent(&body, current["body"].as_str().unwrap_or(""))
             {
                 return Ok(json!({
                     "project_update":current,
@@ -413,7 +548,7 @@ impl Gateway {
             native["id"] == id
                 && native["project"]["id"] == project_id
                 && native["health"] == health
-                && markdown_key(native["body"].as_str().unwrap_or("")) == markdown_key(&body),
+                && markdown_equivalent(&body, native["body"].as_str().unwrap_or("")),
             "NATIVE_STATE_MISMATCH",
             "Linear did not confirm ProjectUpdate content, health and ownership",
         )
@@ -425,16 +560,34 @@ impl Gateway {
         }))
     }
 
+    /// Resolve typed permalink field values to canonical UUIDs before validation and storage:
+    /// `after_epic` (an Epic Issue) and each `integration_modules` entry (a Module Issue).
+    /// All other field values pass through unchanged; the caller keeps the original request
+    /// arguments for replay equality, so retries resolve identically.
+    async fn resolve_fields(&self, fields: Value) -> Result<Value> {
+        let mut fields = fields;
+        if let Some(after_epic) = fields["after_epic"].as_str() {
+            fields["after_epic"] = json!(self.resolve("issue", after_epic).await?);
+        }
+        if let Some(modules) = fields["integration_modules"].as_array() {
+            let mut resolved = Vec::with_capacity(modules.len());
+            for module in modules {
+                resolved.push(self.resolve("issue", module.as_str().unwrap()).await?);
+            }
+            fields["integration_modules"] = json!(resolved);
+        }
+        Ok(fields)
+    }
     /// Create a native issue, then its small attachment. Same-ID retries resume incomplete creation.
     /// Modules and standalone code Atomics inherit omitted repository fields from Project;
     /// legacy repository prose is not inherited as a URL. Tasks use their Module's checkout.
     async fn create_work(&self, kind: Kind, a: &Value) -> Result<Value> {
         let id = text(a, "request_id")?;
-        let project = text(a, "project_id")?;
+        let project = self.resolve("project", text(a, "project_id")?).await?;
         let team = text(a, "team_id")?;
         let title = kind.title(text(a, "title")?)?;
         let priority = a.get("priority").and_then(Value::as_u64).unwrap_or(0);
-        let p = self.project(project).await?;
+        let p = self.project(&project).await?;
         require(
             p["teams"]["nodes"]
                 .as_array()
@@ -458,10 +611,22 @@ impl Gateway {
             )?;
             self.register_child(meta.parent_id.as_deref(), id, true)
                 .await?;
-            return Ok(json!({"issue":existing,"replayed":true}));
+            let graph = self.store.graph(&meta.project_id).await?;
+            return Ok(self
+                .with_guidance(
+                    json!({"issue":existing,"replayed":true}),
+                    id,
+                    &graph,
+                    "orchestrator",
+                )
+                .await);
         }
-        let graph = self.store.graph(project).await?;
-        let parent = a["parent_id"].as_str();
+        let graph = self.store.graph(&project).await?;
+        let parent = match a["parent_id"].as_str() {
+            Some(reference) => Some(self.resolve("issue", reference).await?),
+            None => None,
+        };
+        let parent = parent.as_deref();
         rules::enforce(rules::hierarchy(kind, parent, &graph, None))?;
         if let Some(id) = parent {
             let parent = rules::find(&graph, id).unwrap();
@@ -485,7 +650,9 @@ impl Gateway {
         };
         let state = Self::state_id(&states, initial)?;
         let label = self.label(team, kind).await?;
-        let mut fields = a.get("fields").cloned().unwrap_or(json!({}));
+        let mut fields = self
+            .resolve_fields(a.get("fields").cloned().unwrap_or(json!({})))
+            .await?;
         if fields.get("work_type").is_none() {
             fields["work_type"] = json!(if kind == Kind::Epic {
                 "non_code"
@@ -525,8 +692,10 @@ impl Gateway {
                     && existing["team"]["id"] == team
                     && existing["title"] == title
                     && native_priority(&existing["priority"]) == Some(priority)
-                    && markdown_key(existing["description"].as_str().unwrap_or(""))
-                        == markdown_key(&description)
+                    && markdown_equivalent(
+                        &description,
+                        existing["description"].as_str().unwrap_or(""),
+                    )
                     && existing["parent"]["id"].as_str() == parent
                     && existing["state"]["id"] == state,
                 "REQUEST_CONFLICT",
@@ -534,7 +703,7 @@ impl Gateway {
             )?;
             existing
         } else {
-            self.store.linear.call("MCreateIssue",json!({"input":{"id":id,"title":title,"priority":priority,"description":description,"projectId":project,"teamId":team,"parentId":a.get("parent_id").unwrap_or(&Value::Null),"stateId":state,"labelIds":[label]}})).await?["issueCreate"]["issue"].clone()
+            self.store.linear.call("MCreateIssue",json!({"input":{"id":id,"title":title,"priority":priority,"description":description,"projectId":project,"teamId":team,"parentId":parent.map(Value::from).unwrap_or(Value::Null),"stateId":state,"labelIds":[label]}})).await?["issueCreate"]["issue"].clone()
         };
         require(
             native["title"] == title && native_priority(&native["priority"]) == Some(priority),
@@ -550,7 +719,7 @@ impl Gateway {
             schema: 2,
             kind,
             fields,
-            project_id: project.into(),
+            project_id: project,
             parent_id: parent.map(str::to_owned),
             children: vec![],
             status: initial,
@@ -573,7 +742,14 @@ impl Gateway {
         self.register_child(parent, id, true)
             .await
             .map_err(Fault::uncertain)?;
-        Ok(json!({"issue":native,"kind":kind}))
+        Ok(self
+            .with_guidance(
+                json!({"issue":native,"kind":kind}),
+                id,
+                &graph,
+                "orchestrator",
+            )
+            .await)
     }
     /// Record a known native child on its parent, preserving other state and refusing pending parent writes.
     /// Repeated registration/removal is a no-op; it changes no native relationship or status.
@@ -659,6 +835,40 @@ impl Gateway {
     /// Normalize a mutation request for replay, including its public tool identity.
     fn request(name: &str, a: &Value) -> Value {
         json!({"tool":name,"arguments":a})
+    }
+    /// Attach post-write guidance to a confirmed work-item outcome, computed from the known
+    /// post-write state: the freshly read item replaces its stale copy in the loaded graph.
+    /// No mandatory full graph re-fetch runs after a confirmed write, and a failed post-write
+    /// read never turns the confirmed mutation into a failure — the advice degrades to one
+    /// refresh_context action instead of replaying stale pre-write advice.
+    /// ponytail: only the written item is replaced in the pre-write graph; a fresh complete
+    /// graph is read by get_context when exact breadth matters.
+    async fn with_guidance(
+        &self,
+        mut outcome: Value,
+        work_id: &str,
+        graph: &[Work],
+        role: &str,
+    ) -> Value {
+        outcome["guidance"] = match self.store.work(work_id).await {
+            Ok(fresh) => {
+                let updated: Vec<Work> = graph
+                    .iter()
+                    .map(|item| {
+                        if item.id() == work_id {
+                            fresh.clone()
+                        } else {
+                            item.clone()
+                        }
+                    })
+                    .collect();
+                crate::guidance::guidance(&fresh, &updated)
+            }
+            Err(_) => json!({"work_id":work_id,"stage":"recovery",
+                "next_action":{"kind":"refresh_context","actor_role":role,"tool":"get_context","target_status":null},
+                "conditions":["Post-write state could not be re-read; call get_context"]}),
+        };
+        outcome
     }
     /// Continue only the identical prepared write; another request must resolve the uncertainty first.
     async fn resume(&self, w: &Work, request: &Value) -> Result<Option<Value>> {
@@ -865,7 +1075,9 @@ impl Gateway {
     /// Empty or title/priority-only edits preserve native descriptions, stored fields and review identity in any status, without validating or adopting legacy content; requirement/parent edits validate content, invalidate review and require reopening reviewed work, except the existing Module merge-report allowance. Returns the confirmed issue outcome or a safe conflict/write fault.
     /// Explicit repository_path edits validate the local Git checkout before preparing a write.
     async fn edit_work(&self, kind: Kind, a: &Value) -> Result<Value> {
-        let (w, graph) = self.loaded(text(a, "id")?).await?;
+        let (w, graph) = self
+            .loaded(&self.resolve("issue", text(a, "id")?).await?)
+            .await?;
         let m = w.managed()?;
         require(
             m.kind == kind,
@@ -874,16 +1086,24 @@ impl Gateway {
         )?;
         let request = Self::request(&format!("edit_{}", kind.label().to_lowercase()), a);
         if let Some(v) = self.resume(&w, &request).await? {
-            return Ok(v);
+            return Ok(self.with_guidance(v, w.id(), &graph, "worker").await);
         }
         let mut errors = rules::discrepancies(&w, &graph);
         errors.retain(|e| !e.starts_with("Description changed"));
         rules::enforce(errors)?;
         let mut next = m.clone();
-        let patch = a.get("fields").cloned().unwrap_or(json!({}));
-        let presentation_only = patch.as_object().is_some_and(|o| o.is_empty())
-            && a.get("parent_id")
-                .is_none_or(|v| v.as_str() == m.parent_id.as_deref());
+        let patch = self
+            .resolve_fields(a.get("fields").cloned().unwrap_or(json!({})))
+            .await?;
+        // An absent parent edits nothing; an explicit null detaches; a reference resolves first.
+        let parent_supplied = a.get("parent_id").is_some();
+        let resolved_parent = match a.get("parent_id") {
+            Some(Value::Null) | None => None,
+            Some(value) => Some(self.resolve("issue", value.as_str().unwrap()).await?),
+        };
+        let parent_changed =
+            parent_supplied && resolved_parent.as_deref() != m.parent_id.as_deref();
+        let presentation_only = patch.as_object().is_some_and(|o| o.is_empty()) && !parent_changed;
         let mut fields = if w.native["description"] == m.description || presentation_only {
             m.fields.clone()
         } else {
@@ -895,19 +1115,17 @@ impl Gateway {
                 .is_some_and(|o| !o.is_empty() && o.keys().all(|k| k == "merge_report"))
             && a.get("title").is_none()
             && a.get("priority").is_none()
-            && a.get("parent_id").is_none()
+            && !parent_supplied
             && w.native["description"] == m.description;
-        let content_edit = !patch.as_object().unwrap().is_empty()
-            || a.get("parent_id")
-                .is_some_and(|v| v.as_str() != m.parent_id.as_deref());
+        let content_edit = !patch.as_object().unwrap().is_empty() || parent_changed;
         require(
             !matches!(m.status, Status::InReview | Status::Done) || merge_only || !content_edit,
             "REOPEN_REQUIRED",
             "Reopen reviewed work before editing its requirements or result",
         )?;
-        if a.get("parent_id").is_some() {
-            let parent = a["parent_id"].as_str();
-            if parent != m.parent_id.as_deref() {
+        if parent_supplied {
+            let parent = resolved_parent.as_deref();
+            if parent_changed {
                 require(
                     m.round == 0,
                     "REOPEN_REQUIRED",
@@ -972,15 +1190,18 @@ impl Gateway {
         if content_edit {
             input["description"] = json!(next.description.clone());
         }
-        if a.get("parent_id").is_some() {
-            input["parentId"] = a["parent_id"].clone();
+        if parent_supplied {
+            input["parentId"] = json!(resolved_parent);
         }
         require(
             !input.as_object().unwrap().is_empty(),
             "INVALID_INPUT",
             "No issue fields to edit",
         )?;
-        self.update(&w, next, input, request).await
+        let confirmed = self.update(&w, next, input, request).await?;
+        Ok(self
+            .with_guidance(confirmed, w.id(), &graph, "worker")
+            .await)
     }
     /// Publish each persisted current-round Git report once through the normal comment writer.
     /// Deterministic native IDs make lost comment replies recoverable without rereading Git.
@@ -1024,14 +1245,16 @@ impl Gateway {
     /// Journals persisted reports through native comments, then returns reports and permalinks
     /// without changing status; uncertain native outcomes retry from the same snapshot.
     async fn record_commits(&self, a: &Value) -> Result<Value> {
-        let (w, graph) = self.loaded(text(a, "work_id")?).await?;
+        let (w, graph) = self
+            .loaded(&self.resolve("issue", text(a, "work_id")?).await?)
+            .await?;
         let request = Self::request("record_commits", a);
         if let Some(mut outcome) = self.resume(&w, &request).await? {
             let restored = self.store.work(w.id()).await.map_err(Fault::uncertain)?;
             let reports: Vec<_> = restored.managed()?.current_git_reports().cloned().collect();
             outcome["journal"] = json!(self.ensure_commit_comments(w.id(), &reports).await?);
             outcome["git_reports"] = json!(reports);
-            return Ok(outcome);
+            return Ok(self.with_guidance(outcome, w.id(), &graph, "worker").await);
         }
         let m = w.managed()?;
         require(
@@ -1124,29 +1347,45 @@ impl Gateway {
         let mut outcome = self.update(&w, next, input, request).await?;
         outcome["journal"] = json!(self.ensure_commit_comments(w.id(), &reports).await?);
         outcome["git_reports"] = json!(reports);
-        Ok(outcome)
+        Ok(self.with_guidance(outcome, w.id(), &graph, "worker").await)
     }
 
     /// Guard and explicitly move work; check_only never persists intent, labels or changes.
     /// Module submission stores the same derived current-child result used by context/readiness,
     /// preserving a real PR requirement and binding review to the resulting content revision.
     async fn move_status(&self, a: &Value) -> Result<Value> {
-        let (w, graph) = self.loaded(text(a, "id")?).await?;
+        let (w, graph) = self
+            .loaded(&self.resolve("issue", text(a, "id")?).await?)
+            .await?;
         let target: Status = serde_json::from_value(a["status"].clone()).unwrap();
         let request = Self::request("move_status", a);
         if a["check_only"] != true
             && let Some(v) = self.resume(&w, &request).await?
         {
-            return Ok(v);
+            return Ok(self
+                .with_guidance(v, w.id(), &graph, text(a, "actor_role")?)
+                .await);
         }
         let errors = rules::transition(&w, &graph, target, text(a, "actor_role")?);
         if a["check_only"] == true {
-            return Ok(json!({"allowed":errors.is_empty(),"conditions":errors,"status":target}));
+            // The preview shares the exact guards and, when allowed, the exact effect plan
+            // the executing transition follows; it performs no write.
+            let mut preview =
+                crate::guidance::preview_effects(&w, &graph, target, text(a, "actor_role")?);
+            preview["status"] = json!(target);
+            return Ok(preview);
         }
         rules::enforce(errors)?;
         let m = w.managed()?;
         if w.status()? == target && m.status == target && !rules::restart_integration(&w, &graph) {
-            return Ok(json!({"issue":w.native,"unchanged":true}));
+            return Ok(self
+                .with_guidance(
+                    json!({"issue":w.native,"unchanged":true}),
+                    w.id(),
+                    &graph,
+                    text(a, "actor_role")?,
+                )
+                .await);
         }
         if target == Status::Duplicate {
             self.duplicate_target(&w, &m.fields).await?;
@@ -1208,33 +1447,44 @@ impl Gateway {
                     .collect();
             }
         }
-        self.update(&w, next, input, request).await
+        let confirmed = self.update(&w, next, input, request).await?;
+        Ok(self
+            .with_guidance(confirmed, w.id(), &graph, text(a, "actor_role")?)
+            .await)
     }
 
     /// Create a comment with caller-allocated native ID, checking target and reply parent first,
     /// then confirming returned target, parent and normalized body. Identical replay returns its permalink.
     async fn add_comment(&self, a: &Value) -> Result<Value> {
         let id = text(a, "request_id")?;
-        let target_id = text(a, "target_id")?;
+        let target_id = self
+            .resolve(text(a, "target_type")?, text(a, "target_id")?)
+            .await?;
         let target_type = text(a, "target_type")?;
         match target_type {
             "issue" => {
                 self.store
                     .linear
-                    .object("QIssue", "issue", target_id)
+                    .object("QIssue", "issue", &target_id)
                     .await?;
             }
             "project" => {
-                self.project(target_id).await?;
+                self.project(&target_id).await?;
             }
             _ => {
                 self.store
                     .linear
-                    .object("QProjectUpdate", "projectUpdate", target_id)
+                    .object("QProjectUpdate", "projectUpdate", &target_id)
                     .await?;
             }
         }
-        if let Some(parent_id) = a["parent_id"].as_str() {
+        // A reply parent resolves once; replay and confirmation compare this identity, not the
+        // raw reference, so permalink arguments replay exactly like UUID arguments.
+        let resolved_parent = match a["parent_id"].as_str() {
+            Some(supplied) => Some(self.comment_id(supplied).await?),
+            None => None,
+        };
+        if let Some(parent_id) = resolved_parent.as_deref() {
             let parent = self
                 .store
                 .linear
@@ -1242,7 +1492,7 @@ impl Gateway {
                 .await?;
             require(
                 parent["parent"].is_null()
-                    && crate::activity::target(&parent)? == (target_type, target_id),
+                    && crate::activity::target(&parent)? == (target_type, target_id.as_str()),
                 "INVALID_PARENT",
                 "Reply parent must be a root comment on the same target",
             )?;
@@ -1256,18 +1506,53 @@ impl Gateway {
             "INVALID_INPUT",
             "Questions require a recipient",
         )?;
+        // A handoff checkpoint targets one managed Issue and stamps the work record's current
+        // round/revision itself; the caller never supplies those values.
+        let mut render_meta = a.clone();
+        if kind == "handoff" {
+            require(
+                target_type == "issue",
+                "INVALID_INPUT",
+                "Handoff checkpoints target a managed Issue",
+            )?;
+            let meta = self.store.meta(&target_id).await?.ok_or_else(|| {
+                Fault::new(
+                    "UNMANAGED_ITEM",
+                    "Handoff checkpoints target a managed Issue",
+                )
+            })?;
+            render_meta["round"] = json!(meta.round);
+            render_meta["revision"] = json!(meta.revision);
+        }
         let body = crate::activity::render(
             kind,
             a["role"].as_str().unwrap_or("participant"),
             text(a, "actor")?,
             text(a, "body")?,
-            a,
+            &render_meta,
         )?;
         if let Some(comment) = self.store.optional("QComment", "comment", id).await? {
+            // A handoff created in an older round/revision replays against its own stamped
+            // header, so the original comment is returned unchanged after later rounds.
+            let comparison = if kind == "handoff" {
+                let record = crate::activity::record(&comment, None)?;
+                let mut stamped = render_meta.clone();
+                stamped["round"] = json!(record.round);
+                stamped["revision"] = json!(record.revision);
+                crate::activity::render(
+                    kind,
+                    a["role"].as_str().unwrap_or("participant"),
+                    text(a, "actor")?,
+                    text(a, "body")?,
+                    &stamped,
+                )?
+            } else {
+                body.clone()
+            };
             require(
-                crate::activity::target(&comment)? == (target_type, target_id)
-                    && comment["parent"]["id"] == a["parent_id"]
-                    && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(&body),
+                crate::activity::target(&comment)? == (target_type, target_id.as_str())
+                    && comment["parent"]["id"] == json!(resolved_parent)
+                    && markdown_equivalent(&comparison, comment["body"].as_str().unwrap_or("")),
                 "REQUEST_CONFLICT",
                 "Comment request_id already names different content",
             )?;
@@ -1280,7 +1565,7 @@ impl Gateway {
             _ => "projectUpdateId",
         };
         input[key] = json!(target_id);
-        if let Some(parent_id) = a["parent_id"].as_str() {
+        if let Some(parent_id) = resolved_parent.as_ref() {
             input["parentId"] = json!(parent_id);
         }
         let comment = self
@@ -1291,9 +1576,9 @@ impl Gateway {
             .clone();
         require(
             crate::activity::target(&comment).map_err(Fault::uncertain)?
-                == (target_type, target_id)
-                && comment["parent"]["id"] == a["parent_id"]
-                && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(&body),
+                == (target_type, target_id.as_str())
+                && comment["parent"]["id"] == json!(resolved_parent)
+                && markdown_equivalent(&body, comment["body"].as_str().unwrap_or("")),
             "NATIVE_STATE_MISMATCH",
             "Linear did not confirm comment content and ownership",
         )
@@ -1301,100 +1586,71 @@ impl Gateway {
         Ok(json!({"comment":comment,"replayed":false}))
     }
 
+    /// Resolve one Comment reference (bare UUID or observed native permalink) to its comment
+    /// UUID. ProjectUpdate short tokens resolve within the URL's own Project; the comment is
+    /// then matched by its exact full native URL. Missing targets, ambiguity and unsupported
+    /// shapes fail explicitly.
+    /// ponytail: unscoped links scan at most 20,000 comments; add a native hash lookup if that ceiling matters.
+    async fn comment_id(&self, supplied: &str) -> Result<String> {
+        match crate::context::parse_reference(supplied)? {
+            crate::context::Reference::Uuid(id) => Ok(id),
+            reference => {
+                require(
+                    reference.comment(),
+                    "INVALID_LINK",
+                    "Expected a native Linear comment permalink",
+                )?;
+                let mut filter = json!({});
+                match &reference {
+                    crate::context::Reference::ProjectUpdate {
+                        project_slug,
+                        short,
+                        ..
+                    } => {
+                        let update_id = self.project_update_id(project_slug, short).await?;
+                        filter["projectUpdate"] = json!({"id":{"eq":update_id}});
+                    }
+                    crate::context::Reference::Issue { identifier, .. } => {
+                        let issue = self
+                            .store
+                            .linear
+                            .object("QIssue", "issue", identifier)
+                            .await?;
+                        filter["issue"] = json!({"id":{"eq":issue["id"]}});
+                    }
+                    crate::context::Reference::Project { slug, .. } => {
+                        let project = self.project_object(slug).await?;
+                        filter["project"] = json!({"id":{"eq":project["id"]}});
+                    }
+                    _ => unreachable!("comment references carry a fragment"),
+                }
+                let comments = self
+                    .store
+                    .pages(
+                        "QComments",
+                        "comments",
+                        json!({"filter":filter,"includeArchived":true}),
+                    )
+                    .await?;
+                comments
+                    .into_iter()
+                    .find(|c| {
+                        c["url"]
+                            .as_str()
+                            .is_some_and(|url| crate::context::same_reference_url(url, supplied))
+                    })
+                    .and_then(|c| c["id"].as_str().map(str::to_owned))
+                    .ok_or_else(|| {
+                        Fault::new("RECORD_MISSING", "Native comment permalink was not found")
+                    })
+            }
+        }
+    }
+
     /// Read a comment by UUID or exact native permalink. Resolve ProjectUpdate short tokens
     /// within the URL's Project before matching the full returned URL and reading one reply page.
-    /// ponytail: unscoped links scan at most 20,000 comments; add a native hash lookup if that ceiling matters.
     async fn get_comment(&self, a: &Value) -> Result<Value> {
-        let supplied = text(a, "id")?;
-        let id = if uuid::Uuid::parse_str(supplied).is_ok() {
-            supplied.to_owned()
-        } else {
-            let url = reqwest::Url::parse(supplied)
-                .map_err(|_| Fault::new("INVALID_LINK", "Expected a native Linear comment URL"))?;
-            let fragment = url.fragment().unwrap_or("");
-            let (update_short, comment_part) =
-                if let Some((prefix, suffix)) = fragment.split_once('&') {
-                    (prefix.strip_prefix("project-update-"), suffix)
-                } else {
-                    (None, fragment)
-                };
-            let hash = comment_part.strip_prefix("comment-").unwrap_or("");
-            require(
-                url.scheme() == "https"
-                    && url.host_str() == Some("linear.app")
-                    && (!fragment.contains('&')
-                        || update_short.is_some_and(|id| {
-                            id.len() == 8 && id.bytes().all(|b| b.is_ascii_hexdigit())
-                        }))
-                    && hash.len() == 8
-                    && hash.bytes().all(|b| b.is_ascii_hexdigit()),
-                "INVALID_LINK",
-                "Expected an observed Linear comment permalink",
-            )?;
-            let segments: Vec<_> = url.path_segments().map(|s| s.collect()).unwrap_or_default();
-            let mut filter = json!({});
-            if let Some(update_short) = update_short {
-                let project_slug = segments
-                    .windows(2)
-                    .find_map(|pair| (pair[0] == "project").then_some(pair[1]))
-                    .ok_or_else(|| {
-                        Fault::new("INVALID_LINK", "ProjectUpdate link has no Project")
-                    })?;
-                let project = self
-                    .store
-                    .linear
-                    .object("QProject", "project", project_slug)
-                    .await?;
-                let updates = self.store.pages(
-                    "QProjectUpdates", "projectUpdates",
-                    json!({"filter":{"project":{"id":{"eq":project["id"]}}},"includeArchived":true}),
-                ).await?;
-                let matches: Vec<_> = updates
-                    .iter()
-                    .filter(|update| {
-                        update["id"]
-                            .as_str()
-                            .and_then(|id| id.get(..8))
-                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(update_short))
-                    })
-                    .collect();
-                require(
-                    !matches.is_empty(),
-                    "RECORD_MISSING",
-                    "ProjectUpdate link target was not found",
-                )?;
-                require(
-                    matches.len() == 1,
-                    "INVALID_LINK",
-                    "ProjectUpdate short token is ambiguous",
-                )?;
-                filter["projectUpdate"] = json!({"id":{"eq":matches[0]["id"]}});
-            } else if let Some(pos) = segments.iter().position(|s| *s == "issue")
-                && let Some(identifier) = segments.get(pos + 1)
-            {
-                let issue = self
-                    .store
-                    .linear
-                    .object("QIssue", "issue", identifier)
-                    .await?;
-                filter["issue"] = json!({"id":{"eq":issue["id"]}});
-            }
-            let comments = self
-                .store
-                .pages(
-                    "QComments",
-                    "comments",
-                    json!({"filter":filter,"includeArchived":true}),
-                )
-                .await?;
-            comments
-                .into_iter()
-                .find(|c| c["url"] == supplied)
-                .and_then(|c| c["id"].as_str().map(str::to_owned))
-                .ok_or_else(|| {
-                    Fault::new("RECORD_MISSING", "Native comment permalink was not found")
-                })?
-        };
+        let id = self.comment_id(text(a, "id")?).await?;
         let comment = self.store.linear.object("QComment", "comment", &id).await?;
         let root_id = comment["parent"]["id"].as_str().unwrap_or(&id);
         let root = if root_id == id {
@@ -1435,14 +1691,18 @@ impl Gateway {
 
     /// Resolve or reopen a native top-level thread; checking current state makes retry safe.
     async fn resolve_comment(&self, a: &Value) -> Result<Value> {
-        let id = text(a, "id")?;
-        let comment = self.store.linear.object("QComment", "comment", id).await?;
+        let id = self.comment_id(text(a, "id")?).await?;
+        let comment = self.store.linear.object("QComment", "comment", &id).await?;
         require(
             comment["parent"].is_null(),
             "INVALID_PARENT",
             "Resolve the root comment",
         )?;
-        if let Some(reply_id) = a["resolving_comment_id"].as_str() {
+        let resolved_reply = match a["resolving_comment_id"].as_str() {
+            Some(reply_reference) => Some(self.comment_id(reply_reference).await?),
+            None => None,
+        };
+        if let Some(reply_id) = resolved_reply.as_deref() {
             require(
                 a["resolved"] == true,
                 "INVALID_INPUT",
@@ -1464,8 +1724,8 @@ impl Gateway {
         if comment["resolvedAt"].is_string() == resolved {
             require(
                 !resolved
-                    || a["resolving_comment_id"].is_null()
-                    || comment["resolvingCommentId"] == a["resolving_comment_id"],
+                    || resolved_reply.is_none()
+                    || comment["resolvingCommentId"] == json!(resolved_reply),
                 "REQUEST_CONFLICT",
                 "Thread was resolved with another reply",
             )?;
@@ -1474,7 +1734,7 @@ impl Gateway {
         let (operation, variables, field) = if resolved {
             (
                 "MResolveComment",
-                json!({"id":id,"resolvingCommentId":a["resolving_comment_id"]}),
+                json!({"id":id,"resolvingCommentId":resolved_reply}),
                 "commentResolve",
             )
         } else {
@@ -1493,7 +1753,9 @@ impl Gateway {
     /// Persist a native review activity comment and current-round decision, returning its
     /// permalink without implicitly transitioning work or adding Task review.
     async fn review(&self, a: &Value) -> Result<Value> {
-        let (w, graph) = self.loaded(text(a, "id")?).await?;
+        let (w, graph) = self
+            .loaded(&self.resolve("issue", text(a, "id")?).await?)
+            .await?;
         let m = w.managed()?;
         let request = Self::request("record_review", a);
         if self.resume(&w, &request).await?.is_some() {
@@ -1504,9 +1766,14 @@ impl Gateway {
                 .object("QComment", "comment", text(a, "request_id")?)
                 .await
                 .map_err(Fault::uncertain)?;
-            return Ok(
-                json!({"review":restored.managed()?.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":true}),
-            );
+            return Ok(self
+                .with_guidance(
+                    json!({"review":restored.managed()?.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":true}),
+                    w.id(),
+                    &graph,
+                    "reviewer",
+                )
+                .await);
         }
         rules::enforce(rules::discrepancies(&w, &graph))?;
         require(
@@ -1539,7 +1806,7 @@ impl Gateway {
         if let Some(comment) = self.store.optional("QComment", "comment", id).await? {
             require(
                 comment["issue"]["id"] == w.id()
-                    && markdown_key(comment["body"].as_str().unwrap_or("")) == markdown_key(&body),
+                    && markdown_equivalent(&body, comment["body"].as_str().unwrap_or("")),
                 "REQUEST_CONFLICT",
                 "Review request_id already names another report",
             )?;
@@ -1570,9 +1837,14 @@ impl Gateway {
             .save(&w.native, &next)
             .await
             .map_err(Fault::uncertain)?;
-        Ok(
-            json!({"review":next.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":false}),
-        )
+        Ok(self
+            .with_guidance(
+                json!({"review":next.review,"issue_id":w.id(),"comment":comment,"url":comment["url"],"replayed":false}),
+                w.id(),
+                &graph,
+                "reviewer",
+            )
+            .await)
     }
     /// Load one complete Project graph and bounded native activity, then compose a read-only view.
     /// The limit prevents a large Project from turning a single overview into unbounded API reads.
@@ -1628,8 +1900,8 @@ impl Gateway {
     /// Missing process-local baselines fall back to a full response with baseline_expired=true;
     /// neither branch writes to Linear or launches background activity.
     async fn overview(&self, a: &Value) -> Result<Value> {
-        let project_id = text(a, "project_id")?;
-        let (mut full, snapshot) = self.overview_data(project_id).await?;
+        let project_id = self.resolve("project", text(a, "project_id")?).await?;
+        let (mut full, snapshot) = self.overview_data(&project_id).await?;
         let comparison = self
             .baselines
             .lock()
@@ -1639,7 +1911,7 @@ impl Gateway {
                     "Overview comparison cache is unavailable",
                 )
             })?
-            .compare(project_id, a["cursor"].as_str(), snapshot, Instant::now());
+            .compare(&project_id, a["cursor"].as_str(), snapshot, Instant::now());
         let observed_at = chrono::Utc::now().to_rfc3339();
         if comparison["changes"].is_array() {
             Ok(json!({"project_id":project_id,"observed_at":observed_at,
@@ -1653,9 +1925,80 @@ impl Gateway {
         }
     }
 
-    /// Read native work by UUID or a native Issue link. Legacy type/ID calls keep their original
-    /// response; optional lead/reviewer views add a bounded assignment and evidence projection.
-    /// Derived counts are withheld when native membership differs from the recorded graph.
+    /// Load deduplicated document metadata for the current Issue ancestry and, for the full
+    /// view, the whole owning Project. Archived documents are included there and carry their
+    /// native `archivedAt`; a brief call passes no Project and excludes archived entries, so
+    /// the compact slice lists only relevant own/ancestor links while explicit routes reach
+    /// the Project documents and the archive. The load stays bounded and fails explicitly
+    /// rather than returning a partial list.
+    async fn ancestry_documents(
+        &self,
+        work: &Work,
+        graph: &[Work],
+        project_id: Option<&str>,
+        include_archived: bool,
+    ) -> Result<Vec<Value>> {
+        let mut issue_ids = Vec::new();
+        let mut ancestor = Some(work);
+        while let Some(item) = ancestor {
+            require(
+                issue_ids.len() < 4 && !issue_ids.iter().any(|id| id == item.id()),
+                "INCOMPLETE_DATA",
+                "Issue ancestry is incomplete or cyclic",
+            )?;
+            issue_ids.push(item.id().to_owned());
+            ancestor = rules::parent(item).and_then(|id| rules::find(graph, id));
+        }
+        let mut clauses = vec![json!({"issue":{"id":{"in":issue_ids}}})];
+        if let Some(project_id) = project_id {
+            clauses.push(json!({"project":{"id":{"eq":project_id}}}));
+        }
+        let native_documents = self
+            .store
+            .pages(
+                "QDocuments",
+                "documents",
+                json!({"filter":{"or":clauses},"includeArchived":include_archived}),
+            )
+            .await?;
+        let mut unique_documents = BTreeMap::new();
+        for document in native_documents {
+            let id = document["id"]
+                .as_str()
+                .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Document has no ID"))?;
+            unique_documents.insert(id.to_owned(), document);
+        }
+        require(
+            unique_documents.len() <= 500,
+            "INCOMPLETE_DATA",
+            "Agent context exceeds 500 document links",
+        )?;
+        Ok(unique_documents.into_values().collect())
+    }
+    /// One compact document link including its native archived marker.
+    fn document_link(document: &Value) -> Value {
+        json!({"id":document["id"],"title":document["title"],"url":document["url"],
+            "archived":!document["archivedAt"].is_null()})
+    }
+    /// Current server identity from the loaded binary and catalogue, never from human prose.
+    fn runtime_facts(&self) -> Value {
+        json!({"version":env!("CARGO_PKG_VERSION"),"tools":self.catalog.tools.len()})
+    }
+    /// Explicit read routes from a brief view to the complete content and archive.
+    fn full_routes(project_id: &str, issue_id: Option<&str>) -> Value {
+        json!({
+            "issue":issue_id.map(|id| format!("get_context type=issue id={id}")),
+            "project_documents":format!("list_items type=document project_id={project_id}"),
+            "archive":format!("list_items type=document project_id={project_id} include_archived=true")
+        })
+    }
+
+    /// Read native work, a Project, Document or ProjectUpdate by UUID or supported native
+    /// permalink; a URL alone infers the entity type, and a stated type must agree with it.
+    /// Legacy type/ID calls keep their original response; optional lead/reviewer views add a
+    /// bounded assignment and evidence projection; detail=brief returns one compact current
+    /// slice with recovery state and explicit routes to full content. Derived counts are
+    /// withheld when native membership differs from the recorded graph.
     async fn context(&self, a: &Value) -> Result<Value> {
         require(
             !(a["id"].is_string() && a["url"].is_string()),
@@ -1666,31 +2009,29 @@ impl Gateway {
             .as_str()
             .or_else(|| a["id"].as_str())
             .ok_or_else(|| Fault::new("INVALID_INPUT", "Supply id or url"))?;
-        let linked = reference.starts_with("https://") || a["url"].is_string();
-        let kind = if linked {
-            require(
-                a["type"].is_null() || a["type"] == "issue",
-                "INVALID_LINK",
-                "Issue URLs require type issue",
-            )?;
-            "issue"
-        } else {
-            text(a, "type")?
+        let parsed = crate::context::parse_reference(reference)?;
+        require(
+            !parsed.comment(),
+            "INVALID_LINK",
+            "Comment permalinks are read with get_comment",
+        )?;
+        let linked = a["url"].is_string() || parsed.entity().is_some();
+        let kind = match (parsed.entity(), a["type"].as_str()) {
+            (None, None) => text(a, "type")?,
+            (None, Some(kind)) => kind,
+            (Some(entity), None) => entity,
+            (Some(entity), Some(kind)) => {
+                require(
+                    entity == kind,
+                    "INVALID_LINK",
+                    "Permalink type differs from the requested type",
+                )?;
+                kind
+            }
         };
         let resolved;
         let id = if linked {
-            let identifier = crate::context::issue_identifier(reference)?;
-            let issue = self
-                .store
-                .linear
-                .object("QIssue", "issue", &identifier)
-                .await?;
-            require(
-                issue["identifier"] == identifier,
-                "INVALID_LINK",
-                "Issue URL resolved to another item",
-            )?;
-            resolved = issue["id"].as_str().unwrap_or("").to_owned();
+            resolved = self.resolve(kind, reference).await?;
             resolved.as_str()
         } else {
             reference
@@ -1698,6 +2039,23 @@ impl Gateway {
         match kind {
             "project" => {
                 let p = self.project(id).await?;
+                if a["detail"] == "brief" {
+                    let docs = self
+                        .store
+                        .pages(
+                            "QDocuments",
+                            "documents",
+                            json!({"filter":{"project":{"id":{"eq":id}}},"includeArchived":false}),
+                        )
+                        .await?;
+                    return Ok(json!({
+                        "detail":"brief",
+                        "project":{"id":p["id"],"name":p["name"],"url":p["url"]},
+                        "documents":docs.iter().map(Self::document_link).collect::<Vec<_>>(),
+                        "full_context":Self::full_routes(id, None),
+                        "runtime":self.runtime_facts()
+                    }));
+                }
                 let docs = self
                     .store
                     .pages(
@@ -1732,6 +2090,30 @@ impl Gateway {
                 } else {
                     None
                 };
+                if a["detail"] == "brief" {
+                    // Brief keeps the actual state, current results, blockers, the recovery
+                    // payload and the latest applicable handoff, and routes to full content.
+                    let activity =
+                        crate::activity::read_activity(&self.store, "issue", w.id()).await?;
+                    let documents = self.ancestry_documents(&w, &g, None, false).await?;
+                    return Ok(json!({
+                        "detail":"brief",
+                        "issue":{"id":w.native["id"],"url":w.native["url"],
+                            "identifier":w.native["identifier"],"title":w.native["title"],
+                            "kind":m.kind,"status":w.native["state"]["name"],
+                            "priority":w.native["priority"]},
+                        "fields":{"result":w.fields["result"],"check_result":w.fields["check_result"],
+                            "lead":w.fields["lead"],"executor":w.fields["executor"]},
+                        "workflow":w.meta,
+                        "discrepancies":discrepancies,
+                        "transitions":rules::actions(&w,&g),
+                        "guidance":crate::guidance::guidance(&w,&g),
+                        "handoff":crate::context::handoff_selection(m, &activity),
+                        "documents":documents.iter().map(Self::document_link).collect::<Vec<_>>(),
+                        "full_context":Self::full_routes(&m.project_id, Some(w.id())),
+                        "runtime":self.runtime_facts()
+                    }));
+                }
                 let agent_view = if let Some(view) = a["view"].as_str().or(linked.then_some("lead"))
                 {
                     let children = rules::children(&g, w.id());
@@ -1748,41 +2130,9 @@ impl Gateway {
                                 .await?,
                         );
                     }
-                    let mut issue_ids = Vec::new();
-                    let mut ancestor = Some(&w);
-                    while let Some(item) = ancestor {
-                        require(
-                            issue_ids.len() < 4 && !issue_ids.iter().any(|id| id == item.id()),
-                            "INCOMPLETE_DATA",
-                            "Issue ancestry is incomplete or cyclic",
-                        )?;
-                        issue_ids.push(item.id().to_owned());
-                        ancestor = rules::parent(item).and_then(|id| rules::find(&g, id));
-                    }
-                    let native_documents = self
-                        .store
-                        .pages(
-                            "QDocuments",
-                            "documents",
-                            json!({"filter":{"or":[
-                        {"project":{"id":{"eq":m.project_id}}},
-                        {"issue":{"id":{"in":issue_ids}}}
-                    ]},"includeArchived":true}),
-                        )
+                    let documents = self
+                        .ancestry_documents(&w, &g, Some(m.project_id.as_str()), true)
                         .await?;
-                    let mut unique_documents = BTreeMap::new();
-                    for document in native_documents {
-                        let id = document["id"]
-                            .as_str()
-                            .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Document has no ID"))?;
-                        unique_documents.insert(id.to_owned(), document);
-                    }
-                    require(
-                        unique_documents.len() <= 500,
-                        "INCOMPLETE_DATA",
-                        "Agent context exceeds 500 document links",
-                    )?;
-                    let documents: Vec<Value> = unique_documents.into_values().collect();
                     Some(crate::context::agent_context(
                         &w,
                         &g,
@@ -1811,7 +2161,7 @@ impl Gateway {
                 peers.sort_by(|a, b| priority_cmp(&a.native, &b.native));
                 let priority_group = json!({"project_id":m.project_id,"parent_id":m.parent_id,"kind":m.kind,"peers":peers.iter().map(|p|json!({"id":p.id(),"identifier":p.native["identifier"],"title":p.native["title"],"status":p.native["state"]["name"],"priority":p.native["priority"],"priorityLabel":p.native["priorityLabel"]})).collect::<Vec<_>>()});
                 Ok(
-                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"module_report":module_report,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":discrepancies,"transitions":rules::actions(&w,&g),"agent_context":agent_view}),
+                    json!({"issue":w.native,"fields":w.fields,"git_reports":m.current_git_reports().collect::<Vec<_>>(),"module_report":module_report,"workflow":w.meta,"parent_checkout":checkout,"children":rules::children(&g,id).iter().map(|c|&c.native).collect::<Vec<_>>(),"priority_group":priority_group,"discrepancies":discrepancies,"transitions":rules::actions(&w,&g),"guidance":crate::guidance::guidance(&w,&g),"agent_context":agent_view}),
                 )
             }
         }
@@ -1840,19 +2190,24 @@ impl Gateway {
             "Issue filters do not apply to comments",
         )?;
         let mut filter = json!({});
+        let mut resolved_target = None;
         if let Some(target_type) = a["target_type"].as_str() {
+            let target_id = self.resolve(target_type, text(a, "target_id")?).await?;
             let key = match target_type {
                 "issue" => "issue",
                 "project" => "project",
                 _ => "projectUpdate",
             };
-            filter[key] = json!({"id":{"eq":a["target_id"]}});
+            filter[key] = json!({"id":{"eq":target_id}});
+            if target_type == "issue" {
+                resolved_target = Some(target_id);
+            }
         }
         if let Some(parent) = a.get("parent_id") {
             filter["parent"] = if parent.is_null() {
                 json!({"null":true})
             } else {
-                json!({"id":{"eq":parent}})
+                json!({"id":{"eq":self.resolve("comment", parent.as_str().unwrap()).await?}})
             };
         }
         let mut page = self.store.linear.call("QComments", json!({
@@ -1866,13 +2221,9 @@ impl Gateway {
             "INCOMPLETE_DATA",
             "Comment page is missing",
         )?;
-        let current = if a["target_type"] == "issue" {
-            self.store
-                .meta(text(a, "target_id")?)
-                .await?
-                .and_then(|m| m.review)
-        } else {
-            None
+        let current = match &resolved_target {
+            Some(target_id) => self.store.meta(target_id).await?.and_then(|m| m.review),
+            None => None,
         };
         page["activity_records"] = json!(
             page["nodes"]
@@ -1917,7 +2268,7 @@ impl Gateway {
             )?;
             let mut filter = json!({});
             if let Some(project_id) = a["project_id"].as_str() {
-                filter["project"] = json!({"id":{"eq":project_id}});
+                filter["project"] = json!({"id":{"eq":self.resolve("project", project_id).await?}});
             }
             let mut page = self.store.linear.call("QProjectUpdates",json!({
                 "filter":filter,
@@ -1967,8 +2318,13 @@ impl Gateway {
                     )?;
                     filter[field] = if key == "parent_id" && id.is_null() {
                         json!({"null":true})
-                    } else {
+                    } else if key == "team_id" {
+                        // team_id stays a plain UUID and is never a resolved reference.
                         json!({"id":{"eq":id}})
+                    } else {
+                        json!({"id":{"eq":self
+                            .resolve(if key == "project_id" { "project" } else { "issue" }, id.as_str().unwrap())
+                            .await?}})
                     };
                 }
             }
@@ -2005,12 +2361,18 @@ impl Gateway {
                 "INVALID_INPUT",
                 "Priority ordering requires issue type, project_id and kind",
             )?;
-            let project = a["project_id"].as_str().unwrap();
+            let project = self
+                .resolve("project", a["project_id"].as_str().unwrap())
+                .await?;
             let k: Kind = serde_json::from_value(a["kind"].clone()).unwrap();
-            let parent = a["parent_id"].as_str();
+            let parent = match a["parent_id"].as_str() {
+                Some(reference) => Some(self.resolve("issue", reference).await?),
+                None => None,
+            };
+            let parent = parent.as_deref();
             let group = json!({"project_id":project,"parent_id":parent,"kind":k,"team_id":a.get("team_id"),"status":a.get("status"),"include_archived":a.get("include_archived").and_then(Value::as_bool).unwrap_or(false),"priority":a.get("priority")});
             if let Some(pid) = parent {
-                let graph = self.store.graph(project).await?;
+                let graph = self.store.graph(&project).await?;
                 let p = rules::find(&graph, pid).ok_or_else(|| {
                     Fault::new("INVALID_PARENT", "Parent must belong to this Project")
                 })?;
@@ -2087,13 +2449,15 @@ impl Gateway {
         }
         Ok(self.store.linear.call(query, args).await?[field].clone())
     }
-    /// Save one native document, using the caller's UUID to recover uncertain creation without duplicates.
+    /// Save one native document, using the caller's UUID to recover uncertain creation without
+    /// duplicates. Reference arguments resolve to native identities first; the replay check
+    /// compares the resolved parent, so permalink retries behave exactly like UUID retries.
     async fn document(&self, a: &Value) -> Result<Value> {
         let editing = a["id"].is_string();
         let id = if editing {
-            text(a, "id")?
+            self.resolve("document", text(a, "id")?).await?
         } else {
-            text(a, "request_id")?
+            text(a, "request_id")?.to_owned()
         };
         if editing {
             require(
@@ -2103,7 +2467,7 @@ impl Gateway {
             )?;
             self.store
                 .linear
-                .object("QDocument", "document", id)
+                .object("QDocument", "document", &id)
                 .await?;
             let mut input = json!({});
             for k in ["title", "content"] {
@@ -2134,29 +2498,39 @@ impl Gateway {
             "INVALID_INPUT",
             "New Document requires content",
         )?;
-        if let Some(p) = a["project_id"].as_str() {
-            self.project(p).await?;
+        let parent = match a["project_id"].as_str() {
+            Some(reference) => ("projectId", self.resolve("project", reference).await?),
+            None => (
+                "issueId",
+                self.resolve("issue", text(a, "issue_id")?).await?,
+            ),
+        };
+        if parent.0 == "projectId" {
+            self.project(&parent.1).await?;
         } else {
-            self.store.work(text(a, "issue_id")?).await?;
+            self.store.work(&parent.1).await?;
         }
-        if let Some(d) = self.store.optional("QDocument", "document", id).await? {
+        if let Some(d) = self.store.optional("QDocument", "document", &id).await? {
+            let (native_key, other_key) = if parent.0 == "projectId" {
+                ("project", "issue")
+            } else {
+                ("issue", "project")
+            };
             require(
                 d["title"] == a["title"]
-                    && markdown_key(d["content"].as_str().unwrap_or(""))
-                        == markdown_key(a["content"].as_str().unwrap())
-                    && d["project"]["id"] == a["project_id"]
-                    && d["issue"]["id"] == a["issue_id"],
+                    && markdown_equivalent(
+                        a["content"].as_str().unwrap(),
+                        d["content"].as_str().unwrap_or(""),
+                    )
+                    && d[native_key]["id"] == json!(parent.1)
+                    && d[other_key]["id"].is_null(),
                 "REQUEST_CONFLICT",
                 "Document request_id already names different content",
             )?;
             return Ok(d);
         }
         let mut input = json!({"id":id,"title":a["title"],"content":a["content"]});
-        if a["project_id"].is_string() {
-            input["projectId"] = a["project_id"].clone();
-        } else {
-            input["issueId"] = a["issue_id"].clone();
-        }
+        input[parent.0] = json!(parent.1);
         Ok(self
             .store
             .linear
