@@ -233,6 +233,20 @@ async fn native_permalinks_resolve_typed_references() {
     let issue_context = f.ok("get_context", json!({"url":issue_link})).await;
     assert_eq!(issue_context["issue"]["id"], json!(epic));
     assert_eq!(issue_context["agent_context"]["view"], "lead");
+    // A comment permalink with uppercase fragment hex still reads the same comment.
+    let comment = f
+        .ok(
+            "add_comment",
+            json!({"target_type":"issue","target_id":epic,"kind":"note","body":"Case check"}),
+        )
+        .await["comment"]
+        .clone();
+    let (comment_base, comment_fragment) =
+        comment["url"].as_str().unwrap().split_once('#').unwrap();
+    let (prefix, hash) = comment_fragment.split_once('-').unwrap();
+    let uppercased = format!("{comment_base}#{prefix}-{}", hash.to_ascii_uppercase());
+    let by_fragment = f.ok("get_comment", json!({"id":uppercased})).await;
+    assert_eq!(by_fragment["comment"]["id"], comment["id"]);
     let typed_issue_context = f
         .ok("get_context", json!({"id":issue_link,"type":"issue"}))
         .await;
@@ -267,6 +281,20 @@ async fn native_permalinks_resolve_typed_references() {
         (
             json!({"url":format!("{project_url}/activity#project-update-deadbeef")}),
             "RECORD_MISSING",
+        ),
+        // Ports, a missing workspace name and a ProjectUpdate fragment without its
+        // /activity tail are not supported native shapes.
+        (
+            json!({"url":"https://linear.app:8443/example/issue/TEST-1/x"}),
+            "INVALID_LINK",
+        ),
+        (
+            json!({"url":"https://linear.app/issue/TEST-1/x"}),
+            "INVALID_LINK",
+        ),
+        (
+            json!({"url":format!("{project_url}#project-update-deadbeef")}),
+            "INVALID_LINK",
         ),
     ] {
         let tool = if arguments.get("project_id").is_some() {
@@ -318,6 +346,12 @@ async fn brief_detail_keeps_current_slice_and_recovery() {
             json!({"issue_id":epic,"title":"Old plan","content":"Historical"}),
         )
         .await;
+    let live_doc = f
+        .ok(
+            "save_document",
+            json!({"issue_id":epic,"title":"Epic guide","content":"Current"}),
+        )
+        .await;
     f.db.lock()
         .await
         .documents
@@ -345,10 +379,26 @@ async fn brief_detail_keeps_current_slice_and_recovery() {
     assert!(brief["agent_context"].is_null());
     assert_eq!(brief["handoff"]["current"]["id"], checkpoint["id"]);
     let documents = brief["documents"].as_array().unwrap();
+    // Brief lists own/ancestor Issue links only: the live ancestor document stays, while
+    // archived entries and the whole Project catalogue remain behind the explicit routes.
     assert!(
         documents
             .iter()
-            .any(|doc| doc["id"] == archived_doc["id"] && doc["archived"] == true)
+            .any(|doc| doc["id"] == live_doc["id"] && doc["archived"] == false)
+    );
+    assert!(!documents.iter().any(|doc| doc["id"] == archived_doc["id"]));
+    let project_doc_ids: Vec<_> = {
+        let db = f.db.lock().await;
+        db.documents
+            .values()
+            .filter(|doc| doc["project"]["id"] == json!(project))
+            .map(|doc| doc["id"].clone())
+            .collect()
+    };
+    assert!(
+        documents
+            .iter()
+            .all(|doc| !project_doc_ids.contains(&doc["id"]))
     );
     assert!(documents.iter().all(|doc| doc.get("content").is_none()));
     assert_eq!(

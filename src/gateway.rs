@@ -1633,7 +1633,11 @@ impl Gateway {
                     .await?;
                 comments
                     .into_iter()
-                    .find(|c| c["url"] == supplied)
+                    .find(|c| {
+                        c["url"]
+                            .as_str()
+                            .is_some_and(|url| crate::context::same_reference_url(url, supplied))
+                    })
                     .and_then(|c| c["id"].as_str().map(str::to_owned))
                     .ok_or_else(|| {
                         Fault::new("RECORD_MISSING", "Native comment permalink was not found")
@@ -1920,14 +1924,18 @@ impl Gateway {
         }
     }
 
-    /// Load deduplicated document metadata for the Project and the current Issue ancestry.
-    /// Archived documents are included and carry their native `archivedAt`; the load is
-    /// bounded and fails explicitly rather than returning a partial archive.
+    /// Load deduplicated document metadata for the current Issue ancestry and, for the full
+    /// view, the whole owning Project. Archived documents are included there and carry their
+    /// native `archivedAt`; a brief call passes no Project and excludes archived entries, so
+    /// the compact slice lists only relevant own/ancestor links while explicit routes reach
+    /// the Project documents and the archive. The load stays bounded and fails explicitly
+    /// rather than returning a partial list.
     async fn ancestry_documents(
         &self,
         work: &Work,
         graph: &[Work],
-        project_id: &str,
+        project_id: Option<&str>,
+        include_archived: bool,
     ) -> Result<Vec<Value>> {
         let mut issue_ids = Vec::new();
         let mut ancestor = Some(work);
@@ -1940,15 +1948,16 @@ impl Gateway {
             issue_ids.push(item.id().to_owned());
             ancestor = rules::parent(item).and_then(|id| rules::find(graph, id));
         }
+        let mut clauses = vec![json!({"issue":{"id":{"in":issue_ids}}})];
+        if let Some(project_id) = project_id {
+            clauses.push(json!({"project":{"id":{"eq":project_id}}}));
+        }
         let native_documents = self
             .store
             .pages(
                 "QDocuments",
                 "documents",
-                json!({"filter":{"or":[
-                    {"project":{"id":{"eq":project_id}}},
-                    {"issue":{"id":{"in":issue_ids}}}
-                ]},"includeArchived":true}),
+                json!({"filter":{"or":clauses},"includeArchived":include_archived}),
             )
             .await?;
         let mut unique_documents = BTreeMap::new();
@@ -2085,9 +2094,7 @@ impl Gateway {
                     // payload and the latest applicable handoff, and routes to full content.
                     let activity =
                         crate::activity::read_activity(&self.store, "issue", w.id()).await?;
-                    let documents = self
-                        .ancestry_documents(&w, &g, m.project_id.as_str())
-                        .await?;
+                    let documents = self.ancestry_documents(&w, &g, None, false).await?;
                     return Ok(json!({
                         "detail":"brief",
                         "issue":{"id":w.native["id"],"url":w.native["url"],
@@ -2123,7 +2130,7 @@ impl Gateway {
                         );
                     }
                     let documents = self
-                        .ancestry_documents(&w, &g, m.project_id.as_str())
+                        .ancestry_documents(&w, &g, Some(m.project_id.as_str()), true)
                         .await?;
                     Some(crate::context::agent_context(
                         &w,

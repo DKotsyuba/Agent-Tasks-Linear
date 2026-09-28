@@ -100,6 +100,34 @@ fn fragment_hash(value: &str, name: &str) -> Result<String> {
     Ok(value.to_owned())
 }
 
+/// Compare one returned native permalink with the supplied reference, ignoring ASCII case
+/// only inside native hex fragment tokens such as `comment-…`/`project-update-…`. Every
+/// other character, including the whole path and fragment prefixes, must match exactly,
+/// so no broader identity is loosened.
+pub fn same_reference_url(native: &str, supplied: &str) -> bool {
+    let (native_base, native_fragment) = native.split_once('#').unwrap_or((native, ""));
+    let (supplied_base, supplied_fragment) = supplied.split_once('#').unwrap_or((supplied, ""));
+    let native_tokens: Vec<_> = native_fragment.split('&').collect();
+    let supplied_tokens: Vec<_> = supplied_fragment.split('&').collect();
+    native_base == supplied_base
+        && native_tokens.len() == supplied_tokens.len()
+        && native_tokens
+            .iter()
+            .zip(supplied_tokens.iter())
+            .all(
+                |(native, supplied)| match (native.rsplit_once('-'), supplied.rsplit_once('-')) {
+                    (
+                        Some((native_prefix, native_hash)),
+                        Some((supplied_prefix, supplied_hash)),
+                    ) => {
+                        native_prefix == supplied_prefix
+                            && native_hash.eq_ignore_ascii_case(supplied_hash)
+                    }
+                    _ => native == supplied,
+                },
+            )
+}
+
 /// Parse one reference into a UUID or a supported native Linear permalink shape without
 /// fetching it. Foreign hosts, non-HTTPS schemes, credentials, query strings, unsupported
 /// paths and irrelevant fragments return INVALID_LINK. Leading path segments before the
@@ -113,17 +141,23 @@ pub fn parse_reference(reference: &str) -> Result<Reference> {
     require(
         url.scheme() == "https"
             && url.host_str() == Some("linear.app")
+            && url.port().is_none()
             && url.username().is_empty()
             && url.password().is_none()
             && url.query().is_none(),
         "INVALID_LINK",
-        "Expected a native Linear permalink without query or credentials",
+        "Expected a native Linear permalink without port, query or credentials",
     )?;
     let segments: Vec<_> = url.path_segments().into_iter().flatten().collect();
     let marker = segments
         .iter()
         .position(|segment| matches!(*segment, "issue" | "project" | "document"))
         .ok_or_else(|| Fault::new("INVALID_LINK", "Permalink names no supported entity"))?;
+    require(
+        marker > 0 && segments[..marker].iter().all(|segment| !segment.is_empty()),
+        "INVALID_LINK",
+        "Permalink needs a nonempty workspace name before the entity marker",
+    )?;
     let token: &str = segments
         .get(marker + 1)
         .filter(|token| !token.is_empty())
@@ -170,6 +204,11 @@ pub fn parse_reference(reference: &str) -> Result<Reference> {
                 "Project permalinks carry no tail beyond activity",
             )?;
             if let Some(short) = fragment.strip_prefix("project-update-") {
+                require(
+                    tail == ["activity"],
+                    "INVALID_LINK",
+                    "ProjectUpdate permalinks carry the /activity tail",
+                )?;
                 let (short, comment) = match short.split_once('&') {
                     Some((short, comment)) => (
                         short,
@@ -699,6 +738,83 @@ impl SnapshotCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the agreed native permalink shapes parse; ports, missing or empty workspace
+    /// segments and a ProjectUpdate fragment without its /activity tail are malformed.
+    #[test]
+    fn parse_reference_rejects_unsupported_shapes() {
+        for rejected in [
+            "https://linear.app:8443/example/issue/TEAM-1/a-task",
+            "https://linear.app/example/issue/TEAM-1/a-task?refresh=1",
+            "https://user:secret@linear.app/example/issue/TEAM-1/a-task",
+            "https://linear.app/issue/TEAM-1/a-task",
+            "https://linear.app//example/issue/TEAM-1/a-task",
+            "https://linear.app/example//issue/TEAM-1/a-task",
+            "https://linear.app/example/project/proverka#project-update-c1c32217",
+            "https://example.com/example/issue/TEAM-1/a-task",
+        ] {
+            assert_eq!(
+                parse_reference(rejected).unwrap_err().code,
+                "INVALID_LINK",
+                "{rejected}"
+            );
+        }
+        assert_eq!(
+            parse_reference("https://linear.app/example/issue/TEAM-1/a-task").unwrap(),
+            Reference::Issue {
+                identifier: "TEAM-1".into(),
+                comment: None
+            }
+        );
+        assert_eq!(
+            parse_reference("https://linear.app/example/issue/TEAM-1/a-task#comment-AbCdEf99")
+                .unwrap(),
+            Reference::Issue {
+                identifier: "TEAM-1".into(),
+                comment: Some("AbCdEf99".into())
+            }
+        );
+        assert_eq!(
+            parse_reference(
+                "https://linear.app/example/project/proverka/activity#project-update-c1c32217&comment-DeAdBeEf"
+            )
+            .unwrap(),
+            Reference::ProjectUpdate {
+                project_slug: "proverka".into(),
+                short: "c1c32217".into(),
+                comment: Some("DeAdBeEf".into())
+            }
+        );
+        assert_eq!(
+            parse_reference("https://linear.app/example/document/spec-123").unwrap(),
+            Reference::Document {
+                slug: "spec-123".into()
+            }
+        );
+    }
+
+    /// Fragment hex tokens compare ASCII case-insensitively while every other character,
+    /// including the path and the fragment prefixes, stays exact.
+    #[test]
+    fn same_reference_url_normalizes_only_fragment_hex() {
+        let native = "https://linear.app/example/issue/TEAM-1/a-task#comment-abcdef01";
+        assert!(same_reference_url(
+            native,
+            "https://linear.app/example/issue/TEAM-1/a-task#comment-ABCDEF01"
+        ));
+        assert!(same_reference_url(
+            "https://linear.app/example/project/proverka/activity#project-update-c1c32217&comment-abcdef01",
+            "https://linear.app/example/project/proverka/activity#project-update-C1C32217&comment-ABCDEF01"
+        ));
+        for different in [
+            "https://linear.app/example/issue/TEAM-1/a-task#comment-abcdef02",
+            "https://linear.app/example/issue/TEAM-2/a-task#comment-ABCDEF01",
+            "https://linear.app/example/issue/TEAM-1/a-task#issuecomment-ABCDEF01",
+            "https://linear.app/example/issue/TEAM-1/a-task#comment-ABCDEF01&extra",
+        ] {
+            assert!(!same_reference_url(native, different), "{different}");
+        }
+    }
 
     /// Capacity, scope and monotonic expiry never turn a missing baseline into no changes.
     #[test]

@@ -99,6 +99,7 @@ pub fn render_outcome(tool: &str, request: &Value, outcome: &Outcome) -> String 
 }
 
 /// Reject essential missing read fields before an otherwise empty success page can be emitted.
+/// An omitted `type` infers the same envelopes the resolver selected from a native URL.
 fn valid_success_shape(tool: &str, request: &Value, data: &Value) -> bool {
     match tool {
         "get_context" => match request["type"].as_str() {
@@ -106,7 +107,12 @@ fn valid_success_shape(tool: &str, request: &Value, data: &Value) -> bool {
             Some("project") => data["project"]["id"].is_string(),
             Some("project_update") => data["project_update"]["id"].is_string(),
             Some("issue") => data["issue"]["id"].is_string(),
-            _ => data["issue"]["id"].is_string() || data["id"].is_string(),
+            _ => {
+                data["issue"]["id"].is_string()
+                    || data["project"]["id"].is_string()
+                    || data["project_update"]["id"].is_string()
+                    || (data["id"].is_string() && data["content"].is_string())
+            }
         },
         "get_overview" => data["project_id"].is_string() && data["cursor"].is_string(),
         "list_items" | "search" => data["nodes"].is_array() && data["pageInfo"].is_object(),
@@ -147,6 +153,7 @@ fn presentation_fallback(tool: &str, request: &Value, outcome: &Outcome) -> Stri
     let kind = request["type"]
         .as_str()
         .or_else(|| request["target_type"].as_str())
+        .or_else(|| envelope_kind(&outcome.data))
         .unwrap_or_else(|| fallback_kind(tool));
     let request_id = request["request_id"].as_str().unwrap_or("");
     if matches!(outcome.status.as_str(), "ok" | "committed" | "noop") {
@@ -161,6 +168,13 @@ fn presentation_fallback(tool: &str, request: &Value, outcome: &Outcome) -> Stri
             outcome.data["code"].as_str().unwrap_or("TOOL_FAILED")
         )
     }
+}
+
+/// Infer the public entity type from a native success envelope before the tool default.
+fn envelope_kind(data: &Value) -> Option<&'static str> {
+    ["issue", "project", "project_update", "comment", "review"]
+        .into_iter()
+        .find(|key| data[*key].is_object())
 }
 
 /// Infer the public entity type for retry guidance when a mutation request has no type field.
@@ -544,7 +558,7 @@ mod tests {
                 "actor":"codex:lead","body":"Continue from the resolver"},
                 "revision_changed":true,"history":[]},
             "documents":[{"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1","archived":false},
-                {"id":"doc-2","title":"Old plan","url":"https://linear.app/doc-2","archived":true}],
+                {"id":"doc-2","title":"Shared plan","url":"https://linear.app/doc-2","archived":false}],
             "full_context":{"issue":"get_context type=issue id=issue-1",
                 "project_documents":"list_items type=document project_id=project-1",
                 "archive":"list_items type=document project_id=project-1 include_archived=true"},
@@ -561,7 +575,10 @@ mod tests {
         assert!(text.contains("## Reported checks"));
         assert!(text.contains("Continue from the resolver"));
         assert!(text.contains("Revision changed: true"));
-        assert!(text.contains("Archived: true"));
+        // Brief lists only relevant own/ancestor links; archived documents stay behind the
+        // explicit archive route instead of being dumped into the compact slice.
+        assert!(text.contains("Document URL: https://linear.app/doc-2"));
+        assert!(!text.contains("Archived:"));
         assert!(text.contains("\"tool\": \"edit_task\""));
         assert!(text.contains("A write is pending"));
         assert!(text.contains("get_context type=issue id=issue-1"));
@@ -569,6 +586,101 @@ mod tests {
         assert!(text.contains("Server version: 0.3.0"));
         assert!(text.contains("Tools: 22"));
         assert!(!text.contains("Presentation failed"), "{text}");
+    }
+
+    /// A URL without a stated type infers its entity from the native envelope, so inferred
+    /// Project, ProjectUpdate, Document and Issue reads render their real content instead of
+    /// a generic fallback that relabels every target as an Issue.
+    #[test]
+    fn inferred_url_context_renders_every_entity_envelope() {
+        let by_url = |data: Value, url: &str| {
+            render_outcome(
+                "get_context",
+                &json!({"url":url,"request_id":"req-1"}),
+                &Outcome::ok(data),
+            )
+        };
+        let project = by_url(
+            json!({"project":{"id":"project-1","name":"Agent Tasks",
+                "url":"https://linear.app/example/project/agent-tasks",
+                "content":"## Принятые решения\nKeep the whole project body.",
+                "teams":{"nodes":[{"id":"team-1"}]}},
+                "documents":[{"id":"document-1","title":"Runbook",
+                "url":"https://linear.app/example/document/runbook"}]}),
+            "https://linear.app/example/project/agent-tasks",
+        );
+        assert!(project.starts_with("Project\n"), "{project}");
+        assert!(project.contains("ID: project-1"));
+        assert!(project.contains("Title: Agent Tasks"));
+        assert!(project.contains("Team ID: team-1"));
+        assert!(project.contains("Keep the whole project body."));
+        assert!(project.contains("Document URL: https://linear.app/example/document/runbook"));
+        assert!(!project.contains("Presentation failed"), "{project}");
+
+        let brief = by_url(
+            json!({"detail":"brief",
+                "project":{"id":"project-1","name":"Agent Tasks",
+                "url":"https://linear.app/example/project/agent-tasks"},
+                "documents":[{"id":"document-1","title":"Runbook",
+                "url":"https://linear.app/example/document/runbook","archived":false}],
+                "full_context":{"issue":null,
+                "project_documents":"list_items type=document project_id=project-1",
+                "archive":"list_items type=document project_id=project-1 include_archived=true"},
+                "runtime":{"version":"0.3.0","tools":22}}),
+            "https://linear.app/example/project/agent-tasks",
+        );
+        assert!(brief.starts_with("Brief"), "{brief}");
+        assert!(brief.contains("Title: Agent Tasks"));
+        assert!(brief.contains("include_archived=true"));
+
+        let update = by_url(
+            json!({"project_update":{"id":"c1c32217-1111-4111-8111-000000000001",
+                "url":"https://linear.app/example/project/proverka/activity#project-update-c1c32217",
+                "health":"atRisk","updatedAt":"2026-09-26T20:00:00Z"},
+                "activity":{"actor":"codex:lead","reason":"Blocked upstream",
+                "body":"The full update body."}}),
+            "https://linear.app/example/project/proverka/activity#project-update-c1c32217",
+        );
+        assert!(update.starts_with("Project update\n"), "{update}");
+        assert!(update.contains("Health: atRisk"));
+        assert!(update.contains("Updated at: 2026-09-26T20:00:00Z"));
+        assert!(update.contains("Reason: Blocked upstream"));
+        assert!(update.contains("The full update body."), "{update}");
+        assert!(!update.contains("Presentation failed"), "{update}");
+
+        let document = by_url(
+            json!({"id":"document-1","title":"Pilot plan",
+                "url":"https://linear.app/example/document/pilot",
+                "content":"Full document body with\nmultiple lines.",
+                "issue":{"id":"issue-parent"}}),
+            "https://linear.app/example/document/pilot",
+        );
+        assert!(document.starts_with("Document\n"), "{document}");
+        assert!(document.contains("Full document body with\nmultiple lines."));
+
+        let issue = by_url(
+            json!({"issue":{"id":"issue-1","identifier":"MYT-1","title":"Readable module",
+                "url":"https://linear.app/example/issue/MYT-1/readable-module",
+                "project":{"id":"project-1"},"team":{"id":"team-1"},
+                "parent":{"id":"module-1"},"state":{"name":"In Progress"}},
+                "fields":{},"transitions":[]}),
+            "https://linear.app/example/issue/MYT-1/readable-module",
+        );
+        assert!(issue.starts_with("Issue\n"), "{issue}");
+        assert!(issue.contains("Project ID: project-1"));
+        assert!(issue.contains("Team ID: team-1"));
+        assert!(issue.contains("Parent ID: module-1"));
+
+        // A failed projection still labels the inferred kind instead of defaulting to Issue.
+        let fallback = presentation_fallback(
+            "get_context",
+            &json!({"url":"https://linear.app/example/project/agent-tasks","request_id":"req-1"}),
+            &Outcome::ok(json!({"project":{"id":"project-1"}})),
+        );
+        assert!(
+            fallback.contains("target_type: project; target: project-1"),
+            "{fallback}"
+        );
     }
 
     /// Read paths preserve human prose, full requested documents and exact recovery arguments.
