@@ -20,6 +20,8 @@ query QIssues($filter:IssueFilter,$first:Int!,$after:String,$includeArchived:Boo
 
 query QAttachmentById($id:String!) {attachment(id:$id) {id title url metadata issue {id} originalIssue {id}}}
 
+query QStateAttachments($filter:AttachmentFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {attachments(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id title url metadata issue {id} originalIssue {id}} pageInfo {hasNextPage endCursor}}}
+
 query QWorkAttachments($id:String!,$first:Int!,$after:String) {issue(id:$id) {attachments(first:$first,after:$after,includeArchived:true) {nodes {id title url metadata} pageInfo { hasNextPage endCursor }}}}
 
 query QDocument($id:String!) {document(id:$id) {id title content url updatedAt archivedAt project {id} issue {id}}}

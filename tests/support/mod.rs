@@ -41,6 +41,8 @@ pub struct Database {
     pub stale_update: bool,
     /// Serialize unordered list markers like Linear after issue description/comment writes.
     pub normalize_lists: bool,
+    /// Calls received per operation name, for request-count regression checks.
+    pub operation_counts: BTreeMap<String, u32>,
 }
 /// Native standard workflow names in the fixture.
 pub const STATES: [&str; 7] = [
@@ -77,6 +79,7 @@ async fn graphql(
 ) -> Json<Value> {
     let mut db = db.lock().await;
     let op = request["operationName"].as_str().unwrap();
+    *db.operation_counts.entry(op.to_owned()).or_insert(0) += 1;
     let v = &request["variables"];
     let id = v["id"].as_str().unwrap_or("");
     let input = &v["input"];
@@ -124,6 +127,23 @@ async fn graphql(
             json!({"relations":issue_page(db.relations.values().filter(|r| r["issue"]["id"] == id).cloned().collect(),v)}),
         )),
         "QAttachmentById" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
+        "QStateAttachments" => {
+            let wanted = v["filter"]["id"]["in"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            Some((
+                "attachments",
+                issue_page(
+                    db.attachments
+                        .values()
+                        .filter(|a| wanted.contains(&a["id"]))
+                        .cloned()
+                        .collect(),
+                    v,
+                ),
+            ))
+        }
         "QDocument" => db
             .documents
             .get(id)
