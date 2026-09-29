@@ -84,6 +84,15 @@ fn issue_page(nodes: Vec<Value>, variables: &Value) -> Value {
 fn state(id: &str) -> Value {
     json!({"id":id,"name":id,"type":match id {"Backlog"=>"backlog","Todo"=>"unstarted","Done"=>"completed","Canceled"=>"canceled","Duplicate"=>"duplicate",_=>"started"}})
 }
+/// Build a Document's native issue reference, including that issue's own project, matching the
+/// nested shape real Linear returns for an Issue-attached Document.
+fn issue_ref(db: &Database, issue_id: &Value) -> Value {
+    let id = issue_id.as_str().unwrap();
+    match db.issues.get(id) {
+        Some(issue) => json!({"id":id,"identifier":issue["identifier"],"project":issue["project"]}),
+        None => json!({"id":id}),
+    }
+}
 /// Mock GraphQL only at the HTTP boundary; the real transport and all workflow code are exercised.
 async fn graphql(
     State(db): State<Arc<Mutex<Database>>>,
@@ -460,13 +469,22 @@ async fn graphql(
             let id = input["id"].as_str().unwrap();
             assert!(!db.documents.contains_key(id));
             db.tick += 1;
-            let item = json!({"id":id,"title":input["title"],"content":input["content"],"url":format!("https://linear.app/example/document/{id}"),"updatedAt":format!("2026-09-25T00:00:{:02}Z",db.tick),"archivedAt":null,"hiddenAt":null,"project":input.get("projectId").map(|id|json!({"id":id})),"issue":input.get("issueId").map(|id|json!({"id":id}))});
+            let project = input.get("projectId").map(|id| json!({"id":id}));
+            let issue = input.get("issueId").map(|id| issue_ref(&db, id));
+            let item = json!({"id":id,"title":input["title"],"content":input["content"],"url":format!("https://linear.app/example/document/{id}"),"updatedAt":format!("2026-09-25T00:00:{:02}Z",db.tick),"archivedAt":null,"hiddenAt":null,"project":project,"issue":issue});
             db.documents.insert(id.into(), item.clone());
             Some(("documentCreate", json!({"success":true,"document":item})))
         }
         "MUpdateDocument" => {
             db.tick += 1;
             let tick = db.tick;
+            let issue = input.get("issueId").map(|issue_id| {
+                if issue_id.is_null() {
+                    Value::Null
+                } else {
+                    issue_ref(&db, issue_id)
+                }
+            });
             let item = db.documents.get_mut(id).unwrap();
             if let Some(title) = input.get("title") {
                 item["title"] = title.clone();
@@ -484,15 +502,34 @@ async fn graphql(
                     json!({"id":project_id})
                 };
             }
-            if let Some(issue_id) = input.get("issueId") {
-                item["issue"] = if issue_id.is_null() {
-                    Value::Null
-                } else {
-                    json!({"id":issue_id})
-                };
+            if let Some(issue) = issue {
+                item["issue"] = issue;
             }
             item["updatedAt"] = json!(format!("2026-09-25T00:00:{tick:02}Z"));
             Some(("documentUpdate", json!({"success":true,"document":item})))
+        }
+        "QSearchDocuments" => {
+            let term = v["term"].as_str().unwrap_or("").to_lowercase();
+            let include_archived = v["includeArchived"] == true;
+            let matches: Vec<Value> = db
+                .documents
+                .values()
+                .filter(|d| include_archived || d["archivedAt"].is_null())
+                .filter(|d| {
+                    d["title"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&term)
+                        || d["content"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&term)
+                })
+                .cloned()
+                .collect();
+            Some(("searchDocuments", issue_page(matches, v)))
         }
         "MCreateProjectUpdate" => {
             let id = input["id"].as_str().unwrap();

@@ -1,6 +1,7 @@
 //! Guarded native Document write contract against the native HTTP fixture: precondition,
 //! no-op replay, neighbour preservation, hide/unhide, parent rebinding and exact retry after
-//! a lost reply or a cold restart.
+//! a lost reply or a cold restart; plus scoped Document search with honest snippets, currentness
+//! and filtered-page accounting.
 #[allow(dead_code)]
 mod support;
 use serde_json::json;
@@ -224,4 +225,146 @@ async fn document_rebind_clears_the_other_native_parent() {
         )
         .await;
     assert_eq!(new_with_section.data["code"], "INVALID_INPUT");
+}
+
+/// Body-phrase and title hits report an honest, explainable match source and a bounded snippet;
+/// the full source stays reachable by id/url rather than being replaced by the snippet.
+#[tokio::test]
+async fn document_search_finds_body_phrase_with_honest_snippet() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    let content = "Intro text.\n\nThe quick brown fox jumps over the lazy dog.\n\nMore text.";
+    let document = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module,"title":"Distinctive Runbook Title","content":content}),
+        )
+        .await;
+
+    let body_hit = f
+        .ok("search", json!({"type":"document","query":"brown fox"}))
+        .await;
+    let nodes = body_hit["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["id"], document["id"]);
+    assert_eq!(nodes[0]["match_source"], "content");
+    assert!(nodes[0]["snippet"].as_str().unwrap().contains("brown fox"));
+    assert_eq!(nodes[0]["url"], document["url"]);
+    assert_eq!(nodes[0]["current"], true);
+    assert_eq!(nodes[0]["archived"], false);
+    assert_eq!(nodes[0]["hidden"], false);
+
+    let title_hit = f
+        .ok(
+            "search",
+            json!({"type":"document","query":"Distinctive Runbook"}),
+        )
+        .await;
+    let title_nodes = title_hit["nodes"].as_array().unwrap();
+    assert_eq!(title_nodes.len(), 1);
+    assert_eq!(title_nodes[0]["match_source"], "title");
+}
+
+/// Document search scopes to one Project, including Documents attached to Issues in that
+/// Project but excluding Documents elsewhere; the unscoped search still finds everything, and a
+/// project-filtered page reports honestly how many native results it actually matched.
+#[tokio::test]
+async fn document_search_scopes_to_project_including_issue_attached_documents() {
+    let f = Fixture::new().await;
+    let project_a = f.project().await;
+    let project_b = f.project().await;
+    let module_a = f.work("module", &project_a, None).await;
+    let module_b = f.work("module", &project_b, None).await;
+
+    let on_project_a = f
+        .ok(
+            "save_document",
+            json!({"project_id":project_a,"title":"A project doc","content":"shared keyword here"}),
+        )
+        .await;
+    let on_issue_in_a = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module_a,"title":"An issue doc in A","content":"shared keyword here"}),
+        )
+        .await;
+    f.ok(
+        "save_document",
+        json!({"issue_id":module_b,"title":"An issue doc in B","content":"shared keyword here"}),
+    )
+    .await;
+
+    let scoped = f
+        .ok(
+            "search",
+            json!({"type":"document","query":"shared keyword","project_id":project_a}),
+        )
+        .await;
+    let scoped_ids: Vec<&str> = scoped["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(scoped_ids.len(), 2);
+    assert!(scoped_ids.contains(&on_project_a["id"].as_str().unwrap()));
+    assert!(scoped_ids.contains(&on_issue_in_a["id"].as_str().unwrap()));
+    assert_eq!(scoped["scoped_to_project"], project_a);
+    assert_eq!(scoped["native_page_size"], 3);
+    assert_eq!(scoped["matched_in_page"], 2);
+
+    let unscoped = f
+        .ok(
+            "search",
+            json!({"type":"document","query":"shared keyword"}),
+        )
+        .await;
+    assert_eq!(unscoped["nodes"].as_array().unwrap().len(), 3);
+    assert!(unscoped.get("scoped_to_project").is_none());
+}
+
+/// A hidden Document is excluded from default search and included only with include_archived,
+/// even though native `includeArchived` alone does not govern hidden visibility.
+#[tokio::test]
+async fn document_search_excludes_hidden_by_default() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    let document = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module,"title":"Hideable","content":"unique searchable phrase"}),
+        )
+        .await;
+    f.ok(
+        "save_document",
+        json!({
+            "id":document["id"],
+            "hidden":true,
+            "expected_updated_at":document["updatedAt"],
+        }),
+    )
+    .await;
+
+    let default_search = f
+        .ok(
+            "search",
+            json!({"type":"document","query":"unique searchable phrase"}),
+        )
+        .await;
+    assert_eq!(default_search["nodes"].as_array().unwrap().len(), 0);
+    assert_eq!(default_search["native_page_size"], 1);
+    assert_eq!(default_search["matched_in_page"], 0);
+
+    let with_archived = f
+        .ok(
+            "search",
+            json!({"type":"document","query":"unique searchable phrase","include_archived":true}),
+        )
+        .await;
+    let nodes = with_archived["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["hidden"], true);
+    assert_eq!(nodes[0]["current"], false);
 }
