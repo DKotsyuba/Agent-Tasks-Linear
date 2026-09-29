@@ -405,7 +405,7 @@ async fn brief_detail_keeps_current_slice_and_recovery() {
         brief["full_context"]["issue"],
         format!("get_context type=issue id={task}")
     );
-    assert_eq!(brief["runtime"]["tools"], 22);
+    assert_eq!(brief["runtime"]["tools"], 25);
     assert!(brief["runtime"]["version"].is_string());
     let reviewer_brief = f
         .ok(

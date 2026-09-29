@@ -56,7 +56,7 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
         .unwrap()
         .unwrap();
     let list = client.peer().list_tools(None).await.unwrap();
-    assert_eq!(list.tools.len(), 22);
+    assert_eq!(list.tools.len(), 25);
     assert!(list.tools.iter().any(|t| t.name == "record_review"));
     assert!(list.tools.iter().any(|t| t.name == "get_overview"));
     let request = CallToolRequestParams::new("get_context").with_arguments(
@@ -129,7 +129,7 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
         .unwrap();
     assert_eq!(
         bridge.peer().list_tools(None).await.unwrap().tools.len(),
-        22
+        25
     );
     let stdio = serde_json::to_value(bridge.peer().call_tool(request).await.unwrap()).unwrap();
     assert_eq!(stdio["content"], wire["content"]);
