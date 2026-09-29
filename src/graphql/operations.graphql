@@ -58,6 +58,8 @@ mutation MUpdateProject($id:String!,$input:ProjectUpdateInput!) {projectUpdate(i
 
 mutation MUpsertRecord($input:AttachmentCreateInput!) {attachmentCreate(input:$input) {success attachment {id metadata}}}
 
+mutation MFileUpload($contentType:String!,$filename:String!,$size:Int!,$makePublic:Boolean) {fileUpload(contentType:$contentType,filename:$filename,size:$size,makePublic:$makePublic) {success uploadFile {assetUrl uploadUrl headers {key value} contentType filename size}}}
+
 mutation MUpdateAttachment($id:String!,$input:AttachmentUpdateInput!) {attachmentUpdate(id:$id,input:$input) {success attachment {id metadata}}}
 
 mutation MCreateDocument($input:DocumentCreateInput!) {documentCreate(input:$input) {success document {id title content url}}}
