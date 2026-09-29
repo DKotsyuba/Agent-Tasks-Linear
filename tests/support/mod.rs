@@ -1,6 +1,12 @@
 //! Stateful Linear fixture supporting only the operations exercised by workflow tests.
 use agent_tasks_linear::{gateway::Gateway, linear::Linear, model::Outcome};
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{
+    Json, Router,
+    body::Bytes,
+    extract::{Path as AxumPath, State},
+    http::{HeaderMap, StatusCode},
+    routing::{get, post, put},
+};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
@@ -41,6 +47,10 @@ pub struct Database {
     pub stale_update: bool,
     /// Serialize unordered list markers like Linear after issue description/comment writes.
     pub normalize_lists: bool,
+    /// This fixture's own origin, without a trailing slash, for building asset URLs.
+    pub base: String,
+    /// Uploaded artifact bytes by filename, standing in for Linear's asset host.
+    pub assets: BTreeMap<String, Vec<u8>>,
 }
 /// Native standard workflow names in the fixture.
 pub const STATES: [&str; 7] = [
@@ -133,6 +143,14 @@ async fn graphql(
             json!({"relations":issue_page(db.relations.values().filter(|r| r["issue"]["id"] == id).cloned().collect(),v)}),
         )),
         "QAttachmentById" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
+        "QArtifact" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
+        "QWorkAttachments" => Some((
+            "issue",
+            json!({"attachments":issue_page(
+                db.attachments.values().filter(|a| a["issue"]["id"] == id).cloned().collect(),
+                v
+            )}),
+        )),
         "QDocument" => db
             .documents
             .get(id)
@@ -385,6 +403,28 @@ async fn graphql(
                 json!({"success":true,"attachment":item}),
             ))
         }
+        "MCreateArtifact" => {
+            let aid = input["id"].as_str().unwrap();
+            assert!(!db.attachments.contains_key(aid));
+            let item = json!({"id":aid,"metadata":input["metadata"],"issue":{"id":input["issueId"]},"title":input["title"],"url":input["url"]});
+            db.attachments.insert(aid.into(), item.clone());
+            Some((
+                "attachmentCreate",
+                json!({"success":true,"attachment":item}),
+            ))
+        }
+        "MFileUpload" => {
+            let filename = v["filename"].as_str().unwrap();
+            Some((
+                "fileUpload",
+                json!({"success":true,"uploadFile":{
+                    "assetUrl":format!("{}/asset/{filename}", db.base),
+                    "uploadUrl":format!("{}/upload/{filename}", db.base),
+                    "headers":[{"key":"x-fixture-auth","value":"present"}],
+                    "contentType":v["contentType"],"filename":v["filename"],"size":v["size"],
+                }}),
+            ))
+        }
         "MUpdateAttachment" => {
             let item = db.attachments.get_mut(id).unwrap();
             item["metadata"] = input["metadata"].clone();
@@ -592,6 +632,35 @@ async fn graphql(
         )
     }
 }
+/// Accept a signed upload PUT for the loopback asset fixture, storing bytes by filename.
+/// Asserts no Authorization header ever reaches this signed-URL endpoint.
+async fn upload_asset(
+    State(db): State<Arc<Mutex<Database>>>,
+    AxumPath(name): AxumPath<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> StatusCode {
+    assert!(headers.get("authorization").is_none());
+    db.lock().await.assets.insert(name, body.to_vec());
+    StatusCode::OK
+}
+/// Serve a previously uploaded asset, requiring the fixture's fixed Authorization header,
+/// standing in for Linear's canonical authenticated asset host.
+async fn get_asset(
+    State(db): State<Arc<Mutex<Database>>>,
+    AxumPath(name): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Vec<u8>, StatusCode> {
+    if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some("fixture") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    db.lock()
+        .await
+        .assets
+        .get(&name)
+        .cloned()
+        .ok_or(StatusCode::NOT_FOUND)
+}
 /// Own the mock server and expose a fresh gateway plus durable backing data.
 pub struct Fixture {
     /// Gateway under test.
@@ -608,11 +677,17 @@ pub struct Fixture {
 impl Fixture {
     /// Start the native HTTP fixture without any real credentials.
     pub async fn new() -> Self {
-        let db = Arc::new(Mutex::new(Database::default()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let endpoint = format!("{base}/");
+        let db = Arc::new(Mutex::new(Database {
+            base,
+            ..Database::default()
+        }));
         let app = Router::new()
             .route("/", post(graphql))
+            .route("/upload/{name}", put(upload_asset))
+            .route("/asset/{name}", get(get_asset))
             .with_state(db.clone());
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         Self {
@@ -631,7 +706,13 @@ impl Fixture {
     pub async fn call(&self, name: &str, mut args: Value) -> Outcome {
         if !matches!(
             name,
-            "get_context" | "get_overview" | "get_comment" | "list_items" | "search"
+            "get_context"
+                | "get_overview"
+                | "get_comment"
+                | "list_items"
+                | "search"
+                | "list_files"
+                | "get_file"
         ) {
             if args.get("request_id").is_none() {
                 args["request_id"] = json!(id())

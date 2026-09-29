@@ -20,6 +20,8 @@ query QIssues($filter:IssueFilter,$first:Int!,$after:String,$includeArchived:Boo
 
 query QAttachmentById($id:String!) {attachment(id:$id) {id title url metadata issue {id} originalIssue {id}}}
 
+query QArtifact($id:String!) {attachment(id:$id) {id title url metadata issue {id}}}
+
 query QWorkAttachments($id:String!,$first:Int!,$after:String) {issue(id:$id) {attachments(first:$first,after:$after,includeArchived:true) {nodes {id title url metadata} pageInfo { hasNextPage endCursor }}}}
 
 query QDocument($id:String!) {document(id:$id) {id title content url updatedAt archivedAt hiddenAt project {id} issue {id}}}
@@ -57,6 +59,10 @@ mutation MCreateProject($input:ProjectCreateInput!) {projectCreate(input:$input)
 mutation MUpdateProject($id:String!,$input:ProjectUpdateInput!) {projectUpdate(id:$id,input:$input) {success project {id name content url}}}
 
 mutation MUpsertRecord($input:AttachmentCreateInput!) {attachmentCreate(input:$input) {success attachment {id metadata}}}
+
+mutation MFileUpload($contentType:String!,$filename:String!,$size:Int!,$makePublic:Boolean) {fileUpload(contentType:$contentType,filename:$filename,size:$size,makePublic:$makePublic) {success uploadFile {assetUrl uploadUrl headers {key value} contentType filename size}}}
+
+mutation MCreateArtifact($input:AttachmentCreateInput!) {attachmentCreate(input:$input) {success attachment {id title url metadata}}}
 
 mutation MUpdateAttachment($id:String!,$input:AttachmentUpdateInput!) {attachmentUpdate(id:$id,input:$input) {success attachment {id metadata}}}
 
