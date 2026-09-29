@@ -2125,7 +2125,7 @@ impl Gateway {
             }
             let lower = content.to_lowercase();
             if let Some(byte_pos) = lower.find(&query.to_lowercase()) {
-                let char_index = content[..byte_pos].chars().count();
+                let char_index = Self::char_index_at_lowercase_byte(content, byte_pos);
                 let chars: Vec<char> = content.chars().collect();
                 let start = char_index.saturating_sub(RADIUS);
                 let end = (char_index + RADIUS).min(chars.len());
@@ -2140,6 +2140,22 @@ impl Gateway {
             }
         }
         (content.chars().take(PREVIEW).collect(), "semantic")
+    }
+    /// Map a byte offset within the lowercase form of `original` back to the character index in
+    /// `original` whose lowercase expansion reaches that offset. Lowercasing can change a
+    /// character's UTF-8 byte length in either direction (the Turkish dotted capital İ grows
+    /// from 2 to 3 bytes; U+1E9E shrinks from 3 bytes to `ß`'s 2), so a byte offset found in the
+    /// lowercased text is never reused to slice the original string directly; only
+    /// character-by-character walking keeps both texts correctly aligned.
+    fn char_index_at_lowercase_byte(original: &str, byte_pos: usize) -> usize {
+        let mut lower_bytes = 0usize;
+        for (char_index, c) in original.chars().enumerate() {
+            if lower_bytes >= byte_pos {
+                return char_index;
+            }
+            lower_bytes += c.to_lowercase().map(char::len_utf8).sum::<usize>();
+        }
+        original.chars().count()
     }
     /// Current server identity from the loaded binary and catalogue, never from human prose.
     fn runtime_facts(&self) -> Value {

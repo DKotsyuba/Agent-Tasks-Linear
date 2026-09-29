@@ -368,3 +368,57 @@ async fn document_search_excludes_hidden_by_default() {
     assert_eq!(nodes[0]["hidden"], true);
     assert_eq!(nodes[0]["current"], false);
 }
+
+/// A snippet's byte offset, found via a lowercased copy of the content, must never be reused to
+/// slice the original content directly: lowercasing can change a character's UTF-8 byte length
+/// in either direction (the Turkish dotted capital İ grows from 2 to 3 bytes; U+1E9E shrinks
+/// from 3 bytes to ß's 2), which previously panicked instead of producing a correct snippet.
+#[tokio::test]
+async fn document_search_snippet_survives_lowercase_byte_length_changes() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+
+    let expansion_content = format!("{}needle", "İ".repeat(7));
+    f.ok(
+        "save_document",
+        json!({"issue_id":module,"title":"Expansion","content":expansion_content}),
+    )
+    .await;
+    let expansion_hit = f
+        .ok("search", json!({"type":"document","query":"needle"}))
+        .await;
+    let expansion_nodes = expansion_hit["nodes"].as_array().unwrap();
+    assert_eq!(expansion_nodes.len(), 1);
+    assert_eq!(expansion_nodes[0]["match_source"], "content");
+    assert!(
+        expansion_nodes[0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("needle")
+    );
+
+    let contraction_content = format!("{}needle", "\u{1e9e}".repeat(3));
+    f.ok(
+        "save_document",
+        json!({"issue_id":module,"title":"Contraction","content":contraction_content}),
+    )
+    .await;
+    let contraction_hit = f
+        .ok("search", json!({"type":"document","query":"needle"}))
+        .await;
+    let contraction_nodes: Vec<&serde_json::Value> = contraction_hit["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["title"] == "Contraction")
+        .collect();
+    assert_eq!(contraction_nodes.len(), 1);
+    assert_eq!(contraction_nodes[0]["match_source"], "content");
+    assert!(
+        contraction_nodes[0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("needle")
+    );
+}
