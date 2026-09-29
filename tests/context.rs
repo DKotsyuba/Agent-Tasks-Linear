@@ -491,6 +491,78 @@ async fn brief_detail_keeps_current_slice_and_recovery() {
     assert_eq!(full_document["content"], "Complete prose");
 }
 
+/// get_context(type=document, section=...) returns just that heading's body and its position
+/// among the document's headings, while every other native field and a plain full read stay
+/// complete; a missing or ambiguous heading fails before any write, and section is rejected on
+/// any other entity type.
+#[tokio::test]
+async fn document_section_reads_isolate_one_heading_and_keep_full_reads_complete() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    let content =
+        "# Notes\n\nIntro.\n\n## Runbook\n\nStart the service.\n\n## Decisions\n\nUse Postgres.\n";
+    let document = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module,"title":"Ops notes","content":content}),
+        )
+        .await;
+    let doc_id = document["id"].as_str().unwrap();
+
+    let full = f
+        .ok("get_context", json!({"type":"document","id":doc_id}))
+        .await;
+    assert_eq!(full["content"], content);
+    assert!(full["section"].is_null());
+
+    let selected = f
+        .ok(
+            "get_context",
+            json!({"type":"document","id":doc_id,"section":"Runbook"}),
+        )
+        .await;
+    assert_eq!(selected["content"], "\nStart the service.\n\n");
+    assert_eq!(
+        selected["section"],
+        json!({"heading":"Runbook","index":2,"count":3})
+    );
+    // Every other native field from the full read is preserved on the selected envelope.
+    assert_eq!(selected["title"], full["title"]);
+    assert_eq!(selected["url"], full["url"]);
+    assert_eq!(selected["updatedAt"], full["updatedAt"]);
+
+    let missing = f
+        .call(
+            "get_context",
+            json!({"type":"document","id":doc_id,"section":"Absent"}),
+        )
+        .await;
+    assert_eq!(missing.data["code"], "SECTION_NOT_FOUND");
+
+    let duplicate = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module,"title":"Dup","content":"## Same\n\none\n\n## Same\n\ntwo\n"}),
+        )
+        .await;
+    let ambiguous = f
+        .call(
+            "get_context",
+            json!({"type":"document","id":duplicate["id"],"section":"Same"}),
+        )
+        .await;
+    assert_eq!(ambiguous.data["code"], "SECTION_AMBIGUOUS");
+
+    let on_issue = f
+        .call(
+            "get_context",
+            json!({"type":"issue","id":module,"section":"Runbook"}),
+        )
+        .await;
+    assert_eq!(on_issue.data["code"], "INVALID_INPUT");
+}
+
 /// A child with uncertain native Done and pending recorded transition is never counted as exact.
 #[tokio::test]
 async fn pending_child_done_suppresses_module_progress() {
