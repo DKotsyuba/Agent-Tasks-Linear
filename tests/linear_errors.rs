@@ -1,6 +1,6 @@
 //! Regression coverage for observed Linear error envelopes and unconfirmed mutation results.
 
-use agent_tasks_linear::linear::Linear;
+use agent_tasks::linear::Linear;
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 

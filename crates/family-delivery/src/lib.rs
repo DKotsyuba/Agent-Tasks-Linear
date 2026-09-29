@@ -3,7 +3,7 @@
 //! refuses to run an older schema against newer on-disk state, and never
 //! touches anything outside `<home>/standalone/`.
 //!
-//! Product adaptation (agent-tasks-linear): this product is `resident` with
+//! Product adaptation (agent-tasks): this product is `resident` with
 //! `external` state. Its manifests therefore carry `state_schema = 0`, which
 //! here means **no local business state** (workflow truth lives in Linear) —
 //! it does not relabel the product as a stateless `none` profile. The

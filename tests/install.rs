@@ -20,11 +20,11 @@ fn bundle(dir: &Path, version: &str, binary: &str) -> std::path::PathBuf {
         Manifest {
             schema_version: 1,
             profile: "single-binary-v1".into(),
-            product: "agent-tasks-linear".into(),
+            product: "agent-tasks".into(),
             version: version.into(),
             source_commit: "7f094e0463c0a6d5cf52d68d91ca32f6bc0f465f".into(),
             target: "aarch64-apple-darwin".into(),
-            binary: "agent-tasks-linear-aarch64-apple-darwin".into(),
+            binary: "agent-tasks-aarch64-apple-darwin".into(),
             size: 1,
             sha256: "0".repeat(64),
             state_schema: 0,
@@ -80,7 +80,7 @@ fn real_binary_installs_noops_conflicts_and_rolls_back() {
         "{}",
         String::from_utf8_lossy(&installed.stderr)
     );
-    let launcher = bin_dir.join("agent-tasks-linear");
+    let launcher = bin_dir.join("agent-tasks");
     assert!(launcher.is_file());
     // The managed launcher executes the installed release with a stable identity.
     let run = Command::new(&launcher)
@@ -92,7 +92,7 @@ fn real_binary_installs_noops_conflicts_and_rolls_back() {
     let reported = String::from_utf8_lossy(&run.stdout).trim().to_owned();
     assert_eq!(
         reported,
-        format!("agent-tasks-linear {}", env!("CARGO_PKG_VERSION"))
+        format!("agent-tasks {}", env!("CARGO_PKG_VERSION"))
     );
 
     // Re-installing the same version with the same bytes is a verified no-op.
@@ -158,14 +158,14 @@ fn foreign_launcher_is_refused_without_explicit_adoption() {
     let bin_dir = root.join("bin");
     std::fs::create_dir(&bin_dir).unwrap();
     std::fs::write(
-        bin_dir.join("agent-tasks-linear"),
+        bin_dir.join("agent-tasks"),
         b"#!/bin/sh\necho other-product 1.0\n",
     )
     .unwrap();
     let refused = self_install(&binary, &first, &home, &bin_dir);
     assert!(!refused.status.success());
     assert_eq!(
-        std::fs::read(bin_dir.join("agent-tasks-linear")).unwrap(),
+        std::fs::read(bin_dir.join("agent-tasks")).unwrap(),
         b"#!/bin/sh\necho other-product 1.0\n"
     );
     std::fs::remove_dir_all(&root).unwrap();
@@ -186,14 +186,14 @@ fn launcher_config_precedence_and_pinning() {
     std::fs::create_dir(&home).unwrap();
     // The pinned installation default: a real protected config inside the
     // product home (the owner may adopt the existing
-    // ~/.config/agent-tasks-linear directory as the installation home).
+    // ~/.config/agent-tasks directory as the installation home).
     let pinned = home.join("config.toml");
-    agent_tasks_linear::config::Config::initialize(&pinned).unwrap();
+    agent_tasks::config::Config::initialize(&pinned).unwrap();
     // A second real config an existing wrapper would pass explicitly.
     let wrapper_dir = root.join("wrapper");
     std::fs::create_dir(&wrapper_dir).unwrap();
     let wrapper = wrapper_dir.join("config.toml");
-    agent_tasks_linear::config::Config::initialize(&wrapper).unwrap();
+    agent_tasks::config::Config::initialize(&wrapper).unwrap();
     let (pinned_bytes, wrapper_bytes) = (
         std::fs::read(&pinned).unwrap(),
         std::fs::read(&wrapper).unwrap(),
@@ -206,7 +206,7 @@ fn launcher_config_precedence_and_pinning() {
         "{}",
         String::from_utf8_lossy(&installed.stderr)
     );
-    let launcher = bin_dir.join("agent-tasks-linear");
+    let launcher = bin_dir.join("agent-tasks");
     let fake_home = root.join("fake-child-home");
     std::fs::create_dir(&fake_home).unwrap();
 

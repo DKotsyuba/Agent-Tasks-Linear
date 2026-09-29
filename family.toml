@@ -1,11 +1,13 @@
 schema_version = 1
-product = "agent-tasks-linear"
-repository = "DKotsyuba/Agent-Tasks-Linear"
-env_prefix = "AGENT_TASKS_LINEAR_"
+product = "agent-tasks"
+repository = "DKotsyuba/agent-tasks"
+env_prefix = "AGENT_TASKS_"
 standard_version = "1.0.0-rc.2"
 response_profile = "rust-minijinja-v1"
 devkit_version = "0.2.0"
 baseline = "rust-macos-2026-09-candidate1"
+# Qualified renamed 0.6.0 candidate on the native host; exact CI bytes still
+# require separate release-environment approval (see docs/releasing.md).
 qualification = "verified"
 
 # This product's own profile: a resident loopback writer/stdio bridge whose only

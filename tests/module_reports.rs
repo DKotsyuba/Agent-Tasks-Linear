@@ -1,5 +1,5 @@
 //! Pure mixed-graph Module report checks, using persisted snapshots rather than local Git.
-use agent_tasks_linear::{
+use agent_tasks::{
     git::GitCommit,
     model::{Kind, LocalGitReport, Meta, Status, Work},
     reports::module_report,

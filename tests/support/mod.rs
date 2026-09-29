@@ -1,5 +1,5 @@
 //! Stateful Linear fixture supporting only the operations exercised by workflow tests.
-use agent_tasks_linear::{gateway::Gateway, linear::Linear, model::Outcome};
+use agent_tasks::{gateway::Gateway, linear::Linear, model::Outcome};
 use axum::{
     Json, Router,
     body::Bytes,
@@ -23,7 +23,7 @@ pub fn product_binary() -> String {
     std::env::var("MCP_TEST_BINARY")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| env!("CARGO_BIN_EXE_agent-tasks-linear").to_owned())
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_agent-tasks").to_owned())
 }
 
 /// Run the real product binary with one subcommand and captured output; the

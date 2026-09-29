@@ -1,4 +1,4 @@
-# agent-tasks-linear — agent instructions
+# agent-tasks — agent instructions
 
 rust-minijinja-v1 response profile. Read docs/MCP_RESPONSE_STANDARD.md;
 docs/architecture.md is the behavior truth source.
@@ -41,7 +41,10 @@ evidence from those runs.
 
 ## Legacy adoption note
 
-The owner's machine may still hold a plain pre-template executable at
-`~/.local/bin/agent-tasks-linear`. Adoption is an explicit, backed-up,
-identity-checked step owned by the operator (see docs/releasing.md); never
-overwrite an unmanaged launcher silently.
+The owner's machine may still hold a foreign, unrelated executable at the new
+`~/.local/bin/agent-tasks` launcher path (for example an old Python CLI from
+before this rename). `self-install --adopt-existing` refuses anything whose
+`--version` output does not identify as this product; adoption is explicit,
+backed-up and identity-checked, owned by the operator (see docs/releasing.md).
+The existing `agent-tasks-linear` 0.5 launcher and home are a separate,
+untouched installation; nothing here migrates or overwrites it.

@@ -7,7 +7,7 @@
 #[allow(dead_code)]
 mod support;
 
-use agent_tasks_linear::{catalog::Catalog, config::Config, dispatch_vocabulary, routes, server};
+use agent_tasks::{catalog::Catalog, config::Config, dispatch_vocabulary, routes, server};
 use rmcp::{ServiceExt, transport::TokioChildProcess};
 use serde_json::Value;
 use std::time::Duration;

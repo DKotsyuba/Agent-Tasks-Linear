@@ -1,10 +1,10 @@
 //! Pure guidance cases over directly constructed managed work records.
 //! No Linear transport is involved: every case fixes a complete Project graph in memory and
 //! checks the advisory projection against the same guards the mutations enforce.
-use agent_tasks_linear::git::GitCommit;
-use agent_tasks_linear::guidance::{guidance, preview_effects};
-use agent_tasks_linear::model::{Kind, LocalGitReport, Meta, Pending, Review, Status, Work};
-use agent_tasks_linear::rules;
+use agent_tasks::git::GitCommit;
+use agent_tasks::guidance::{guidance, preview_effects};
+use agent_tasks::model::{Kind, LocalGitReport, Meta, Pending, Review, Status, Work};
+use agent_tasks::rules;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 

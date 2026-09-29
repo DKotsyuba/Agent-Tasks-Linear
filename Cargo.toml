@@ -4,7 +4,7 @@ default-members = ["."]
 resolver = "3"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.98.1"
 publish = false
@@ -28,7 +28,7 @@ toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [package]
-name = "agent-tasks-linear"
+name = "agent-tasks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

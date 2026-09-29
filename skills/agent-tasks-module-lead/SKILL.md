@@ -1,5 +1,5 @@
 ---
-name: agent-tasks-linear-module-lead
+name: agent-tasks-module-lead
 description: "Implement one assigned Linear Module as its persistent lead: read the assignment, run its Tasks and Atomics in the assigned checkout, record verified commits, prepare the PR, hand off for review and fix findings. Use when you receive a Module assignment link or resume an interrupted Module; not for coordinating other modules, reviewing your own work or merging PRs."
 metadata:
   version: 1

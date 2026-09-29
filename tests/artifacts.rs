@@ -215,7 +215,7 @@ async fn upload_file_recovers_after_a_lost_attachment_creation_response() {
 
 #[tokio::test]
 async fn upload_file_rejects_files_over_the_product_cap_before_any_write() {
-    use agent_tasks_linear::linear::FILE_SIZE_CAP;
+    use agent_tasks::linear::FILE_SIZE_CAP;
     let fixture = Fixture::new().await;
     let project = fixture.project().await;
     let work_id = fixture.work("module", &project, None).await;
