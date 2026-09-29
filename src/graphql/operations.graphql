@@ -44,7 +44,7 @@ query QSearchIssues($term:String!,$first:Int!,$after:String) {searchIssues(term:
 
 query QSearchProjects($term:String!,$first:Int!,$after:String) {searchProjects(term:$term,first:$first,after:$after) {nodes {id name url} pageInfo { hasNextPage endCursor }}}
 
-query QSearchDocuments($term:String!,$first:Int!,$after:String) {searchDocuments(term:$term,first:$first,after:$after) {nodes {id title url} pageInfo { hasNextPage endCursor }}}
+query QSearchDocuments($term:String!,$first:Int!,$after:String,$includeArchived:Boolean!) {searchDocuments(term:$term,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id title content url updatedAt archivedAt hiddenAt project{id name} issue{id identifier project{id name}}} pageInfo { hasNextPage endCursor }}}
 
 mutation MCreateIssue($input:IssueCreateInput!) {issueCreate(input:$input) {success issue {id identifier title description url updatedAt archivedAt startedAt completedAt priority priorityLabel prioritySortOrder team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }}}}
 

@@ -1984,6 +1984,121 @@ impl Gateway {
         json!({"id":document["id"],"title":document["title"],"url":document["url"],
             "archived":!document["archivedAt"].is_null()})
     }
+    /// Search Documents by title/content/native semantic relevance, optionally scoped to one
+    /// Project (a Document attached directly to it, or attached to one of its Issues), and
+    /// current material by default. Native `searchDocuments` has no server-side project filter,
+    /// and its own `includeArchived` covers only archived, not hidden, so both are applied here
+    /// against one native page; `matched_in_page` may then be smaller than `native_page_size`,
+    /// including zero, while `pageInfo.hasNextPage` still promises more native results to check,
+    /// so a filtered page is never mistaken for an exhausted, empty search.
+    async fn search_documents(&self, a: &Value) -> Result<Value> {
+        let query = text(a, "query")?;
+        let project_id = match a["project_id"].as_str() {
+            Some(reference) => Some(self.resolve("project", reference).await?),
+            None => None,
+        };
+        let include_archived = a
+            .get("include_archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let first = a.get("first").and_then(Value::as_u64).unwrap_or(10).min(25);
+        let page = self
+            .store
+            .linear
+            .call(
+                "QSearchDocuments",
+                json!({
+                    "term": query,
+                    "first": first,
+                    "after": a.get("after").unwrap_or(&Value::Null),
+                    "includeArchived": include_archived,
+                }),
+            )
+            .await?["searchDocuments"]
+            .clone();
+        let nodes = page["nodes"]
+            .as_array()
+            .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Document search page is missing"))?;
+        let matched: Vec<&Value> = nodes
+            .iter()
+            .filter(|n| include_archived || crate::sections::document_is_current(n))
+            .filter(|n| match &project_id {
+                Some(pid) => {
+                    n["project"]["id"] == json!(pid) || n["issue"]["project"]["id"] == json!(pid)
+                }
+                None => true,
+            })
+            .collect();
+        let mut result = json!({
+            "nodes": matched.iter().map(|n| Self::document_search_row(n, query)).collect::<Vec<_>>(),
+            "pageInfo": page["pageInfo"],
+            "native_page_size": nodes.len(),
+            "matched_in_page": matched.len(),
+        });
+        if let Some(pid) = &project_id {
+            result["scoped_to_project"] = json!(pid);
+        }
+        Ok(result)
+    }
+    /// One Document search/list row: native ownership and visibility, a derived currentness
+    /// flag, and a short, explainable snippet. `match_source` names where the literal query text
+    /// was actually found (title/content) or "semantic" when native search matched by relevance
+    /// without a literal substring; the snippet is a plain content preview in that case, never a
+    /// fabricated literal match.
+    fn document_search_row(node: &Value, query: &str) -> Value {
+        let (snippet, match_source) = Self::document_snippet(
+            node["title"].as_str().unwrap_or(""),
+            node["content"].as_str().unwrap_or(""),
+            query,
+        );
+        json!({
+            "id": node["id"],
+            "title": node["title"],
+            "url": node["url"],
+            "project": (!node["project"]["id"].is_null())
+                .then(|| json!({"id":node["project"]["id"],"name":node["project"]["name"]})),
+            "issue": (!node["issue"]["id"].is_null()).then(|| json!({
+                "id":node["issue"]["id"],
+                "identifier":node["issue"]["identifier"],
+                "project":node["issue"]["project"],
+            })),
+            "updated_at": node["updatedAt"],
+            "archived": !node["archivedAt"].is_null(),
+            "hidden": !node["hiddenAt"].is_null(),
+            "current": crate::sections::document_is_current(node),
+            "snippet": snippet,
+            "match_source": match_source,
+        })
+    }
+    /// Locate `query` case-insensitively in `title` then `content`, returning up to roughly 200
+    /// characters of surrounding context; falls back to a plain content preview with an honest
+    /// "semantic" source when no literal match exists anywhere in either field.
+    fn document_snippet(title: &str, content: &str, query: &str) -> (String, &'static str) {
+        const RADIUS: usize = 100;
+        const PREVIEW: usize = 200;
+        let query = query.trim();
+        if !query.is_empty() {
+            if title.to_lowercase().contains(&query.to_lowercase()) {
+                return (title.chars().take(PREVIEW).collect(), "title");
+            }
+            let lower = content.to_lowercase();
+            if let Some(byte_pos) = lower.find(&query.to_lowercase()) {
+                let char_index = content[..byte_pos].chars().count();
+                let chars: Vec<char> = content.chars().collect();
+                let start = char_index.saturating_sub(RADIUS);
+                let end = (char_index + RADIUS).min(chars.len());
+                let mut snippet: String = chars[start..end].iter().collect();
+                if start > 0 {
+                    snippet.insert(0, '…');
+                }
+                if end < chars.len() {
+                    snippet.push('…');
+                }
+                return (snippet, "content");
+            }
+        }
+        (content.chars().take(PREVIEW).collect(), "semantic")
+    }
     /// Current server identity from the loaded binary and catalogue, never from human prose.
     fn runtime_facts(&self) -> Value {
         json!({"version":env!("CARGO_PKG_VERSION"),"tools":self.catalog.tools.len()})
@@ -2268,6 +2383,9 @@ impl Gateway {
     /// Issue priority order loads its complete bounded group, sorts, then slices with a scoped cursor.
     async fn list(&self, a: &Value, search: bool) -> Result<Value> {
         let kind = text(a, "type")?;
+        if search && kind == "document" {
+            return self.search_documents(a).await;
+        }
         if kind == "comment" {
             require(!search, "INVALID_INPUT", "Comment search is unavailable")?;
             return self.list_comments(a).await;
