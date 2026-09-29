@@ -1981,12 +1981,141 @@ impl Gateway {
             "INCOMPLETE_DATA",
             "Agent context exceeds 500 document links",
         )?;
-        Ok(unique_documents.into_values().collect())
+        // Native includeArchived excludes only archivedAt; hiddenAt is a separate native flag it
+        // never covers, so a hidden Document otherwise stayed in the compact, current-only slice.
+        Ok(unique_documents
+            .into_values()
+            .filter(|d| include_archived || crate::sections::document_is_current(d))
+            .collect())
     }
-    /// One compact document link including its native archived marker.
-    fn document_link(document: &Value) -> Value {
-        json!({"id":document["id"],"title":document["title"],"url":document["url"],
-            "archived":!document["archivedAt"].is_null()})
+    /// Search Documents by title/content/native semantic relevance, optionally scoped to one
+    /// Project (a Document attached directly to it, or attached to one of its Issues), and
+    /// current material by default. Native `searchDocuments` has no server-side project filter,
+    /// and its own `includeArchived` covers only archived, not hidden, so both are applied here
+    /// against one native page; `matched_in_page` may then be smaller than `native_page_size`,
+    /// including zero, while `pageInfo.hasNextPage` still promises more native results to check,
+    /// so a filtered page is never mistaken for an exhausted, empty search.
+    async fn search_documents(&self, a: &Value) -> Result<Value> {
+        let query = text(a, "query")?;
+        let project_id = match a["project_id"].as_str() {
+            Some(reference) => Some(self.resolve("project", reference).await?),
+            None => None,
+        };
+        let include_archived = a
+            .get("include_archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let first = a.get("first").and_then(Value::as_u64).unwrap_or(10).min(25);
+        let page = self
+            .store
+            .linear
+            .call(
+                "QSearchDocuments",
+                json!({
+                    "term": query,
+                    "first": first,
+                    "after": a.get("after").unwrap_or(&Value::Null),
+                    "includeArchived": include_archived,
+                }),
+            )
+            .await?["searchDocuments"]
+            .clone();
+        let nodes = page["nodes"]
+            .as_array()
+            .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Document search page is missing"))?;
+        let matched: Vec<&Value> = nodes
+            .iter()
+            .filter(|n| include_archived || crate::sections::document_is_current(n))
+            .filter(|n| match &project_id {
+                Some(pid) => {
+                    n["project"]["id"] == json!(pid) || n["issue"]["project"]["id"] == json!(pid)
+                }
+                None => true,
+            })
+            .collect();
+        let mut result = json!({
+            "nodes": matched.iter().map(|n| Self::document_search_row(n, query)).collect::<Vec<_>>(),
+            "pageInfo": page["pageInfo"],
+            "native_page_size": nodes.len(),
+            "matched_in_page": matched.len(),
+        });
+        if let Some(pid) = &project_id {
+            result["scoped_to_project"] = json!(pid);
+        }
+        Ok(result)
+    }
+    /// One Document search/list row: native ownership and visibility, a derived currentness
+    /// flag, and a short, explainable snippet. `match_source` names where the literal query text
+    /// was actually found (title/content) or "semantic" when native search matched by relevance
+    /// without a literal substring; the snippet is a plain content preview in that case, never a
+    /// fabricated literal match.
+    fn document_search_row(node: &Value, query: &str) -> Value {
+        let (snippet, match_source) = Self::document_snippet(
+            node["title"].as_str().unwrap_or(""),
+            node["content"].as_str().unwrap_or(""),
+            query,
+        );
+        let mut row = crate::sections::document_link(node);
+        row["project"] = (!node["project"]["id"].is_null())
+            .then(|| json!({"id":node["project"]["id"],"name":node["project"]["name"]}))
+            .into();
+        row["issue"] = (!node["issue"]["id"].is_null())
+            .then(|| {
+                json!({
+                    "id":node["issue"]["id"],
+                    "identifier":node["issue"]["identifier"],
+                    "project":node["issue"]["project"],
+                })
+            })
+            .into();
+        row["snippet"] = json!(snippet);
+        row["match_source"] = json!(match_source);
+        row
+    }
+    /// Locate `query` case-insensitively in `title` then `content`, returning up to roughly 200
+    /// characters of surrounding context; falls back to a plain content preview with an honest
+    /// "semantic" source when no literal match exists anywhere in either field.
+    fn document_snippet(title: &str, content: &str, query: &str) -> (String, &'static str) {
+        const RADIUS: usize = 100;
+        const PREVIEW: usize = 200;
+        let query = query.trim();
+        if !query.is_empty() {
+            if title.to_lowercase().contains(&query.to_lowercase()) {
+                return (title.chars().take(PREVIEW).collect(), "title");
+            }
+            let lower = content.to_lowercase();
+            if let Some(byte_pos) = lower.find(&query.to_lowercase()) {
+                let char_index = Self::char_index_at_lowercase_byte(content, byte_pos);
+                let chars: Vec<char> = content.chars().collect();
+                let start = char_index.saturating_sub(RADIUS);
+                let end = (char_index + RADIUS).min(chars.len());
+                let mut snippet: String = chars[start..end].iter().collect();
+                if start > 0 {
+                    snippet.insert(0, '…');
+                }
+                if end < chars.len() {
+                    snippet.push('…');
+                }
+                return (snippet, "content");
+            }
+        }
+        (content.chars().take(PREVIEW).collect(), "semantic")
+    }
+    /// Map a byte offset within the lowercase form of `original` back to the character index in
+    /// `original` whose lowercase expansion reaches that offset. Lowercasing can change a
+    /// character's UTF-8 byte length in either direction (the Turkish dotted capital İ grows
+    /// from 2 to 3 bytes; U+1E9E shrinks from 3 bytes to `ß`'s 2), so a byte offset found in the
+    /// lowercased text is never reused to slice the original string directly; only
+    /// character-by-character walking keeps both texts correctly aligned.
+    fn char_index_at_lowercase_byte(original: &str, byte_pos: usize) -> usize {
+        let mut lower_bytes = 0usize;
+        for (char_index, c) in original.chars().enumerate() {
+            if lower_bytes >= byte_pos {
+                return char_index;
+            }
+            lower_bytes += c.to_lowercase().map(char::len_utf8).sum::<usize>();
+        }
+        original.chars().count()
     }
     /// Current server identity from the loaded binary and catalogue, never from human prose.
     fn runtime_facts(&self) -> Value {
@@ -2044,6 +2173,11 @@ impl Gateway {
         } else {
             reference
         };
+        require(
+            a["section"].is_null() || kind == "document",
+            "INVALID_INPUT",
+            "section is only valid with type=document",
+        )?;
         match kind {
             "project" => {
                 let p = self.project(id).await?;
@@ -2059,7 +2193,11 @@ impl Gateway {
                     return Ok(json!({
                         "detail":"brief",
                         "project":{"id":p["id"],"name":p["name"],"url":p["url"]},
-                        "documents":docs.iter().map(Self::document_link).collect::<Vec<_>>(),
+                        "documents":docs
+                            .iter()
+                            .filter(|d| crate::sections::document_is_current(d))
+                            .map(crate::sections::document_link)
+                            .collect::<Vec<_>>(),
                         "full_context":Self::full_routes(id, None),
                         "runtime":self.runtime_facts()
                     }));
@@ -2072,9 +2210,34 @@ impl Gateway {
                         json!({"filter":{"project":{"id":{"eq":id}}},"includeArchived":false}),
                     )
                     .await?;
-                Ok(json!({"project":p,"documents":docs}))
+                Ok(json!({
+                    "project":p,
+                    "documents":docs
+                        .into_iter()
+                        .filter(crate::sections::document_is_current)
+                        .collect::<Vec<_>>()
+                }))
             }
-            "document" => self.store.linear.object("QDocument", "document", id).await,
+            "document" => {
+                let document = self
+                    .store
+                    .linear
+                    .object("QDocument", "document", id)
+                    .await?;
+                let Some(heading) = a["section"].as_str() else {
+                    return Ok(document);
+                };
+                let content = document["content"].as_str().unwrap_or("");
+                let section = crate::sections::find_section(content, heading)?;
+                let mut selected = document.clone();
+                selected["content"] = json!(section.body);
+                selected["section"] = json!({
+                    "heading": section.heading,
+                    "index": section.index,
+                    "count": section.count,
+                });
+                Ok(selected)
+            }
             "project_update" => {
                 let update = self
                     .store
@@ -2117,7 +2280,7 @@ impl Gateway {
                         "transitions":rules::actions(&w,&g),
                         "guidance":crate::guidance::guidance(&w,&g),
                         "handoff":crate::context::handoff_selection(m, &activity),
-                        "documents":documents.iter().map(Self::document_link).collect::<Vec<_>>(),
+                        "documents":documents.iter().map(crate::sections::document_link).collect::<Vec<_>>(),
                         "full_context":Self::full_routes(&m.project_id, Some(w.id())),
                         "runtime":self.runtime_facts()
                     }));
@@ -2248,6 +2411,9 @@ impl Gateway {
     /// Issue priority order loads its complete bounded group, sorts, then slices with a scoped cursor.
     async fn list(&self, a: &Value, search: bool) -> Result<Value> {
         let kind = text(a, "type")?;
+        if search && kind == "document" {
+            return self.search_documents(a).await;
+        }
         if kind == "comment" {
             require(!search, "INVALID_INPUT", "Comment search is unavailable")?;
             return self.list_comments(a).await;
@@ -2362,6 +2528,26 @@ impl Gateway {
                 filter["priority"] = json!({"eq":v});
             }
             args["filter"] = filter;
+        }
+        if !search && kind == "document" {
+            let page = self.store.linear.call(query, args).await?[field].clone();
+            let nodes = page["nodes"]
+                .as_array()
+                .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Document page is missing"))?;
+            let include_archived = a
+                .get("include_archived")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let matched: Vec<&Value> = nodes
+                .iter()
+                .filter(|n| include_archived || crate::sections::document_is_current(n))
+                .collect();
+            return Ok(json!({
+                "nodes": matched.iter().map(|n| crate::sections::document_link(n)).collect::<Vec<_>>(),
+                "pageInfo": page["pageInfo"],
+                "native_page_size": nodes.len(),
+                "matched_in_page": matched.len(),
+            }));
         }
         if !search && a["order_by"] == "priority" {
             require(

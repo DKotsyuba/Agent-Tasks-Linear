@@ -24,13 +24,13 @@ query QArtifact($id:String!) {attachment(id:$id) {id title url metadata issue {i
 
 query QWorkAttachments($id:String!,$first:Int!,$after:String) {issue(id:$id) {attachments(first:$first,after:$after,includeArchived:true) {nodes {id title url metadata} pageInfo { hasNextPage endCursor }}}}
 
-query QDocument($id:String!) {document(id:$id) {id title content url updatedAt archivedAt project {id} issue {id}}}
+query QDocument($id:String!) {document(id:$id) {id title content url updatedAt archivedAt hiddenAt project {id} issue {id}}}
 
 query QProjectUpdate($id:String!) {projectUpdate(id:$id) {id url body health createdAt updatedAt archivedAt project {id} user {id name}}}
 
 query QProjectUpdates($filter:ProjectUpdateFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {projectUpdates(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id url body health createdAt updatedAt archivedAt project {id} user {id name}} pageInfo {hasNextPage endCursor}}}
 
-query QDocuments($filter:DocumentFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {documents(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id title url archivedAt project {id} issue {id}} pageInfo { hasNextPage endCursor }}}
+query QDocuments($filter:DocumentFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {documents(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id title url updatedAt archivedAt hiddenAt project {id} issue {id}} pageInfo { hasNextPage endCursor }}}
 
 query QComment($id:String!) {comment(id:$id) {id url body createdAt updatedAt resolvedAt resolvingCommentId parent {id} issue {id} project {id} projectUpdate {id} user {id name}}}
 
@@ -46,7 +46,7 @@ query QSearchIssues($term:String!,$first:Int!,$after:String) {searchIssues(term:
 
 query QSearchProjects($term:String!,$first:Int!,$after:String) {searchProjects(term:$term,first:$first,after:$after) {nodes {id name url} pageInfo { hasNextPage endCursor }}}
 
-query QSearchDocuments($term:String!,$first:Int!,$after:String) {searchDocuments(term:$term,first:$first,after:$after) {nodes {id title url} pageInfo { hasNextPage endCursor }}}
+query QSearchDocuments($term:String!,$first:Int!,$after:String,$includeArchived:Boolean!) {searchDocuments(term:$term,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id title content url updatedAt archivedAt hiddenAt project{id name} issue{id identifier project{id name}}} pageInfo { hasNextPage endCursor }}}
 
 mutation MCreateIssue($input:IssueCreateInput!) {issueCreate(input:$input) {success issue {id identifier title description url updatedAt archivedAt startedAt completedAt priority priorityLabel prioritySortOrder team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }}}}
 
@@ -66,9 +66,9 @@ mutation MCreateArtifact($input:AttachmentCreateInput!) {attachmentCreate(input:
 
 mutation MUpdateAttachment($id:String!,$input:AttachmentUpdateInput!) {attachmentUpdate(id:$id,input:$input) {success attachment {id metadata}}}
 
-mutation MCreateDocument($input:DocumentCreateInput!) {documentCreate(input:$input) {success document {id title content url}}}
+mutation MCreateDocument($input:DocumentCreateInput!) {documentCreate(input:$input) {success document {id title content url updatedAt archivedAt hiddenAt project {id} issue {id}}}}
 
-mutation MUpdateDocument($id:String!,$input:DocumentUpdateInput!) {documentUpdate(id:$id,input:$input) {success document {id title content url}}}
+mutation MUpdateDocument($id:String!,$input:DocumentUpdateInput!) {documentUpdate(id:$id,input:$input) {success document {id title content url updatedAt archivedAt hiddenAt project {id} issue {id}}}}
 
 mutation MCreateComment($input:CommentCreateInput!) {commentCreate(input:$input) {success comment {id url body createdAt updatedAt resolvedAt resolvingCommentId parent {id} issue {id} project {id} projectUpdate {id} user {id name}}}}
 

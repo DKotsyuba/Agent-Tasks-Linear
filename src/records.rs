@@ -3,7 +3,7 @@ use crate::{
     linear::Linear,
     model::{Fault, Meta, Result, Work, require},
 };
-use pulldown_cmark::{Event, Parser, Tag};
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -249,11 +249,28 @@ impl Store {
     }
 }
 
-/// Return a comparison key across Linear's whitespace, punctuation escapes, links and unordered list markers.
-/// Parser-recognized `-`/`*` list boundaries are encoded separately from normalized text,
-/// so escaped literal markers and markers in code cannot collide with list syntax.
-/// Unparsed backticks disable list folding conservatively. Text, destinations, headings and unknown
-/// sections remain significant; the serialized key is comparison-only and performs no writes.
+/// Byte length of the list marker (bullet or ordered) starting at `bytes`, or `None` if it does
+/// not start with one: `-`/`*`/`+` is one byte; an ordered marker is one or more ASCII digits
+/// followed by `.` or `)`, Linear's two supported ordered delimiters, consumed together since a
+/// native reply may renumber or change the delimiter without changing the item's own content.
+fn list_marker_len(bytes: &[u8]) -> Option<usize> {
+    if matches!(bytes.first(), Some(b'-' | b'*' | b'+')) {
+        return Some(1);
+    }
+    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0 && matches!(bytes.get(digits), Some(b'.' | b')')) {
+        Some(digits + 1)
+    } else {
+        None
+    }
+}
+
+/// Return a comparison key across Linear's whitespace, punctuation escapes, links and bullet or
+/// ordered list markers. Parser-recognized list-item boundaries are encoded separately from
+/// normalized text, so escaped literal markers and markers in code cannot collide with list
+/// syntax. Unparsed backticks disable list folding conservatively. Text, destinations, headings
+/// and unknown sections remain significant; the serialized key is comparison-only and performs
+/// no writes.
 pub fn markdown_key(value: &str) -> String {
     // Native Linear links gain the target's title. In typed URL sections only,
     // the destination is the field value; preserve labels in all ordinary prose.
@@ -280,10 +297,10 @@ pub fn markdown_key(value: &str) -> String {
     if !ambiguous {
         for (event, range) in events {
             if matches!(event, Event::Start(Tag::Item))
-                && matches!(source.as_bytes().get(range.start), Some(b'-' | b'*'))
+                && let Some(marker_len) = list_marker_len(&source.as_bytes()[range.start..])
             {
                 parts.push(markdown_text_key(&source[start..range.start]));
-                start = range.start + 1;
+                start = range.start + marker_len;
             }
         }
     }
@@ -291,28 +308,55 @@ pub fn markdown_key(value: &str) -> String {
     serde_json::to_string(&parts).unwrap()
 }
 
+/// Byte ranges of inline code spans and fenced/indented code blocks in `text`, using the same
+/// CommonMark parser as the rest of this module. Literal code content inside these ranges is
+/// never pattern-matched as a link or bare autolink target; a URL or `[label](url)` shape found
+/// there is opaque text, not markup, regardless of what surrounds the code elsewhere.
+fn code_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut fence_start = None;
+    for (event, range) in Parser::new(text).into_offset_iter() {
+        match event {
+            Event::Code(_) => ranges.push(range),
+            Event::Start(Tag::CodeBlock(_)) => fence_start = Some(range.start),
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = fence_start.take() {
+                    ranges.push(start..range.end);
+                }
+            }
+            _ => {}
+        }
+    }
+    ranges
+}
+
+/// Report whether byte offset `pos` in the text `ranges` were computed from lies inside code.
+fn in_code(ranges: &[std::ops::Range<usize>], pos: usize) -> bool {
+    ranges.iter().any(|r| r.contains(&pos))
+}
+
+/// Report whether the line spanning `[start, end)` overlaps any code range at all. An indented
+/// code block's own recognized range starts after its leading indentation, not at the physical
+/// line start, so touching the line's content anywhere still counts as code for that whole line.
+fn line_in_code(ranges: &[std::ops::Range<usize>], start: usize, end: usize) -> bool {
+    ranges.iter().any(|r| r.start < end && r.end > start)
+}
+
 /// Compare requested Markdown with Linear's native rendering without losing intentional labels.
 /// A bare HTTP(S) URL may gain a native title even when closing prose punctuation follows it;
 /// a prose domain may become the same-label `http://` link at its original word boundary;
 /// an email address, angle-bracketed `<address>` or bare in prose, may become the
 /// same-label `mailto:` link.
-/// Different destinations or labels, code, extra prose and list boundaries still differ.
+/// Different destinations or labels, code, extra prose and list boundaries still differ: the
+/// per-part walk only ever applies this leniency outside a code span or block, on either side,
+/// so unrelated code elsewhere in the same document never blocks a real match and a literal
+/// code region is never silently treated as a link or vice versa.
 /// The comparison is directional and never rewrites either source.
 pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
     let expected_key = markdown_key(expected);
     let actual_key = markdown_key(actual);
     if expected_key == actual_key {
         return true;
-    }
-    // A code span or block makes a URL literal; conservative disagreement preserves that content.
-    if expected.contains('\u{60}')
-        || actual.contains('\u{60}')
-        || Parser::new(expected)
-            .any(|event| matches!(event, Event::Code(_) | Event::Start(Tag::CodeBlock(_))))
-        || Parser::new(actual)
-            .any(|event| matches!(event, Event::Code(_) | Event::Start(Tag::CodeBlock(_))))
-    {
-        return false;
     }
     let expected_parts: Vec<String> = serde_json::from_str(&expected_key).unwrap();
     let actual_parts: Vec<String> = serde_json::from_str(&actual_key).unwrap();
@@ -358,15 +402,17 @@ fn email_address(label: &str) -> bool {
 
 /// Report whether a requested bare URL or domain token ends at `rest`, the remainder of the
 /// requested text starting exactly after that token. A token ends at end of input, whitespace,
-/// or one of the closing prose punctuation characters `,;:!?)]}`; a period also ends it only
+/// or one of the closing prose punctuation characters `,;:!?)]}'`; a period also ends it only
 /// when no alphanumeric follows, so a URL that genuinely continues (for example `…/a.foo`)
-/// is never split at an interior-looking dot. Linear's autolinker closes generated links
-/// before exactly this punctuation, so requiring the boundary keeps destinations exact while
-/// tolerating where native serialization places the link end.
+/// is never split at an interior-looking dot. The apostrophe covers a possessive immediately
+/// after a bare domain or email (`gateway.rs's helpers`), matching the same quote character the
+/// leading-boundary check already accepts before a token. Linear's autolinker closes generated
+/// links before exactly this punctuation, so requiring the boundary keeps destinations exact
+/// while tolerating where native serialization places the link end.
 fn prose_boundary(rest: &str) -> bool {
     rest.chars().next().is_none_or(|c| {
         c.is_whitespace()
-            || matches!(c, ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}')
+            || matches!(c, ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'')
             || (c == '.'
                 && rest[1..]
                     .chars()
@@ -381,9 +427,16 @@ fn prose_boundary(rest: &str) -> bool {
 /// explicit labels, changed destinations and surrounding prose remain visible. Bare forms may
 /// end at any closing prose punctuation, exactly where Linear's autolinker closes a link.
 fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> bool {
+    let expected_len = expected.len();
+    let actual_len = actual.len();
+    let expected_code = code_ranges(expected);
+    let actual_code = code_ranges(actual);
     let mut previous = None;
     while !expected.is_empty() && !actual.is_empty() {
-        if actual.starts_with('[')
+        let in_code = in_code(&expected_code, expected_len - expected.len())
+            || in_code(&actual_code, actual_len - actual.len());
+        if !in_code
+            && actual.starts_with('[')
             && let Some(middle) = actual.find("](")
             && !actual[1..middle].bytes().any(|b| b == b'[' || b == b']')
             && let Some(close) = link_end(actual, middle + 2)
@@ -434,19 +487,32 @@ fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> boo
     expected.is_empty() && actual.is_empty()
 }
 
-/// Normalize an intact Markdown text segment using Linear's existing escape, link and whitespace rules.
-/// List boundaries are excluded by the caller; this helper does not infer or rewrite list/code syntax.
+/// Normalize an intact Markdown text segment using Linear's existing escape, link and whitespace
+/// rules, while leaving every inline code span and fenced/indented code block exactly as written:
+/// none of the three passes below ever unescapes, rewrites or trims a byte that a fresh
+/// `code_ranges` call places inside code. List boundaries are excluded by the caller; this
+/// helper does not infer or rewrite list syntax.
 fn markdown_text_key(source: &str) -> String {
-    let mut text = String::new();
-    let mut chars = source.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' && chars.peek().is_some_and(char::is_ascii_punctuation) {
-            text.push(chars.next().unwrap());
+    // Backslash-unescape, skipped inside code so an intentional literal backslash there (for
+    // example inside a code span) never collapses into the character it would escape in prose.
+    let source_code = code_ranges(source);
+    let mut text = String::with_capacity(source.len());
+    let mut chars = source.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '\\'
+            && !in_code(&source_code, i)
+            && chars
+                .peek()
+                .is_some_and(|(_, next)| next.is_ascii_punctuation())
+        {
+            text.push(chars.next().unwrap().1);
         } else {
             text.push(c);
         }
     }
     // Linear serializes bare URLs as Markdown links, including angle-bracket destinations.
+    // Ranges are recomputed each pass since an applied replacement shifts later byte offsets;
+    // code content is never rewritten here, so its own positions never need to survive a shift.
     let mut offset = 0;
     while let Some(middle) = text[offset..].find("](").map(|i| offset + i) {
         let Some(open) = text[..middle].rfind('[') else {
@@ -456,6 +522,11 @@ fn markdown_text_key(source: &str) -> String {
         let Some(close) = link_end(&text, middle + 2) else {
             break;
         };
+        let code = code_ranges(&text);
+        if in_code(&code, open) || in_code(&code, close) {
+            offset = close + 1;
+            continue;
+        }
         let label = &text[open + 1..middle];
         let destination = text[middle + 2..close]
             .trim()
@@ -473,11 +544,25 @@ fn markdown_text_key(source: &str) -> String {
             offset = close + 1;
         }
     }
-    text.lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    // Fold whitespace and drop blank lines, but keep any line touching code exactly as written:
+    // trimming or dropping it could erase indentation that is the block's own boundary, or an
+    // interior blank line that is itself part of the unchanged code.
+    let code = code_ranges(&text);
+    let mut lines = Vec::new();
+    let mut pos = 0;
+    for line in text.split('\n') {
+        let end = pos + line.len();
+        if line_in_code(&code, pos, end) {
+            lines.push(line);
+        } else {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                lines.push(trimmed);
+            }
+        }
+        pos = end + 1;
+    }
+    lines.join("\n")
 }
 
 /// Find the closing Markdown link parenthesis after a destination start byte offset.

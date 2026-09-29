@@ -516,6 +516,15 @@ fn markdown_list_markers_preserve_content() {
     for (before, after) in [
         ("- `inline`\n- next", "* `inline`\n* next"),
         ("- ```text\n  - item\n  ```", "* ```text\n  - item\n  ```"),
+        ("+ item", "* item"),
+        (
+            "- Outer\n  + Inner\n    continuation",
+            "* Outer\n  * Inner\n    continuation",
+        ),
+        // Ordered markers: delimiter (`)` vs `.`), renumbering and loose-vs-tight spacing are
+        // all presentational, exactly like bullet markers already are.
+        ("1) One\n\n2) Two", "1. One\n2. Two"),
+        ("1. One\n2. Two", "5) One\n7) Two"),
     ] {
         assert_eq!(markdown_key(before), markdown_key(after));
     }
@@ -536,6 +545,14 @@ fn markdown_list_markers_preserve_content() {
         ("text `first\n- item\nlast`", "text `first\n* item\nlast`"),
         ("- ```text\n  - item\n  ```", "- ```text\n  * item\n  ```"),
         ("- - -", "* - -"),
+        ("`a+b`", "`a-b`"),
+        ("\\+ item", "+ item"),
+        ("- item", "\\+ item"),
+        // A real content change inside an ordered item, a literal "1)" in code, and an escaped
+        // (non-list) ordered marker must all still compare as genuinely different.
+        ("1) One\n2) Two", "1) One\n2) Three"),
+        ("`1) not a list`", "`2) not a list`"),
+        ("1\\) not a list", "1) a list"),
     ] {
         assert_ne!(markdown_key(before), markdown_key(after), "{before}");
     }
@@ -766,6 +783,146 @@ fn markdown_mailto_autolink_preserves_meaning() {
     assert!(!markdown_equivalent(
         &segment,
         &native_segment.replace("mailto:noreply", "mailto:different"),
+    ));
+}
+
+/// Reproduces the reported defect: unrelated inline/fenced code elsewhere in the same body
+/// must not block a separate bare-domain or bare-email autolink from comparing equivalent,
+/// while an actual change to the code content itself must still compare unequal.
+#[test]
+fn markdown_mixed_code_and_autolink_regions_compare_independently() {
+    use agent_tasks_linear::records::markdown_equivalent;
+
+    // Inline code plus a separate bare-domain autolink in the same paragraph.
+    let expected = "Use `gateway.rs` per docs, and also see gateway.rs directly.";
+    let native =
+        "Use `gateway.rs` per docs, and also see [gateway.rs](<http://gateway.rs>) directly.";
+    assert!(markdown_equivalent(expected, native));
+    // The unrelated code span is unchanged; only the bare domain gained a native title, so
+    // altering the code itself must still be flagged as a real difference.
+    assert!(!markdown_equivalent(
+        expected,
+        &native.replace("`gateway.rs`", "`gateway.toml`")
+    ));
+
+    // Fenced code plus a separate prose email/URL in the same body.
+    let email = "team@example.com";
+    let url = "https://example.com/report";
+    let expected_fenced =
+        format!("```rust\nfn gateway() {{}}\n```\n\nContact {email} or see {url}.");
+    let native_fenced = expected_fenced
+        .replace(email, &format!("[{email}](<mailto:{email}>)"))
+        .replace(url, &format!("[Report](<{url}>)"));
+    assert!(markdown_equivalent(&expected_fenced, &native_fenced));
+    // A real change inside the fenced code must still compare unequal.
+    assert!(!markdown_equivalent(
+        &expected_fenced,
+        &native_fenced.replace("fn gateway() {}", "fn gateway() { changed() }")
+    ));
+
+    // A code span still cannot silently become a link: no leniency crosses that boundary.
+    assert!(!markdown_equivalent(
+        "`gateway.rs`",
+        "[gateway.rs](<http://gateway.rs>)"
+    ));
+
+    // A literal URL inside a fenced code block, followed by a newline, must not compare equal
+    // to the same block with that literal turned into a Markdown link: the code content changed.
+    assert!(!markdown_equivalent(
+        "```text\nhttps://example.test/a\n```",
+        "```text\n[Title](https://example.test/a)\n```"
+    ));
+    // Same defect, inline: a literal URL inside a code span, followed by trailing prose in the
+    // same span, must not compare equal once that literal becomes a link inside the span.
+    assert!(!markdown_equivalent(
+        "`https://example.test/a next`",
+        "`[Title](https://example.test/a) next`"
+    ));
+
+    // Same defect again, in a 4-space indented code block (no fence delimiter at all) mixed
+    // with a separate, genuinely equivalent prose autolink: the indented literal changing to a
+    // link must still be flagged, even though the trailing email autolink alone is harmless.
+    assert!(!markdown_equivalent(
+        "    https://example.test/a\n\nContact team@example.com",
+        "    [Title](https://example.test/a)\n\nContact [team@example.com](mailto:team@example.com)"
+    ));
+
+    // An escaped punctuation character inside inline code is literal and distinct from the
+    // same character unescaped: normalization must never unescape inside code.
+    assert!(!markdown_equivalent(r"`\*a\*`", "`*a*`"));
+    // Unchanged escaped code next to a harmless prose autolink still compares equal.
+    assert!(markdown_equivalent(
+        r"See `\*a\*` and gateway.rs.",
+        r"See `\*a\*` and [gateway.rs](<http://gateway.rs>)."
+    ));
+
+    // An interior blank line inside a fenced block is part of the code; dropping it would
+    // silently accept a real content change.
+    assert!(!markdown_equivalent(
+        "```text\nfirst\n\nsecond\n```",
+        "```text\nfirst\nsecond\n```"
+    ));
+}
+
+/// A possessive apostrophe immediately after a bare domain or email is a valid closing boundary,
+/// matching the same quote character the leading-boundary check already accepts before a token;
+/// an unrelated change right after that apostrophe, or a genuinely different domain, still differs.
+#[test]
+fn markdown_possessive_apostrophe_ends_a_bare_domain_or_email() {
+    use agent_tasks_linear::records::markdown_equivalent;
+
+    let expected = "`impl Gateway {}` uses gateway.rs's helpers.";
+    let native = "`impl Gateway {}` uses [gateway.rs](<http://gateway.rs>)'s helpers.";
+    assert!(markdown_equivalent(expected, native));
+    // The word right after the possessive still differs meaningfully.
+    assert!(!markdown_equivalent(
+        expected,
+        "`impl Gateway {}` uses [gateway.rs](<http://gateway.rs>)'s notes."
+    ));
+    // A different domain behind the same possessive boundary still differs.
+    assert!(!markdown_equivalent(
+        expected,
+        "`impl Gateway {}` uses [different.rs](<http://different.rs>)'s helpers."
+    ));
+
+    let email = "maintainer@example.com";
+    let bare_email = format!("Contact {email}'s team for access.");
+    let native_email = bare_email.replace(email, &format!("[{email}](<mailto:{email}>)"));
+    assert!(markdown_equivalent(&bare_email, &native_email));
+}
+
+/// Reproduces a real qualification-report mismatch: a loose ordered list using `)` delimiters,
+/// combined with a bare Document URL elsewhere in the same list item, both normalized by native
+/// rendering at once (`)` to `.`, loose to tight, and the bare URL gaining its Document's own
+/// title). A real text change inside one item, or a changed URL destination, must still differ.
+#[test]
+fn markdown_ordered_list_and_document_link_normalize_together() {
+    use agent_tasks_linear::records::markdown_equivalent;
+
+    let url = "https://linear.app/example/document/qualification-notes";
+    let expected = format!(
+        "Summary line.\n\n\
+         1) First item text.\n\n\
+         2) Second item references ({url}) the report.\n\n\
+         3) Third item text."
+    );
+    let native = format!(
+        "Summary line.\n\
+         1. First item text.\n\
+         2. Second item references ([Qualification notes]({url})) the report.\n\
+         3. Third item text."
+    );
+    assert!(markdown_equivalent(&expected, &native));
+
+    // A real change inside one item still differs.
+    assert!(!markdown_equivalent(
+        &expected,
+        &native.replace("Third item text.", "Third item text, revised.")
+    ));
+    // A changed Document URL destination still differs.
+    assert!(!markdown_equivalent(
+        &expected,
+        &native.replace("qualification-notes", "qualification-notes-different")
     ));
 }
 
