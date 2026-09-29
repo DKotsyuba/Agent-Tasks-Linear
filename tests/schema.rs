@@ -121,9 +121,9 @@ fn static_graphql_operations_match_official_snapshot() {
     assert!(count >= 25);
 }
 
-/// The stable public tool identity: exactly these 22 names, in discovery order.
+/// The stable public tool identity: exactly these 25 names, in discovery order.
 #[test]
-fn catalog_pins_all_22_tool_names() {
+fn catalog_pins_all_25_tool_names() {
     let catalog = agent_tasks_linear::catalog::Catalog::new().unwrap();
     let names: Vec<&str> = catalog
         .tools
@@ -148,6 +148,9 @@ fn catalog_pins_all_22_tool_names() {
             "list_items",
             "search",
             "save_document",
+            "upload_file",
+            "list_files",
+            "get_file",
             "move_status",
             "record_review",
             "record_commits",
