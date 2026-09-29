@@ -1,5 +1,5 @@
 {
-  "contract": "D2 typed-reference matrix plus detail and handoff inputs. Each case is validated against the embedded catalogue by tests/schema.rs. These are the coordinated release contract, not a per-runtime guarantee: an installed server accepts permalink references, detail and handoff only once its runtime advertises them in discovery, while UUID references behave identically everywhere. Notes record server-side conditions (conditional inputs, replay rules) the JSON schema deliberately does not encode; all identifiers and permalinks are synthetic examples.",
+  "contract": "D2 typed-reference matrix plus detail and handoff inputs, plus the D1.1 documents/files/entry input contract (guarded document section/hidden/expected_updated_at edits, scoped document search, the three file operations, team discovery and repository_path Project lookup). Each case is validated against the embedded catalogue by tests/schema.rs. These are the coordinated release/preparation contract, not a claim that an installed runtime implements every handler yet: the schema and examples are the agreed target shape providers code their handlers against, while an installed server only accepts what its own runtime advertises in discovery. Notes record server-side conditions (conditional inputs, replay rules) the JSON schema deliberately does not encode; all identifiers and permalinks are synthetic examples.",
   "cases": [
     {
       "tool": "get_context",
@@ -268,6 +268,100 @@
       "valid": true,
       "note": "get_comment.id keeps accepting a UUID or any observed native permalink.",
       "arguments": { "id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract#comment-deadbeef" }
+    },
+    {
+      "tool": "get_context",
+      "valid": true,
+      "note": "section (type=document only) returns just that named section; the server rejects it for other types.",
+      "arguments": { "type": "document", "id": "https://linear.app/example/document/d2-contract-a1b2c3d4e5f6", "section": "Runbook" }
+    },
+    {
+      "tool": "get_context",
+      "valid": false,
+      "note": "section is bounded to 1..300 characters, matching the accepted heading-text contract.",
+      "arguments": { "type": "document", "id": "https://linear.app/example/document/d2-contract-a1b2c3d4e5f6", "section": "" }
+    },
+    {
+      "tool": "save_document",
+      "valid": true,
+      "note": "A guarded section replace: content, section, id and expected_updated_at from a fresh read are all present; combining section with a new Document (id omitted) is a server-side condition, not a schema shape.",
+      "arguments": {
+        "request_id": "66666666-6666-4666-8666-666666666661",
+        "actor": "orchestrator-run",
+        "id": "11111111-1111-4111-8111-111111111199",
+        "section": "Runbook",
+        "content": "## Запуск\n\nUpdated instructions.\n",
+        "expected_updated_at": "2026-09-25T00:00:01Z"
+      }
+    },
+    {
+      "tool": "save_document",
+      "valid": true,
+      "note": "hidden maps to native hiddenAt(now/null); still requires actor/request_id like any mutation.",
+      "arguments": {
+        "request_id": "66666666-6666-4666-8666-666666666662",
+        "actor": "orchestrator-run",
+        "id": "11111111-1111-4111-8111-111111111199",
+        "hidden": true
+      }
+    },
+    {
+      "tool": "search",
+      "valid": true,
+      "note": "type=document scopes to one Project and includes historical (archived/hidden) material; document search is capped at 25 results server-side regardless of first.",
+      "arguments": { "type": "document", "query": "runbook", "project_id": "https://linear.app/example/project/passport", "include_archived": true }
+    },
+    {
+      "tool": "upload_file",
+      "valid": true,
+      "note": "path is read from the MCP server host, bounded to 10,000,000 bytes; a retry with identical arguments returns the same attachment.",
+      "arguments": {
+        "request_id": "66666666-6666-4666-8666-666666666663",
+        "actor": "orchestrator-run",
+        "work_id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract",
+        "path": "/srv/agent/reports/check-summary.pdf",
+        "title": "Check summary"
+      }
+    },
+    {
+      "tool": "upload_file",
+      "valid": false,
+      "note": "path is required and must be an absolute nonblank string.",
+      "arguments": {
+        "request_id": "66666666-6666-4666-8666-666666666664",
+        "actor": "orchestrator-run",
+        "work_id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract"
+      }
+    },
+    {
+      "tool": "list_files",
+      "valid": true,
+      "note": "Lists only user artifacts for one work item; internal workflow-state attachments are excluded server-side.",
+      "arguments": { "work_id": "https://linear.app/example/issue/EXAMPLE-42/schema-contract" }
+    },
+    {
+      "tool": "get_file",
+      "valid": true,
+      "note": "id is the attachment UUID from upload_file/list_files; destination is an absolute path on the MCP server host.",
+      "arguments": { "id": "11111111-1111-4111-8111-111111111198", "destination": "/srv/agent/downloads/check-summary.pdf" }
+    },
+    {
+      "tool": "get_file",
+      "valid": false,
+      "note": "destination must be an absolute nonblank path.",
+      "arguments": { "id": "11111111-1111-4111-8111-111111111198", "destination": "" }
+    },
+    {
+      "tool": "list_items",
+      "valid": true,
+      "note": "type=team lists native teams for workspace discovery, with no other filter.",
+      "arguments": { "type": "team" }
+    },
+    {
+      "tool": "list_items",
+      "valid": true,
+      "note": "type=project with repository_path finds every Project sharing this local checkout's canonical common Git directory, including linked worktrees.",
+      "arguments": { "type": "project", "repository_path": "/srv/agent/checkouts/example-product" }
     }
   ]
 }
