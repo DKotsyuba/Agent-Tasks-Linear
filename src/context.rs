@@ -329,7 +329,7 @@ pub fn agent_context(
         "branch":item.fields["branch"],"worktree":item.fields["worktree"],"lead":item.fields["lead"]}));
     let links: Vec<_> = documents
         .iter()
-        .map(|doc| json!({"id":doc["id"],"title":doc["title"],"url":doc["url"]}))
+        .map(crate::sections::document_link)
         .collect();
     Ok(json!({
         "view":view,"id":work.id(),"url":work.native["url"],"identifier":work.native["identifier"],

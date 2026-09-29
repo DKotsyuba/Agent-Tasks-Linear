@@ -2019,12 +2019,12 @@ impl Gateway {
             "INCOMPLETE_DATA",
             "Agent context exceeds 500 document links",
         )?;
-        Ok(unique_documents.into_values().collect())
-    }
-    /// One compact document link including its native archived marker.
-    fn document_link(document: &Value) -> Value {
-        json!({"id":document["id"],"title":document["title"],"url":document["url"],
-            "archived":!document["archivedAt"].is_null()})
+        // Native includeArchived excludes only archivedAt; hiddenAt is a separate native flag it
+        // never covers, so a hidden Document otherwise stayed in the compact, current-only slice.
+        Ok(unique_documents
+            .into_values()
+            .filter(|d| include_archived || crate::sections::document_is_current(d))
+            .collect())
     }
     /// Search Documents by title/content/native semantic relevance, optionally scoped to one
     /// Project (a Document attached directly to it, or attached to one of its Issues), and
@@ -2093,24 +2093,22 @@ impl Gateway {
             node["content"].as_str().unwrap_or(""),
             query,
         );
-        json!({
-            "id": node["id"],
-            "title": node["title"],
-            "url": node["url"],
-            "project": (!node["project"]["id"].is_null())
-                .then(|| json!({"id":node["project"]["id"],"name":node["project"]["name"]})),
-            "issue": (!node["issue"]["id"].is_null()).then(|| json!({
-                "id":node["issue"]["id"],
-                "identifier":node["issue"]["identifier"],
-                "project":node["issue"]["project"],
-            })),
-            "updated_at": node["updatedAt"],
-            "archived": !node["archivedAt"].is_null(),
-            "hidden": !node["hiddenAt"].is_null(),
-            "current": crate::sections::document_is_current(node),
-            "snippet": snippet,
-            "match_source": match_source,
-        })
+        let mut row = crate::sections::document_link(node);
+        row["project"] = (!node["project"]["id"].is_null())
+            .then(|| json!({"id":node["project"]["id"],"name":node["project"]["name"]}))
+            .into();
+        row["issue"] = (!node["issue"]["id"].is_null())
+            .then(|| {
+                json!({
+                    "id":node["issue"]["id"],
+                    "identifier":node["issue"]["identifier"],
+                    "project":node["issue"]["project"],
+                })
+            })
+            .into();
+        row["snippet"] = json!(snippet);
+        row["match_source"] = json!(match_source);
+        row
     }
     /// Locate `query` case-insensitively in `title` then `content`, returning up to roughly 200
     /// characters of surrounding context; falls back to a plain content preview with an honest
@@ -2238,7 +2236,11 @@ impl Gateway {
                             "repository_path":passport_fields["repository_path"],
                             "repository_url":passport_fields["repository_url"],
                             "teams":p["teams"]["nodes"]},
-                        "documents":docs.iter().map(Self::document_link).collect::<Vec<_>>(),
+                        "documents":docs
+                            .iter()
+                            .filter(|d| crate::sections::document_is_current(d))
+                            .map(crate::sections::document_link)
+                            .collect::<Vec<_>>(),
                         "full_context":Self::full_routes(id, None),
                         "runtime":self.runtime_facts()
                     }));
@@ -2251,7 +2253,13 @@ impl Gateway {
                         json!({"filter":{"project":{"id":{"eq":id}}},"includeArchived":false}),
                     )
                     .await?;
-                Ok(json!({"project":p,"documents":docs}))
+                Ok(json!({
+                    "project":p,
+                    "documents":docs
+                        .into_iter()
+                        .filter(crate::sections::document_is_current)
+                        .collect::<Vec<_>>()
+                }))
             }
             "document" => {
                 let document = self
@@ -2320,7 +2328,7 @@ impl Gateway {
                         "transitions":rules::actions(&w,&g),
                         "guidance":crate::guidance::guidance(&w,&g),
                         "handoff":crate::context::handoff_selection(m, &activity),
-                        "documents":documents.iter().map(Self::document_link).collect::<Vec<_>>(),
+                        "documents":documents.iter().map(crate::sections::document_link).collect::<Vec<_>>(),
                         "full_context":Self::full_routes(&m.project_id, Some(w.id())),
                         "runtime":self.runtime_facts()
                     }));
@@ -2664,6 +2672,26 @@ impl Gateway {
                 filter["priority"] = json!({"eq":v});
             }
             args["filter"] = filter;
+        }
+        if !search && kind == "document" {
+            let page = self.store.linear.call(query, args).await?[field].clone();
+            let nodes = page["nodes"]
+                .as_array()
+                .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "Document page is missing"))?;
+            let include_archived = a
+                .get("include_archived")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let matched: Vec<&Value> = nodes
+                .iter()
+                .filter(|n| include_archived || crate::sections::document_is_current(n))
+                .collect();
+            return Ok(json!({
+                "nodes": matched.iter().map(|n| crate::sections::document_link(n)).collect::<Vec<_>>(),
+                "pageInfo": page["pageInfo"],
+                "native_page_size": nodes.len(),
+                "matched_in_page": matched.len(),
+            }));
         }
         if !search && a["order_by"] == "priority" {
             require(

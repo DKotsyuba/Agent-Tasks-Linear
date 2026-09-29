@@ -2,7 +2,7 @@
 //! classification, shared by document read/search/write handlers.
 use crate::model::{Result, require};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// A native Document (or search row) is current iff both visibility timestamps are absent.
 /// Title, prose and missing hashes never change this classification.
@@ -13,6 +13,21 @@ pub fn is_current(archived_at: &Value, hidden_at: &Value) -> bool {
 /// Convenience over a raw native Document payload carrying `archivedAt`/`hiddenAt`.
 pub fn document_is_current(document: &Value) -> bool {
     is_current(&document["archivedAt"], &document["hiddenAt"])
+}
+
+/// One Document link with native ownership visibility: id/title/url plus updated_at, archived,
+/// hidden and the derived current flag, the same currentness signal every document-listing
+/// route (list, search and current-context links) agrees on.
+pub fn document_link(document: &Value) -> Value {
+    json!({
+        "id": document["id"],
+        "title": document["title"],
+        "url": document["url"],
+        "updated_at": document["updatedAt"],
+        "archived": !document["archivedAt"].is_null(),
+        "hidden": !document["hiddenAt"].is_null(),
+        "current": document_is_current(document),
+    })
 }
 
 /// One Markdown heading with its exact byte span in the source document.
