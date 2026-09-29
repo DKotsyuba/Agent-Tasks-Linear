@@ -1,4 +1,4 @@
-# Candidate observed in the existing family; qualified on the target host before release.
+# Candidate observed in the existing family; qualify on the target host before release.
 [toolchain]
 channel = "1.98.1"
 profile = "minimal"

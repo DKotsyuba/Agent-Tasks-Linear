@@ -1,6 +1,6 @@
 # Template adoption provenance
 
-This repository adopts infrastructure from the private family template
+This repository adopts infrastructure from the family template
 `DKotsyuba/agent-mcp-template` at pinned commit
 `7f094e0463c0a6d5cf52d68d91ca32f6bc0f465f` (devkit 0.2.0, family standard
 1.0.0-rc.2). Adoption was done by copying and adapting the specific files
@@ -17,12 +17,17 @@ remain proprietary to the owner with no open-source license granted.
 |---|---|---|
 | `rust-toolchain.toml` | `scaffold/rust-toolchain.toml` | Verbatim. |
 | `.cargo/config.toml` | `scaffold/.cargo/config.toml` | Verbatim (xtask alias only). |
-| `deny.toml` | `scaffold/deny.toml` | Verbatim starting allowlist; entries adjusted only for this product's actual dependency licenses, each adjustment noted in Git history. |
+| `deny.toml` | `scaffold/deny.toml` | Verbatim starting allowlist; entries adjusted only for this product's actual dependency licenses, each adjustment noted below. |
 | `docs/MCP_RESPONSE_STANDARD.md` | `standard/MCP_RESPONSE_STANDARD.md` | Verbatim export of the canonical standard; keep in sync with the template in the same change when the profile rules change. |
 | `docs/TEMPLATE_MIT_LICENSE.txt` | `LICENSE` | MIT notice covering the copied helper code only. |
 | `docs/FAMILY_CONTRACT.md` | `scaffold/docs/FAMILY_CONTRACT.md` | Verbatim summary. |
 | `family.toml` | `scaffold/family.toml` | Product identity (agent-tasks-linear / DKotsyuba/Agent-Tasks-Linear / AGENT_TASKS_LINEAR_) and this product's honest profile: `process = "resident"`, `state = "external"`, transports stdio + streamable-http. `state_schema = 0` in delivery manifests therefore means "no local business state", not `state = "none"`. |
 | `xtask/` | `scaffold/xtask/src/main.rs`, `scaffold/xtask/Cargo.toml` | Rust-only gate (prepare/check/standard/contract). Contract checking rewritten for the existing schema-first model: `schemas/tools.json` stays authoritative, there is no generator, and `contract check` runs Rust tests comparing the file with the embedded catalogue, the gateway dispatch vocabulary and real-binary MCP discovery. add-tool/template-upgrade commands were not imported (typed-generator workflow does not apply to the existing 25-tool product). |
+| `crates/family-delivery/` | `scaffold/crates/family-delivery/src/lib.rs`, `Cargo.toml` | Single-binary delivery helper with an explicit tested `external` state-profile adaptation (packaging stamps `state_schema = 0`); the managed launcher pins the product home and its `config.toml` when present, and an identity-checked, byte-exact-backed-up legacy-launcher adoption route was added. See the crate's own notes. |
+| `install.sh` | `scaffold/install.sh` | Product name/repository/env prefix substituted; the repository is public so the unauthenticated HTTPS path is the default and `gh` remains the authenticated option. Includes the `--adopt-existing` passthrough for the backed-up legacy adoption route. |
+| `scripts/wait-release.sh` | `scaffold/scripts/wait-release.sh` | Verbatim wrapper forwarding to `cargo xtask release wait`. |
+| `.github/workflows/ci.yml` | `scaffold/.github/workflows/ci.yml` | Same SHA-pinned actions and job split; product gate invoked via `cargo xtask check`; no secrets required for PRs. |
+| `.github/workflows/release.yml` | `scaffold/.github/workflows/release.yml` | Same SHA-pinned actions, build-once artifact, hash verification before executable permission, exact-payload tests via `MCP_TEST_BINARY`, `environment: release` approval pause, complete-draft publication. |
 
 ## Documented migration exceptions (GOV-02)
 
@@ -39,11 +44,6 @@ remain proprietary to the owner with no open-source license granted.
   reviewed permissive licenses in this product's existing dependency tree, and
   workspace-internal crates are excluded from license evaluation because the
   product deliberately declares no open-source license.
-| `crates/family-delivery/` | `scaffold/crates/family-delivery/src/lib.rs`, `Cargo.toml` | Single-binary delivery helper with an explicit tested `external` state-profile adaptation (packaging stamps `state_schema = 0`); see the crate's own notes. |
-| `install.sh` | `scaffold/install.sh` | Product name/repository/env prefix substituted; repository is public so the unauthenticated HTTPS path is the default and `gh` remains the authenticated option. Includes an explicit backed-up legacy-launcher adoption route. |
-| `scripts/wait-release.sh` | `scaffold/scripts/wait-release.sh` | Verbatim wrapper forwarding to `cargo xtask release wait`. |
-| `.github/workflows/ci.yml` | `scaffold/.github/workflows/ci.yml` | Same SHA-pinned actions and job split; product gate invoked via `cargo xtask check`; no secrets required for PRs. |
-| `.github/workflows/release.yml` | `scaffold/.github/workflows/release.yml` | Same SHA-pinned actions, build-once artifact, hash verification before executable permission, exact-payload tests via `MCP_TEST_BINARY`, `environment: release` approval pause, complete-draft publication. |
 
 ## Not imported
 

@@ -30,9 +30,9 @@ enum Command {
     /// Legacy alias of mcp.
     Stdio,
     /// Generate a new private bearer config; never overwrites existing credentials.
-    InitConfig,
-    /// Legacy alias of init-config.
     Init,
+    /// Legacy alias of init.
+    InitConfig,
     /// Run the single loopback MCP writer.
     Serve,
     /// Read-only local health report; never contacts Linear or the network
