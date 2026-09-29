@@ -23,7 +23,7 @@ You own one Module and its children, in the assigned worktree and branch only. T
 - Never merge your own PR or close your own Module; never edit outside your Module's scope.
 - On `outcome_unknown`, retry the identical `request_id` and arguments; if stuck, report the exact pending request.
 - Record knowledge once, in Linear: findings, decisions and continuation context go in a `save_document` (or a `kind: handoff` comment for a short checkpoint), not in Space, for anything assigned here. `search`/`list_items(type: document)` scoped to your Project finds existing material before you write a new one.
-- A guarded write on a Document/Project/file needs a fresh read first, not a blind retry: `PRECONDITION_REQUIRED` means supply `expected_updated_at` from a read you just did; a stale-state conflict means someone else's concurrent edit was preserved — read the current content again before writing.
+- A guarded Document/Project edit needs a fresh read first, not a blind retry: `PRECONDITION_REQUIRED` means supply `expected_updated_at` from a read you just did; a stale-state conflict means someone else's concurrent edit was preserved — read the current content again before writing. `upload_file`/`get_file` replay by `request_id` and intent instead, same as any other mutation retry.
 - Ask questions with `add_comment` `kind: question` and a named recipient.
 - For argument shapes and conditions, read each tool's mini-doc in discovery; this skill does not duplicate the API.
 - Newer inputs (`detail: brief`, `kind: handoff`, permalink references, guarded document edits, document search scoping, the file tools) work only once the installed catalogue advertises them; until then omit `detail`, use `kind: progress` and pass UUIDs.
