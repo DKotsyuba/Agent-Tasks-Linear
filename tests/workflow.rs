@@ -1341,6 +1341,60 @@ async fn acknowledgements_carry_next_action_guidance() {
     assert_eq!(brief["guidance"]["stage"], "recovery");
 }
 
+/// A freshly created, fully prepared work item reports truthful preparation guidance instead
+/// of a spurious ancestor-graph drift caused by its own absence from the pre-write graph
+/// snapshot; its guidance matches a fresh context read exactly. An incomplete real parent
+/// (still Backlog) is still diagnosed, never silently treated as ready.
+#[tokio::test]
+async fn create_acknowledges_healthy_work_with_truthful_guidance() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let epic = f.work("epic", &project, None).await;
+
+    // A real incomplete parent (Epic still Backlog) is diagnosed, not silently accepted.
+    let blocked = f
+        .ok(
+            "create_module",
+            json!({"team_id":f.team,"project_id":project,"parent_id":epic,"title":"Readable module","fields":{
+                "description":"Human readable work","expected_result":"Observable result",
+                "acceptance_criteria":"Scenarios pass","lead":"codex:lead","branch":"feature/example",
+                "worktree":"/tmp/example","required_contract":"Not required","provided_contract":"Documented API"
+            }}),
+        )
+        .await;
+    let module = blocked["issue"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(blocked["guidance"]["stage"], "preparation");
+    assert_ne!(
+        blocked["guidance"]["conditions"],
+        json!(["Ancestor is outside the project graph"]),
+        "a healthy new item must not report a spurious ancestor-graph drift"
+    );
+
+    f.mv(&epic, "In Progress").await;
+    let created = f
+        .ok(
+            "create_task",
+            json!({"team_id":f.team,"project_id":project,"parent_id":module,"title":"Readable task","fields":{
+                "description":"Human readable work","expected_result":"Observable result",
+                "acceptance_criteria":"Scenarios pass","work_type":"non_code",
+                "local_check":"Inspect output","executor":"codex:worker"
+            }}),
+        )
+        .await;
+    assert_eq!(created["guidance"]["stage"], "preparation");
+    assert_eq!(created["guidance"]["conditions"], json!([]));
+    assert_eq!(created["guidance"]["next_action"]["kind"], "prepare_work");
+
+    let task = created["issue"]["id"].as_str().unwrap().to_owned();
+    let fresh = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":task,"view":"lead"}),
+        )
+        .await;
+    assert_eq!(fresh["guidance"], created["guidance"]);
+}
+
 /// Duplicate transfers attachments with native provenance; lost responses recover without altering the original's record.
 #[tokio::test]
 async fn duplicate_transition_recovers_relation_write() {
