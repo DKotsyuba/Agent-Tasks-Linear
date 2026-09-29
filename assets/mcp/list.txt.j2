@@ -1,7 +1,7 @@
 {% from "common" import line, body, heading, entity %}
 {{ tool }}: {{ entity_type }}{{ "\n" }}
 {% if not items %}No items on this page.{{ "\n" }}{% endif %}
-{% for row in items %}{{ heading("Item") }}{{ entity(row.item) }}{{ line("Health", row.item.health) }}{% if entity_type == "project_update" %}{{ line("Updated at", row.item.updated_at) }}{% endif %}
+{% for row in items %}{{ heading("Item") }}{{ entity(row.item) }}{{ line("Health", row.item.health) }}{% if entity_type == "project_update" %}{{ line("Updated at", row.item.updated_at) }}{% endif %}{% if entity_type == "file" %}{{ line("Work ID", row.item.work_id) }}{{ line("Work URL", row.item.work_url) }}{{ line("File name", row.item.file_name) }}{{ line("Content type", row.item.content_type) }}{{ line("Size bytes", row.item.size_bytes) }}{% endif %}
 {% if row.activity %}{{ line("Kind", row.activity.kind|default(none)) }}{{ line("Actor", row.activity.actor|default(none)) }}{{ line("Role", row.activity.role|default(none)) }}{{ line("Session", row.activity.session|default(none)) }}{{ line("Recipient", row.activity.recipient|default(none)) }}{{ line("Reason", row.activity.reason|default(none)) }}
 {% for source in row.activity.source_links|default([]) %}{{ line("Source", source) }}{% endfor %}
 {% if entity_type == "comment" %}{% if not row.item.parent_id %}{{ line("Parent ID", row.activity.parent_id|default(none)) }}{% endif %}{{ line("Resolved", (row.activity.resolved_at|default(none)) is not none) }}{{ line("Resolving comment ID", row.activity.resolving_comment_id|default(none)) }}{% endif %}

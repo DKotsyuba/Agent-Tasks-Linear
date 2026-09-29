@@ -195,6 +195,8 @@ fn fallback_kind(tool: &str) -> &'static str {
 }
 
 /// Select native identity fields as values; templates own their labels and order.
+/// The trailing group is the flat file envelope agreed for upload_file/list_files/get_file;
+/// it is null for every other tool's item and so never renders through `line`.
 fn identity(item: &Value) -> Value {
     json!({
         "id":item["id"],"identifier":item["identifier"],
@@ -203,7 +205,10 @@ fn identity(item: &Value) -> Value {
         "priority":item["priority"],"health":item["health"],
         "updated_at":item["updatedAt"],"resolved":item["resolvedAt"].is_string(),
         "project_id":item["project"]["id"],"team_id":item["team"]["id"],
-        "parent_id":item["parent"]["id"]
+        "parent_id":item["parent"]["id"],
+        "work_id":item["work_id"],"work_url":item["work_url"],
+        "file_name":item["file_name"],"content_type":item["content_type"],
+        "size_bytes":item["size_bytes"],"path":item["path"]
     })
 }
 
@@ -404,7 +409,12 @@ fn list_projection(tool: &str, request: &Value, data: &Value) -> Value {
     let items: Vec<Value> = data["nodes"].as_array().into_iter().flatten().enumerate().map(|(i,item)| {
         json!({"item":identity(item),"activity":data["activity_records"].get(i).unwrap_or(&Value::Null)})
     }).collect();
-    json!({"tool":tool,"entity_type":request["type"],"items":items,
+    let entity_type = if tool == "list_files" {
+        json!("file")
+    } else {
+        request["type"].clone()
+    };
+    json!({"tool":tool,"entity_type":entity_type,"items":items,
         "has_next":data["pageInfo"]["hasNextPage"],"cursor":data["pageInfo"]["endCursor"]})
 }
 
@@ -496,6 +506,63 @@ mod tests {
                 "{name}: {text}"
             );
         }
+    }
+
+    /// File operations render their own agreed fields (work item, name, type, size, path),
+    /// not just the shared identity block, for both the single-item ack shape and list_files.
+    #[test]
+    fn file_operations_render_their_dedicated_fields() {
+        let file = json!({"id":"attachment-1","title":"Check summary","url":"https://uploads.linear.app/attachment-1",
+            "work_id":"issue-1","work_url":"https://linear.app/example/issue/MYT-1/a-task",
+            "file_name":"check-summary.pdf","content_type":"application/pdf","size_bytes":20480,
+            "replayed":false});
+        for tool in ["upload_file", "get_file"] {
+            let text = render_outcome(
+                tool,
+                &json!({"request_id":"req-1"}),
+                &Outcome::ok(file.clone()),
+            );
+            assert!(text.contains("ID: attachment-1"), "{tool}: {text}");
+            assert!(text.contains("Work ID: issue-1"), "{tool}: {text}");
+            assert!(
+                text.contains("Work URL: https://linear.app/example/issue/MYT-1/a-task"),
+                "{tool}: {text}"
+            );
+            assert!(
+                text.contains("File name: check-summary.pdf"),
+                "{tool}: {text}"
+            );
+            assert!(
+                text.contains("Content type: application/pdf"),
+                "{tool}: {text}"
+            );
+            assert!(text.contains("Size bytes: 20480"), "{tool}: {text}");
+            assert!(
+                !text.contains("Path:"),
+                "{tool}: absent path stays hidden: {text}"
+            );
+        }
+        let mut downloaded = file.clone();
+        downloaded["path"] = json!("/srv/agent/downloads/check-summary.pdf");
+        let text = render_outcome(
+            "get_file",
+            &json!({"request_id":"req-1"}),
+            &Outcome::ok(downloaded),
+        );
+        assert!(
+            text.contains("Path: /srv/agent/downloads/check-summary.pdf"),
+            "{text}"
+        );
+
+        let listed = render_outcome(
+            "list_files",
+            &json!({"work_id":"issue-1"}),
+            &Outcome::ok(json!({"nodes":[file],"pageInfo":{"hasNextPage":false,"endCursor":null}})),
+        );
+        assert!(listed.contains("list_files: file"), "{listed}");
+        assert!(listed.contains("File name: check-summary.pdf"), "{listed}");
+        assert!(listed.contains("Content type: application/pdf"), "{listed}");
+        assert!(listed.contains("Size bytes: 20480"), "{listed}");
     }
 
     /// Acknowledgements and previews render guidance, effect plans and overview attention.
