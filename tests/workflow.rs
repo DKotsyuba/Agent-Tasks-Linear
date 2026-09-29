@@ -1050,6 +1050,19 @@ fn markdown_mixed_code_and_autolink_regions_compare_independently() {
         "`gateway.rs`",
         "[gateway.rs](<http://gateway.rs>)"
     ));
+
+    // A literal URL inside a fenced code block, followed by a newline, must not compare equal
+    // to the same block with that literal turned into a Markdown link: the code content changed.
+    assert!(!markdown_equivalent(
+        "```text\nhttps://example.test/a\n```",
+        "```text\n[Title](https://example.test/a)\n```"
+    ));
+    // Same defect, inline: a literal URL inside a code span, followed by trailing prose in the
+    // same span, must not compare equal once that literal becomes a link inside the span.
+    assert!(!markdown_equivalent(
+        "`https://example.test/a next`",
+        "`[Title](https://example.test/a) next`"
+    ));
 }
 
 /// A pending commit import accepts Linear's mailto autolink for a co-author footer while the
