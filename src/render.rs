@@ -209,7 +209,7 @@ fn identity(item: &Value) -> Value {
         "updated_at":if item["updatedAt"].is_string() {&item["updatedAt"]} else {&item["updated_at"]},
         "resolved":item["resolvedAt"].is_string(),
         "project_id":item["project"]["id"],"team_id":item["team"]["id"],
-        "parent_id":item["parent"]["id"],
+        "parent_id":item["parent"]["id"],"issue_id":item["issue"]["id"],
         "work_id":item["work_id"],"work_url":item["work_url"],
         "file_name":item["file_name"],"content_type":item["content_type"],
         "size_bytes":item["size_bytes"],"path":item["path"],
@@ -388,7 +388,9 @@ fn context_projection(request: &Value, data: &Value) -> Value {
         json!(crate::sections::document_is_current(item))
     } else {
         Value::Null
-    }})
+    },
+    "issue_route":item["issue"]["id"].as_str().map(|id| json!(format!("get_context type=issue id={id}")))
+    })
 }
 
 /// Select project cards and delta source values without printing internal hashes.
@@ -703,6 +705,71 @@ mod tests {
         assert!(text.contains("Updated at: 2026-09-29T00:05:00Z"), "{text}");
         assert!(text.contains("Hidden: true"), "{text}");
         assert!(text.contains("Replayed: false"), "{text}");
+    }
+
+    /// A Document rebound to (or already owned by) an Issue keeps that Issue visible — as an
+    /// ID and a get_context route — in its save_document ACK and in a full or section
+    /// get_context read; QDocument already selects `issue {id}`, so this is presentation only,
+    /// no extra API call. A Project-attached Document is unaffected (no Issue ID line).
+    #[test]
+    fn document_shows_its_owning_issue_in_ack_and_full_and_section_reads() {
+        let issue_doc = json!({"id":"569aaac5-45df-4e04-992f-1a28b68a5a0e","title":"Notes",
+            "url":"https://linear.app/doc-1","content":"Body",
+            "updatedAt":"2026-09-29T02:03:44.471Z","archivedAt":null,"hiddenAt":null,
+            "issue":{"id":"9b3d0592-c385-48ee-97da-15a46ff1f2ec"},"project":null,
+            "replayed":false});
+
+        let ack = render_outcome(
+            "save_document",
+            &json!({"request_id":"req-1","id":"569aaac5-45df-4e04-992f-1a28b68a5a0e"}),
+            &Outcome::ok(issue_doc.clone()),
+        );
+        assert!(
+            ack.contains("Issue ID: 9b3d0592-c385-48ee-97da-15a46ff1f2ec"),
+            "{ack}"
+        );
+
+        let full = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"569aaac5-45df-4e04-992f-1a28b68a5a0e"}),
+            &Outcome::ok(issue_doc.clone()),
+        );
+        assert!(
+            full.contains("Issue ID: 9b3d0592-c385-48ee-97da-15a46ff1f2ec"),
+            "{full}"
+        );
+        assert!(
+            full.contains(
+                "Issue context: get_context type=issue id=9b3d0592-c385-48ee-97da-15a46ff1f2ec"
+            ),
+            "{full}"
+        );
+
+        let mut section_doc = issue_doc;
+        section_doc["content"] = json!("Section body only.");
+        section_doc["section"] = json!({"heading":"Runbook","index":1,"count":2});
+        let section = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"569aaac5-45df-4e04-992f-1a28b68a5a0e","section":"Runbook"}),
+            &Outcome::ok(section_doc),
+        );
+        assert!(
+            section.contains("Issue ID: 9b3d0592-c385-48ee-97da-15a46ff1f2ec"),
+            "{section}"
+        );
+
+        let project_doc = json!({"id":"doc-2","title":"Plan","url":"https://linear.app/doc-2",
+            "content":"Body","project":{"id":"project-1"}});
+        let project_read = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"doc-2"}),
+            &Outcome::ok(project_doc),
+        );
+        assert!(!project_read.contains("Issue ID:"), "{project_read}");
+        assert!(
+            project_read.contains("Project ID: project-1"),
+            "{project_read}"
+        );
     }
 
     /// Acknowledgements and previews render guidance, effect plans and overview attention.

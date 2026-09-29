@@ -31,5 +31,5 @@ Project{{ "\n" }}{{ entity(item) }}{{ line("Updated at", item.updated_at) }}{% f
 {% elif kind == "project_update" %}
 Project update{{ "\n" }}{{ entity(item) }}{{ line("Health", item.health) }}{{ line("Updated at", item.updated_at) }}{{ line("Author", actor) }}{{ line("Reason", reason) }}{{ body("Body", body_text) }}
 {% else %}
-Document{{ "\n" }}{{ entity(item) }}{{ line("Updated at", item.updated_at) }}{{ line("Current", current) }}{{ line("Archived", item.archived_at is not none) }}{{ line("Hidden", item.hidden_at is not none) }}{% if section %}{{ line("Section", section.heading) }}{{ line("Section index", section.index) }}{{ line("Sections total", section.count) }}{{ line("Whole document", whole_document_route) }}{% endif %}{{ body("Content", content) }}
+Document{{ "\n" }}{{ entity(item) }}{{ line("Updated at", item.updated_at) }}{{ line("Current", current) }}{{ line("Archived", item.archived_at is not none) }}{{ line("Hidden", item.hidden_at is not none) }}{{ line("Issue ID", item.issue_id) }}{{ line("Issue context", issue_route) }}{% if section %}{{ line("Section", section.heading) }}{{ line("Section index", section.index) }}{{ line("Sections total", section.count) }}{{ line("Whole document", whole_document_route) }}{% endif %}{{ body("Content", content) }}
 {% endif %}
