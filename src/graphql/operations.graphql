@@ -22,7 +22,7 @@ query QAttachmentById($id:String!) {attachment(id:$id) {id title url metadata is
 
 query QWorkAttachments($id:String!,$first:Int!,$after:String) {issue(id:$id) {attachments(first:$first,after:$after,includeArchived:true) {nodes {id title url metadata} pageInfo { hasNextPage endCursor }}}}
 
-query QDocument($id:String!) {document(id:$id) {id title content url updatedAt archivedAt project {id} issue {id}}}
+query QDocument($id:String!) {document(id:$id) {id title content url updatedAt archivedAt hiddenAt project {id} issue {id}}}
 
 query QProjectUpdate($id:String!) {projectUpdate(id:$id) {id url body health createdAt updatedAt archivedAt project {id} user {id name}}}
 
@@ -60,9 +60,9 @@ mutation MUpsertRecord($input:AttachmentCreateInput!) {attachmentCreate(input:$i
 
 mutation MUpdateAttachment($id:String!,$input:AttachmentUpdateInput!) {attachmentUpdate(id:$id,input:$input) {success attachment {id metadata}}}
 
-mutation MCreateDocument($input:DocumentCreateInput!) {documentCreate(input:$input) {success document {id title content url}}}
+mutation MCreateDocument($input:DocumentCreateInput!) {documentCreate(input:$input) {success document {id title content url updatedAt archivedAt hiddenAt project {id} issue {id}}}}
 
-mutation MUpdateDocument($id:String!,$input:DocumentUpdateInput!) {documentUpdate(id:$id,input:$input) {success document {id title content url}}}
+mutation MUpdateDocument($id:String!,$input:DocumentUpdateInput!) {documentUpdate(id:$id,input:$input) {success document {id title content url updatedAt archivedAt hiddenAt project {id} issue {id}}}}
 
 mutation MCreateComment($input:CommentCreateInput!) {commentCreate(input:$input) {success comment {id url body createdAt updatedAt resolvedAt resolvingCommentId parent {id} issue {id} project {id} projectUpdate {id} user {id name}}}}
 
