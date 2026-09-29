@@ -27,6 +27,8 @@ pub struct Database {
     pub comments: BTreeMap<String, Value>,
     /// Native workflow labels by UUID.
     pub labels: BTreeMap<String, Value>,
+    /// Native teams by UUID, discoverable through QTeams.
+    pub teams: BTreeMap<String, Value>,
     /// Native directed issue relations, with duplicate relations controlling source status.
     pub relations: BTreeMap<String, Value>,
     /// Simulated monotonic timestamps for completion identity.
@@ -113,6 +115,17 @@ async fn graphql(
             })
             .cloned()
             .map(|v| ("project", v)),
+        "QProjects" => Some((
+            "projects",
+            page(
+                db.projects
+                    .values()
+                    .filter(|p| v["includeArchived"] == true || p["archivedAt"].is_null())
+                    .cloned()
+                    .collect(),
+            ),
+        )),
+        "QTeams" => Some(("teams", page(db.teams.values().cloned().collect()))),
         "QIssue" => db
             .issues
             .values()
@@ -258,16 +271,20 @@ async fn graphql(
         )),
         "MCreateProject" => {
             let id = input["id"].as_str().unwrap();
-            let item = json!({"id":id,"name":input["name"],"content":input["content"],"url":format!("https://linear.app/example/project/{id}"),"archivedAt":null,"teams":page(input["teamIds"].as_array().unwrap().iter().map(|i|json!({"id":i})).collect())});
+            db.tick += 1;
+            let item = json!({"id":id,"name":input["name"],"content":input["content"],"url":format!("https://linear.app/example/project/{id}"),"updatedAt":format!("2026-09-25T00:00:{:02}Z",db.tick),"archivedAt":null,"teams":page(input["teamIds"].as_array().unwrap().iter().map(|i|json!({"id":i,"name":"Fixture"})).collect())});
             assert!(!db.projects.contains_key(id));
             db.projects.insert(id.into(), item.clone());
             Some(("projectCreate", json!({"success":true,"project":item})))
         }
         "MUpdateProject" => {
+            db.tick += 1;
+            let tick = db.tick;
             let p = db.projects.get_mut(id).unwrap();
             for (k, v) in input.as_object().unwrap() {
                 p[k] = v.clone();
             }
+            p["updatedAt"] = json!(format!("2026-09-25T00:00:{tick:02}Z"));
             Some(("projectUpdate", json!({"success":true,"project":p})))
         }
         "MCreateIssueLabel" => {
@@ -549,12 +566,17 @@ impl Fixture {
             .route("/", post(graphql))
             .with_state(db.clone());
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let team = id();
+        db.lock()
+            .await
+            .teams
+            .insert(team.clone(), json!({"id":team,"name":"Fixture"}));
         Self {
             gateway: Gateway::new(Linear::mock(&endpoint).unwrap()).unwrap(),
             db,
             endpoint,
             task,
-            team: id(),
+            team,
         }
     }
     /// Replace all process memory while retaining only native Linear data.
