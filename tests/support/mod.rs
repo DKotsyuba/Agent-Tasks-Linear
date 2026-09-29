@@ -459,15 +459,39 @@ async fn graphql(
         "MCreateDocument" => {
             let id = input["id"].as_str().unwrap();
             assert!(!db.documents.contains_key(id));
-            let item = json!({"id":id,"title":input["title"],"content":input["content"],"url":format!("https://linear.app/example/document/{id}"),"archivedAt":null,"project":input.get("projectId").map(|id|json!({"id":id})),"issue":input.get("issueId").map(|id|json!({"id":id}))});
+            db.tick += 1;
+            let item = json!({"id":id,"title":input["title"],"content":input["content"],"url":format!("https://linear.app/example/document/{id}"),"updatedAt":format!("2026-09-25T00:00:{:02}Z",db.tick),"archivedAt":null,"hiddenAt":null,"project":input.get("projectId").map(|id|json!({"id":id})),"issue":input.get("issueId").map(|id|json!({"id":id}))});
             db.documents.insert(id.into(), item.clone());
             Some(("documentCreate", json!({"success":true,"document":item})))
         }
         "MUpdateDocument" => {
+            db.tick += 1;
+            let tick = db.tick;
             let item = db.documents.get_mut(id).unwrap();
-            for (k, v) in input.as_object().unwrap() {
-                item[k] = v.clone();
+            if let Some(title) = input.get("title") {
+                item["title"] = title.clone();
             }
+            if let Some(content) = input.get("content") {
+                item["content"] = content.clone();
+            }
+            if let Some(hidden_at) = input.get("hiddenAt") {
+                item["hiddenAt"] = hidden_at.clone();
+            }
+            if let Some(project_id) = input.get("projectId") {
+                item["project"] = if project_id.is_null() {
+                    Value::Null
+                } else {
+                    json!({"id":project_id})
+                };
+            }
+            if let Some(issue_id) = input.get("issueId") {
+                item["issue"] = if issue_id.is_null() {
+                    Value::Null
+                } else {
+                    json!({"id":issue_id})
+                };
+            }
+            item["updatedAt"] = json!(format!("2026-09-25T00:00:{tick:02}Z"));
             Some(("documentUpdate", json!({"success":true,"document":item})))
         }
         "MCreateProjectUpdate" => {
