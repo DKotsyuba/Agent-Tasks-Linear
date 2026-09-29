@@ -1,6 +1,12 @@
 //! Stateful Linear fixture supporting only the operations exercised by workflow tests.
 use agent_tasks_linear::{gateway::Gateway, linear::Linear, model::Outcome};
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{
+    Json, Router,
+    body::Bytes,
+    extract::{Path as AxumPath, State},
+    http::{HeaderMap, StatusCode},
+    routing::{get, post, put},
+};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
@@ -27,6 +33,8 @@ pub struct Database {
     pub comments: BTreeMap<String, Value>,
     /// Native workflow labels by UUID.
     pub labels: BTreeMap<String, Value>,
+    /// Native teams by UUID, discoverable through QTeams.
+    pub teams: BTreeMap<String, Value>,
     /// Native directed issue relations, with duplicate relations controlling source status.
     pub relations: BTreeMap<String, Value>,
     /// Simulated monotonic timestamps for completion identity.
@@ -41,6 +49,10 @@ pub struct Database {
     pub stale_update: bool,
     /// Serialize unordered list markers like Linear after issue description/comment writes.
     pub normalize_lists: bool,
+    /// This fixture's own origin, without a trailing slash, for building asset URLs.
+    pub base: String,
+    /// Uploaded artifact bytes by filename, standing in for Linear's asset host.
+    pub assets: BTreeMap<String, Vec<u8>>,
     /// Calls received per operation name, for request-count regression checks.
     pub operation_counts: BTreeMap<String, u32>,
 }
@@ -71,6 +83,15 @@ fn issue_page(nodes: Vec<Value>, variables: &Value) -> Value {
 /// Resolve a native status object by its fixture identifier.
 fn state(id: &str) -> Value {
     json!({"id":id,"name":id,"type":match id {"Backlog"=>"backlog","Todo"=>"unstarted","Done"=>"completed","Canceled"=>"canceled","Duplicate"=>"duplicate",_=>"started"}})
+}
+/// Build a Document's native issue reference, including that issue's own project, matching the
+/// nested shape real Linear returns for an Issue-attached Document.
+fn issue_ref(db: &Database, issue_id: &Value) -> Value {
+    let id = issue_id.as_str().unwrap();
+    match db.issues.get(id) {
+        Some(issue) => json!({"id":id,"identifier":issue["identifier"],"project":issue["project"]}),
+        None => json!({"id":id}),
+    }
 }
 /// Mock GraphQL only at the HTTP boundary; the real transport and all workflow code are exercised.
 async fn graphql(
@@ -116,6 +137,17 @@ async fn graphql(
             })
             .cloned()
             .map(|v| ("project", v)),
+        "QProjects" => Some((
+            "projects",
+            page(
+                db.projects
+                    .values()
+                    .filter(|p| v["includeArchived"] == true || p["archivedAt"].is_null())
+                    .cloned()
+                    .collect(),
+            ),
+        )),
+        "QTeams" => Some(("teams", page(db.teams.values().cloned().collect()))),
         "QIssue" => db
             .issues
             .values()
@@ -127,6 +159,7 @@ async fn graphql(
             json!({"relations":issue_page(db.relations.values().filter(|r| r["issue"]["id"] == id).cloned().collect(),v)}),
         )),
         "QAttachmentById" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
+        "QArtifact" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
         "QStateAttachments" => {
             let wanted = v["filter"]["id"]["in"]
                 .as_array()
@@ -144,6 +177,13 @@ async fn graphql(
                 ),
             ))
         }
+        "QWorkAttachments" => Some((
+            "issue",
+            json!({"attachments":issue_page(
+                db.attachments.values().filter(|a| a["issue"]["id"] == id).cloned().collect(),
+                v
+            )}),
+        )),
         "QDocument" => db
             .documents
             .get(id)
@@ -278,16 +318,20 @@ async fn graphql(
         )),
         "MCreateProject" => {
             let id = input["id"].as_str().unwrap();
-            let item = json!({"id":id,"name":input["name"],"content":input["content"],"url":format!("https://linear.app/example/project/{id}"),"archivedAt":null,"teams":page(input["teamIds"].as_array().unwrap().iter().map(|i|json!({"id":i})).collect())});
+            db.tick += 1;
+            let item = json!({"id":id,"name":input["name"],"content":input["content"],"url":format!("https://linear.app/example/project/{id}"),"updatedAt":format!("2026-09-25T00:00:{:02}Z",db.tick),"archivedAt":null,"teams":page(input["teamIds"].as_array().unwrap().iter().map(|i|json!({"id":i,"name":"Fixture"})).collect())});
             assert!(!db.projects.contains_key(id));
             db.projects.insert(id.into(), item.clone());
             Some(("projectCreate", json!({"success":true,"project":item})))
         }
         "MUpdateProject" => {
+            db.tick += 1;
+            let tick = db.tick;
             let p = db.projects.get_mut(id).unwrap();
             for (k, v) in input.as_object().unwrap() {
                 p[k] = v.clone();
             }
+            p["updatedAt"] = json!(format!("2026-09-25T00:00:{tick:02}Z"));
             Some(("projectUpdate", json!({"success":true,"project":p})))
         }
         "MCreateIssueLabel" => {
@@ -391,6 +435,28 @@ async fn graphql(
                 json!({"success":true,"attachment":item}),
             ))
         }
+        "MCreateArtifact" => {
+            let aid = input["id"].as_str().unwrap();
+            assert!(!db.attachments.contains_key(aid));
+            let item = json!({"id":aid,"metadata":input["metadata"],"issue":{"id":input["issueId"]},"title":input["title"],"url":input["url"]});
+            db.attachments.insert(aid.into(), item.clone());
+            Some((
+                "attachmentCreate",
+                json!({"success":true,"attachment":item}),
+            ))
+        }
+        "MFileUpload" => {
+            let filename = v["filename"].as_str().unwrap();
+            Some((
+                "fileUpload",
+                json!({"success":true,"uploadFile":{
+                    "assetUrl":format!("{}/asset/{filename}", db.base),
+                    "uploadUrl":format!("{}/upload/{filename}", db.base),
+                    "headers":[{"key":"x-fixture-auth","value":"present"}],
+                    "contentType":v["contentType"],"filename":v["filename"],"size":v["size"],
+                }}),
+            ))
+        }
         "MUpdateAttachment" => {
             let item = db.attachments.get_mut(id).unwrap();
             item["metadata"] = input["metadata"].clone();
@@ -402,16 +468,68 @@ async fn graphql(
         "MCreateDocument" => {
             let id = input["id"].as_str().unwrap();
             assert!(!db.documents.contains_key(id));
-            let item = json!({"id":id,"title":input["title"],"content":input["content"],"url":format!("https://linear.app/example/document/{id}"),"archivedAt":null,"project":input.get("projectId").map(|id|json!({"id":id})),"issue":input.get("issueId").map(|id|json!({"id":id}))});
+            db.tick += 1;
+            let project = input.get("projectId").map(|id| json!({"id":id}));
+            let issue = input.get("issueId").map(|id| issue_ref(&db, id));
+            let item = json!({"id":id,"title":input["title"],"content":input["content"],"url":format!("https://linear.app/example/document/{id}"),"updatedAt":format!("2026-09-25T00:00:{:02}Z",db.tick),"archivedAt":null,"hiddenAt":null,"project":project,"issue":issue});
             db.documents.insert(id.into(), item.clone());
             Some(("documentCreate", json!({"success":true,"document":item})))
         }
         "MUpdateDocument" => {
+            db.tick += 1;
+            let tick = db.tick;
+            let issue = input.get("issueId").map(|issue_id| {
+                if issue_id.is_null() {
+                    Value::Null
+                } else {
+                    issue_ref(&db, issue_id)
+                }
+            });
             let item = db.documents.get_mut(id).unwrap();
-            for (k, v) in input.as_object().unwrap() {
-                item[k] = v.clone();
+            if let Some(title) = input.get("title") {
+                item["title"] = title.clone();
             }
+            if let Some(content) = input.get("content") {
+                item["content"] = content.clone();
+            }
+            if let Some(hidden_at) = input.get("hiddenAt") {
+                item["hiddenAt"] = hidden_at.clone();
+            }
+            if let Some(project_id) = input.get("projectId") {
+                item["project"] = if project_id.is_null() {
+                    Value::Null
+                } else {
+                    json!({"id":project_id})
+                };
+            }
+            if let Some(issue) = issue {
+                item["issue"] = issue;
+            }
+            item["updatedAt"] = json!(format!("2026-09-25T00:00:{tick:02}Z"));
             Some(("documentUpdate", json!({"success":true,"document":item})))
+        }
+        "QSearchDocuments" => {
+            let term = v["term"].as_str().unwrap_or("").to_lowercase();
+            let include_archived = v["includeArchived"] == true;
+            let matches: Vec<Value> = db
+                .documents
+                .values()
+                .filter(|d| include_archived || d["archivedAt"].is_null())
+                .filter(|d| {
+                    d["title"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&term)
+                        || d["content"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&term)
+                })
+                .cloned()
+                .collect();
+            Some(("searchDocuments", issue_page(matches, v)))
         }
         "MCreateProjectUpdate" => {
             let id = input["id"].as_str().unwrap();
@@ -546,6 +664,35 @@ async fn graphql(
         )
     }
 }
+/// Accept a signed upload PUT for the loopback asset fixture, storing bytes by filename.
+/// Asserts no Authorization header ever reaches this signed-URL endpoint.
+async fn upload_asset(
+    State(db): State<Arc<Mutex<Database>>>,
+    AxumPath(name): AxumPath<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> StatusCode {
+    assert!(headers.get("authorization").is_none());
+    db.lock().await.assets.insert(name, body.to_vec());
+    StatusCode::OK
+}
+/// Serve a previously uploaded asset, requiring the fixture's fixed Authorization header,
+/// standing in for Linear's canonical authenticated asset host.
+async fn get_asset(
+    State(db): State<Arc<Mutex<Database>>>,
+    AxumPath(name): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Vec<u8>, StatusCode> {
+    if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some("fixture") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    db.lock()
+        .await
+        .assets
+        .get(&name)
+        .cloned()
+        .ok_or(StatusCode::NOT_FOUND)
+}
 /// Own the mock server and expose a fresh gateway plus durable backing data.
 pub struct Fixture {
     /// Gateway under test.
@@ -562,19 +709,30 @@ pub struct Fixture {
 impl Fixture {
     /// Start the native HTTP fixture without any real credentials.
     pub async fn new() -> Self {
-        let db = Arc::new(Mutex::new(Database::default()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let endpoint = format!("{base}/");
+        let db = Arc::new(Mutex::new(Database {
+            base,
+            ..Database::default()
+        }));
         let app = Router::new()
             .route("/", post(graphql))
+            .route("/upload/{name}", put(upload_asset))
+            .route("/asset/{name}", get(get_asset))
             .with_state(db.clone());
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let team = id();
+        db.lock()
+            .await
+            .teams
+            .insert(team.clone(), json!({"id":team,"name":"Fixture"}));
         Self {
             gateway: Gateway::new(Linear::mock(&endpoint).unwrap()).unwrap(),
             db,
             endpoint,
             task,
-            team: id(),
+            team,
         }
     }
     /// Replace all process memory while retaining only native Linear data.
@@ -585,7 +743,13 @@ impl Fixture {
     pub async fn call(&self, name: &str, mut args: Value) -> Outcome {
         if !matches!(
             name,
-            "get_context" | "get_overview" | "get_comment" | "list_items" | "search"
+            "get_context"
+                | "get_overview"
+                | "get_comment"
+                | "list_items"
+                | "search"
+                | "list_files"
+                | "get_file"
         ) {
             if args.get("request_id").is_none() {
                 args["request_id"] = json!(id())

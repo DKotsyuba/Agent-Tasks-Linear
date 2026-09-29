@@ -2,7 +2,7 @@
 
 ## MCP result presentation
 
-All 22 public tool calls share one presentation boundary after the structured Gateway outcome. HTTP and the stdio bridge expose the same single plain-text result block, with no `structuredContent` mirror. `isError` marks blocked, unavailable and uncertain outcomes; it does not mark a confirmed mutation as failed if presentation breaks. Templates and shared macros own labels, headings, conditions and layout; Rust selects structured source values. Assets are embedded at build time, initialize once, use strict undefined values and disable HTML escaping. No user template files or raw-output mode are loaded.
+All 25 public tool calls share one presentation boundary after the structured Gateway outcome. HTTP and the stdio bridge expose the same single plain-text result block, with no `structuredContent` mirror. `isError` marks blocked, unavailable and uncertain outcomes; it does not mark a confirmed mutation as failed if presentation breaks. Templates and shared macros own labels, headings, conditions and layout; Rust selects structured source values. Assets are embedded at build time, initialize once, use strict undefined values and disable HTML escaping. No user template files or raw-output mode are loaded.
 
 Mutation responses confirm the native ID or URL, status and replay state without echoing submitted descriptions and reports; a check-only status call is labelled as a preview. Reads retain actionable UUIDs and URLs, exact pagination and overview cursors, transition conditions, unresolved questions and current evidence. Issue context preserves native description and unknown human prose, then adds distinct checkout, parent, child, document and review details. A Module also retains its usable PR draft, notes and full source commit IDs. When both saved and current native result/check sections exactly match the derived report, the two duplicate known sections are omitted from the separate description; manual sections remain. A pending write includes the exact original tool and arguments needed for safe replay, without the internal before/next snapshots. Explicit document and comment reads preserve requested bodies in full; thread resolution comes from the root comment. Full and delta overviews retain the unpublished ProjectUpdate draft once. Deltas describe changed fields and direct the reader to full context when a change extends beyond a preview; no raw hashes are printed. A rendering defect produces a short status-preserving recovery line and advises inspection before another mutation.
 
@@ -119,6 +119,78 @@ The orchestrator creates an Atomic with `work_type: integration` under an Epic o
 Start requires participating Modules Done with merge reports. The Atomic stores their work-round/content/completion identities. It tests combined behavior and supplies an artifact report; no new commit is needed if it only runs checks. Its report is reviewed normally.
 
 A changed or reopened Module invalidates earlier integration. Repeat the Atomic explicitly by returning it to In Progress, running its scenarios again and submitting new results/review. A stale integration already In Progress can explicitly restart in that same status with a fresh round. Participating Modules must remain free of native discrepancies through integration review and closure. Epics with multiple delivered Modules require current successful integration coverage before final review.
+
+## Provider module seams
+
+`Gateway` grows through small child modules under `src/gateway/`, not through
+unbounded growth of `gateway.rs` itself. A child module declares its own
+`impl Gateway { pub(super) async fn ... }` blocks; ordinary Rust module-tree
+visibility already lets it call `gateway.rs`'s private helpers (`resolve`,
+`project`, `store`, `with_guidance`, …) without those helpers becoming public.
+`gateway.rs` only adds the one-line `mod <name>;` declaration and, where a new
+public tool needs it, one arm in `dispatch()`. `src/gateway/documents.rs`
+holds the `save_document` handler; `src/gateway/artifacts.rs` holds
+`upload_file`/`list_files`/`get_file`, reusing the same seam.
+
+The generated tool surface (`schemas/tools.json`, `schemas/examples.json`,
+`src/render.rs` templates, `assets/mcp/*.txt.j2`) has exactly one owner and
+one generator (`scripts/catalog.mjs`, run with no network access and no other
+side effect). Provider changes land as Rust handler code inside their own
+child module and, where they touch shared dispatch, GraphQL operation text or
+test fixtures, as explicitly scoped edits named in the accepted contract —
+never as hand edits to the generated schema files themselves.
+
+## Document and file provider contract
+
+`save_document`/`get_context(type: document)` keep the existing metadata
+(`id, title, url, content, updatedAt, archivedAt, hiddenAt, project, issue`)
+and existing create semantics (`request_id` as native ID, exactly one Project
+or Issue parent; a new Document rejects `section`/`expected_updated_at`, which
+have no prior state to guard). Editing an existing Document is guarded:
+`content` without `section` replaces the whole body; `section` is a unique
+heading text (not a regex), valid only together with `content`, and
+`save_document(id, section, content)` replaces only that section's body,
+keeping its heading and every byte outside its range — a missing or ambiguous
+heading fails before any write. `hidden: bool` maps to native `hiddenAt`
+(now/null) and only writes when the state actually changes; `project_id`/
+`issue_id` rebind to exactly one new parent, explicitly clearing the other. A
+proposed state already equal to native state confirms `replayed: true` with
+no write, even after a restart; otherwise a missing `expected_updated_at` is a
+distinct `PRECONDITION_REQUIRED` fault naming the `get_context` route, a stale
+one is `PENDING_CONFLICT`, and the write happens once with its result
+confirmed before being returned. `get_context(type: document, section: ...)`
+returns that section's body as `content` plus `section: {heading, index,
+count}` and a route back to the whole document; the response is otherwise the
+normal Document envelope. A document is current iff both `archivedAt` and
+`hiddenAt` are null. `list_items(type: document)` keeps the plain native page
+(optionally scoped by `project_id`); `search(type: document)` additionally
+scopes to a Project (a Document attached to it directly, or to one of its
+Issues), defaults to 10 results and never returns more than 25 regardless of
+`first`, applies `include_archived` to both archived and hidden material
+against one native page, and each result row carries title, url, owning
+Project/Issue, updated time, currentness and a short honestly-sourced
+snippet — the literal matched title/content substring when one exists, a
+plain content preview marked `"semantic"` otherwise, never a fabricated
+literal match. A native page can hold fewer or more real matches than it
+returned, including zero, while `pageInfo.hasNextPage` still promises more to
+check; that filtered-page state is reported explicitly, never presented as an
+exhausted, empty search.
+
+File operations are three focused tools: `upload_file` reads one local file
+(host-side absolute path, bounded to 10,000,000 bytes), reserves a
+deterministic native attachment ID per issue/request, and compares replay
+intent (filename, content type, size, digest, title, note) before treating a
+retry as identical; changed intent is `REQUEST_CONFLICT`. `list_files` returns
+only user artifacts for one work item, excluding internal workflow
+attachments. `get_file` resolves and validates artifact ownership/type,
+downloads through the canonical authenticated asset URL while verifying the
+bytes against the digest recorded at upload time, writes through a sibling
+temporary file, and never silently overwrites a different existing file at
+the same destination (`FILE_EXISTS` on conflict, `replayed: true` only for
+byte-identical content). None of these three tools returns binary content, a
+signed URL or a secret in its text response; artifact attachments live in
+their own `metadata.artifact` namespace, fully separate from the canonical
+`metadata.workflow` state record.
 
 ## Manual changes and failures
 

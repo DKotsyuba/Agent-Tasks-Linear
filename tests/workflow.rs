@@ -504,6 +504,248 @@ async fn repository_validation_preserves_planning_and_legacy_projects() {
     assert_eq!(f.db.lock().await.projects.len(), 2);
 }
 
+/// Run literal Git arguments in a disposable fixture repository, requiring success.
+fn git_at(path: &std::path::Path, args: &[&str]) -> Vec<u8> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}: {:?}", args, output);
+    output.stdout
+}
+/// Create one disposable Git repository with an initial commit, returning its absolute path.
+fn init_repo(name: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("{name} {}", id()));
+    std::fs::create_dir_all(&path).unwrap();
+    git_at(&path, &["init", "-q"]);
+    git_at(
+        &path,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "Fixture",
+        ],
+    );
+    path
+}
+
+/// list_items(type: team) discovers native teams without a Project/Issue filter.
+#[tokio::test]
+async fn list_items_discovers_teams() {
+    let f = Fixture::new().await;
+    let teams = f.ok("list_items", json!({"type":"team"})).await;
+    let nodes = teams["nodes"].as_array().unwrap();
+    assert!(
+        nodes
+            .iter()
+            .any(|t| t["id"] == f.team && t["name"] == "Fixture")
+    );
+    let scoped = f
+        .call("list_items", json!({"type":"team","team_id":f.team}))
+        .await;
+    assert_eq!(scoped.status, "blocked");
+    assert_eq!(scoped.data["code"], "INVALID_INPUT");
+}
+
+/// list_items(type: project, repository_path) finds Projects by canonical common Git directory
+/// identity: the primary checkout and any linked worktree resolve to the same match, an unknown
+/// or non-Git path fails explicitly, several Projects sharing one checkout are all returned, and
+/// a Project whose stored path is no longer accessible is reported separately, not silently
+/// dropped or fatal to the rest of the lookup.
+#[tokio::test]
+async fn list_items_finds_projects_by_repository_identity() {
+    let repo = init_repo("entry repository");
+    let linked = std::env::temp_dir().join(format!("entry linked {}", id()));
+    git_at(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let stale = init_repo("entry stale");
+
+    let f = Fixture::new().await;
+    let primary = f
+        .ok(
+            "create_project",
+            json!({"team_id":f.team,"title":"Primary","description":"Repo one","repository_path":repo}),
+        )
+        .await["project"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sibling = f
+        .ok(
+            "create_project",
+            json!({"team_id":f.team,"title":"Sibling","description":"Repo one again","repository_path":repo}),
+        )
+        .await["project"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let broken = f
+        .ok(
+            "create_project",
+            json!({"team_id":f.team,"title":"Broken","description":"Repo goes away","repository_path":stale}),
+        )
+        .await["project"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    std::fs::remove_dir_all(&stale).unwrap();
+
+    let by_primary = f
+        .ok(
+            "list_items",
+            json!({"type":"project","repository_path":repo}),
+        )
+        .await;
+    let ids: Vec<_> = by_primary["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(ids.contains(&primary) && ids.contains(&sibling) && !ids.contains(&broken));
+    let inaccessible = by_primary["inaccessible_stored_checkouts"]
+        .as_array()
+        .unwrap();
+    assert!(inaccessible.iter().any(|v| v["id"] == broken));
+
+    let by_linked = f
+        .ok(
+            "list_items",
+            json!({"type":"project","repository_path":linked}),
+        )
+        .await;
+    assert_eq!(by_linked["nodes"], by_primary["nodes"]);
+
+    let unknown = f
+        .call(
+            "list_items",
+            json!({"type":"project","repository_path":std::env::temp_dir()}),
+        )
+        .await;
+    assert_eq!(unknown.status, "blocked");
+    assert_eq!(unknown.data["code"], "INVALID_REPOSITORY");
+
+    let combined = f
+        .call(
+            "list_items",
+            json!({"type":"project","repository_path":repo,"team_id":f.team}),
+        )
+        .await;
+    assert_eq!(combined.status, "blocked");
+    assert_eq!(combined.data["code"], "INVALID_INPUT");
+
+    std::fs::remove_dir_all(&linked).unwrap();
+    std::fs::remove_dir_all(&repo).unwrap();
+}
+
+/// A brief Project view adds the parsed repository path/url, native teams and an overview route.
+#[tokio::test]
+async fn project_brief_context_adds_repository_teams_and_overview_route() {
+    let repo = init_repo("brief repository");
+    let f = Fixture::new().await;
+    let created = f
+        .ok(
+            "create_project",
+            json!({"team_id":f.team,"title":"Briefed","description":"Entry passport","repository_path":repo}),
+        )
+        .await;
+    let project = created["project"]["id"].as_str().unwrap();
+    let brief = f
+        .ok(
+            "get_context",
+            json!({"type":"project","id":project,"detail":"brief"}),
+        )
+        .await;
+    assert_eq!(brief["project"]["repository_path"], json!(repo));
+    assert!(brief["project"]["repository_url"].is_null());
+    assert_eq!(
+        brief["project"]["teams"].as_array().unwrap()[0]["id"],
+        json!(f.team)
+    );
+    assert!(
+        brief["full_context"]["overview"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("get_overview project_id={project}"))
+    );
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+/// edit_project(content) replaces the whole passport body under an expected_updated_at
+/// precondition: it rejects mixing with targeted fields, requires the precondition, confirms a
+/// byte-identical retry as replayed without writing, and refuses a stale precondition.
+#[tokio::test]
+async fn edit_project_content_replace_is_guarded_and_replay_safe() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let created = f.db.lock().await.projects[&project].clone();
+    let updated_at = created["updatedAt"].as_str().unwrap().to_owned();
+
+    let mixed = f
+        .call(
+            "edit_project",
+            json!({"id":project,"content":"# New passport\n","title":"Renamed","expected_updated_at":updated_at}),
+        )
+        .await;
+    assert_eq!(mixed.status, "blocked");
+    assert_eq!(mixed.data["code"], "INVALID_INPUT");
+
+    let missing_precondition = f
+        .call(
+            "edit_project",
+            json!({"id":project,"content":"# New passport\n"}),
+        )
+        .await;
+    assert_eq!(missing_precondition.status, "blocked");
+    assert_eq!(missing_precondition.data["code"], "PRECONDITION_REQUIRED");
+
+    let body = "# New passport\n\nCurated by hand.\n";
+    let written = f
+        .ok(
+            "edit_project",
+            json!({"id":project,"content":body,"expected_updated_at":updated_at}),
+        )
+        .await;
+    assert_eq!(written["content"], body);
+    assert_eq!(written["replayed"], false);
+    let new_updated_at = written["updatedAt"].as_str().unwrap().to_owned();
+    assert_ne!(new_updated_at, updated_at);
+
+    let replay = f
+        .ok(
+            "edit_project",
+            json!({"id":project,"content":body,"expected_updated_at":new_updated_at}),
+        )
+        .await;
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["updatedAt"], json!(new_updated_at));
+
+    let stale = f
+        .call(
+            "edit_project",
+            json!({"id":project,"content":"# Different\n","expected_updated_at":updated_at}),
+        )
+        .await;
+    assert_eq!(stale.status, "blocked");
+    assert_eq!(stale.data["code"], "PENDING_CONFLICT");
+}
+
 /// Linear may change list markers, but code, literal markers, words and destinations remain significant.
 #[test]
 fn markdown_list_markers_preserve_content() {
@@ -2110,16 +2352,18 @@ async fn uncertain_creates_reviews_and_frozen_reparenting() {
         f.ok("get_context", json!({"type":"issue","id":atom})).await["workflow"]["review"]["id"],
         review["request_id"]
     );
-    let records = agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom)
-        .await
-        .unwrap();
+    let records =
+        agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom, None)
+            .await
+            .unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records.iter().filter(|r| r.formal_review).count(), 1);
     assert_eq!(f.db.lock().await.comments.len(), 2);
     f.mv(&atom, "In Progress").await;
-    let history = agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom)
-        .await
-        .unwrap();
+    let history =
+        agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom, None)
+            .await
+            .unwrap();
     assert_eq!(history.len(), 2);
     assert!(history.iter().all(|r| !r.formal_review));
     f.result("atomic", &atom).await;

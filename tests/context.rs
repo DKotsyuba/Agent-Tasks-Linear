@@ -405,7 +405,7 @@ async fn brief_detail_keeps_current_slice_and_recovery() {
         brief["full_context"]["issue"],
         format!("get_context type=issue id={task}")
     );
-    assert_eq!(brief["runtime"]["tools"], 22);
+    assert_eq!(brief["runtime"]["tools"], 25);
     assert!(brief["runtime"]["version"].is_string());
     let reviewer_brief = f
         .ok(
@@ -489,6 +489,78 @@ async fn brief_detail_keeps_current_slice_and_recovery() {
         )
         .await;
     assert_eq!(full_document["content"], "Complete prose");
+}
+
+/// get_context(type=document, section=...) returns just that heading's body and its position
+/// among the document's headings, while every other native field and a plain full read stay
+/// complete; a missing or ambiguous heading fails before any write, and section is rejected on
+/// any other entity type.
+#[tokio::test]
+async fn document_section_reads_isolate_one_heading_and_keep_full_reads_complete() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    let content =
+        "# Notes\n\nIntro.\n\n## Runbook\n\nStart the service.\n\n## Decisions\n\nUse Postgres.\n";
+    let document = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module,"title":"Ops notes","content":content}),
+        )
+        .await;
+    let doc_id = document["id"].as_str().unwrap();
+
+    let full = f
+        .ok("get_context", json!({"type":"document","id":doc_id}))
+        .await;
+    assert_eq!(full["content"], content);
+    assert!(full["section"].is_null());
+
+    let selected = f
+        .ok(
+            "get_context",
+            json!({"type":"document","id":doc_id,"section":"Runbook"}),
+        )
+        .await;
+    assert_eq!(selected["content"], "\nStart the service.\n\n");
+    assert_eq!(
+        selected["section"],
+        json!({"heading":"Runbook","index":2,"count":3})
+    );
+    // Every other native field from the full read is preserved on the selected envelope.
+    assert_eq!(selected["title"], full["title"]);
+    assert_eq!(selected["url"], full["url"]);
+    assert_eq!(selected["updatedAt"], full["updatedAt"]);
+
+    let missing = f
+        .call(
+            "get_context",
+            json!({"type":"document","id":doc_id,"section":"Absent"}),
+        )
+        .await;
+    assert_eq!(missing.data["code"], "SECTION_NOT_FOUND");
+
+    let duplicate = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module,"title":"Dup","content":"## Same\n\none\n\n## Same\n\ntwo\n"}),
+        )
+        .await;
+    let ambiguous = f
+        .call(
+            "get_context",
+            json!({"type":"document","id":duplicate["id"],"section":"Same"}),
+        )
+        .await;
+    assert_eq!(ambiguous.data["code"], "SECTION_AMBIGUOUS");
+
+    let on_issue = f
+        .call(
+            "get_context",
+            json!({"type":"issue","id":module,"section":"Runbook"}),
+        )
+        .await;
+    assert_eq!(on_issue.data["code"], "INVALID_INPUT");
 }
 
 /// A child with uncertain native Done and pending recorded transition is never counted as exact.
@@ -639,6 +711,71 @@ async fn project_graph_reads_state_in_bulk_not_per_issue() {
         counts.get("QStateAttachments").copied().unwrap_or(0),
         1,
         "one bulk state-attachment page covers the whole project graph: {counts:?}"
+    );
+}
+
+/// get_overview's per-work activity read reuses the Meta `Store::graph` already loaded
+/// instead of a redundant `Store::meta` point read per item: zero QAttachmentById calls for
+/// a Project with several Tasks, not one per Task.
+#[tokio::test]
+async fn overview_reuses_graph_meta_without_a_redundant_lookup_per_work_item() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    for _ in 0..6 {
+        let task = f.work("task", &project, Some(&module)).await;
+        f.mv(&task, "In Progress").await;
+    }
+
+    f.db.lock().await.operation_counts.clear();
+    f.ok("get_overview", json!({"project_id":project})).await;
+    let counts = f.db.lock().await.operation_counts.clone();
+    assert_eq!(
+        counts.get("QAttachmentById").copied().unwrap_or(0),
+        0,
+        "overview must reuse graph Meta, not re-fetch it per work item: {counts:?}"
+    );
+    assert_eq!(
+        counts.get("QStateAttachments").copied().unwrap_or(0),
+        1,
+        "{counts:?}"
+    );
+    // The remaining per-work QComments read is real, distinct activity per issue — not
+    // eliminated here, only the redundant Meta re-fetch is.
+    assert!(
+        counts.get("QComments").copied().unwrap_or(0) >= 7,
+        "{counts:?}"
+    );
+}
+
+/// A role-view get_context read reuses the requested issue's and its children's Meta already
+/// loaded by `Store::work`/`Store::graph`, instead of a redundant `Store::meta` point read per
+/// child: the constant single-item lookup for the requested issue itself, not one more per
+/// child in its agent-context activity map.
+#[tokio::test]
+async fn role_context_reuses_graph_meta_for_children_without_a_lookup_each() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    for _ in 0..6 {
+        let task = f.work("task", &project, Some(&module)).await;
+        f.mv(&task, "In Progress").await;
+    }
+
+    f.db.lock().await.operation_counts.clear();
+    f.ok(
+        "get_context",
+        json!({"type":"issue","id":module,"view":"lead"}),
+    )
+    .await;
+    let counts = f.db.lock().await.operation_counts.clone();
+    // One point lookup for the requested Module itself (Store::work inside `loaded`); its six
+    // Tasks must come from the already-loaded graph, not six more individual lookups.
+    assert!(
+        counts.get("QAttachmentById").copied().unwrap_or(0) <= 1,
+        "children's Meta must come from the graph, not one lookup per child: {counts:?}"
     );
 }
 

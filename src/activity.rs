@@ -1,6 +1,6 @@
 //! Visible native Linear activity and its typed, read-only projection.
 use crate::{
-    model::{Fault, Result, Review, require, text},
+    model::{Fault, Meta, Result, Review, require, text},
     records::Store,
 };
 use serde::Serialize;
@@ -331,10 +331,14 @@ pub fn project_update_record(update: &Value) -> Result<ActivityRecord> {
 }
 
 /// Read all native activity for one target within the Store page budget; no workflow state is written.
+/// `known_meta` reuses an already-read `Meta` (from the same request's `Store::graph`/`work`
+/// call) instead of a redundant `Store::meta` point read; pass `None` for a standalone read
+/// with no such Meta on hand, which falls back to that same point read for current correctness.
 pub async fn read_activity(
     store: &Store,
     target_type: &str,
     target_id: &str,
+    known_meta: Option<&Meta>,
 ) -> Result<Vec<ActivityRecord>> {
     let key = match target_type {
         "issue" => "issue",
@@ -342,10 +346,12 @@ pub async fn read_activity(
         "project_update" => "projectUpdate",
         _ => return Err(Fault::new("INVALID_INPUT", "Unknown activity target")),
     };
-    let current = if target_type == "issue" {
-        store.meta(target_id).await?.and_then(|m| m.review)
-    } else {
+    let current = if target_type != "issue" {
         None
+    } else if let Some(m) = known_meta {
+        m.review.clone()
+    } else {
+        store.meta(target_id).await?.and_then(|m| m.review)
     };
     let comments = store
         .pages(

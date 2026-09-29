@@ -1,10 +1,12 @@
 {% from "common" import line, body, heading, entity %}
 {{ tool }}: {{ entity_type }}{{ "\n" }}
+{% if scoped_to_project %}{{ line("Scoped to Project", scoped_to_project) }}{% endif %}
 {% if not items %}No items on this page.{{ "\n" }}{% endif %}
-{% for row in items %}{{ heading("Item") }}{{ entity(row.item) }}{{ line("Health", row.item.health) }}{% if entity_type == "project_update" %}{{ line("Updated at", row.item.updated_at) }}{% endif %}
+{% for row in items %}{{ heading("Item") }}{{ entity(row.item) }}{{ line("Health", row.item.health) }}{% if entity_type == "project_update" %}{{ line("Updated at", row.item.updated_at) }}{% endif %}{% if entity_type == "file" %}{{ line("Work ID", row.item.work_id) }}{{ line("Work URL", row.item.work_url) }}{{ line("File name", row.item.file_name) }}{{ line("Content type", row.item.content_type) }}{{ line("Size bytes", row.item.size_bytes) }}{% endif %}{% if entity_type == "document" and tool == "search" %}{{ line("Updated at", row.item.updated_at) }}{{ line("Current", row.item.current) }}{{ line("Hidden", row.item.hidden) }}{{ line("Match source", row.item.match_source) }}{{ body("Snippet", row.item.snippet) }}{% endif %}
 {% if row.activity %}{{ line("Kind", row.activity.kind|default(none)) }}{{ line("Actor", row.activity.actor|default(none)) }}{{ line("Role", row.activity.role|default(none)) }}{{ line("Session", row.activity.session|default(none)) }}{{ line("Recipient", row.activity.recipient|default(none)) }}{{ line("Reason", row.activity.reason|default(none)) }}
 {% for source in row.activity.source_links|default([]) %}{{ line("Source", source) }}{% endfor %}
 {% if entity_type == "comment" %}{% if not row.item.parent_id %}{{ line("Parent ID", row.activity.parent_id|default(none)) }}{% endif %}{{ line("Resolved", (row.activity.resolved_at|default(none)) is not none) }}{{ line("Resolving comment ID", row.activity.resolving_comment_id|default(none)) }}{% endif %}
 {{ body("Body", row.activity.body|default(none)) }}{% endif %}
 {% endfor %}
+{% if matched_in_page is defined and native_page_size is defined and matched_in_page != native_page_size %}{{ line("Matched in this native page", matched_in_page) }}{{ line("Native page size", native_page_size) }}This is a filtered page: a native page holding more or fewer matches does not mean the search is exhausted.{{ "\n" }}{% endif %}
 {{ line("Has next page", has_next) }}{% if has_next %}{{ line("Next cursor", cursor) }}{% endif %}
