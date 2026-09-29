@@ -214,7 +214,8 @@ fn identity(item: &Value) -> Value {
         "file_name":item["file_name"],"content_type":item["content_type"],
         "size_bytes":item["size_bytes"],"path":item["path"],
         "snippet":item["snippet"],"match_source":item["match_source"],
-        "hidden":item["hidden"],"current":item["current"],"hidden_at":item["hiddenAt"]
+        "hidden":item["hidden"],"current":item["current"],
+        "hidden_at":item["hiddenAt"],"archived_at":item["archivedAt"]
     })
 }
 
@@ -380,6 +381,11 @@ fn context_projection(request: &Value, data: &Value) -> Value {
     "section":item["section"],
     "whole_document_route":if item["section"].is_object() {
         json!(format!("get_context type=document id={}", item["id"].as_str().unwrap_or("")))
+    } else {
+        Value::Null
+    },
+    "current":if kind == "document" {
+        json!(crate::sections::document_is_current(item))
     } else {
         Value::Null
     }})
@@ -615,7 +621,10 @@ mod tests {
     }
 
     /// A section-scoped Document read renders which section it is, its position among the
-    /// document's sections, and an explicit route back to the whole document.
+    /// document's sections, an explicit route back to the whole document, and — like a full
+    /// read — a copyable `updated_at` and honest current/archived/hidden status: a caller must
+    /// be able to take this value straight into a guarded edit's `expected_updated_at` without
+    /// a second read.
     #[test]
     fn document_section_read_renders_section_info_and_whole_document_route() {
         let text = render_outcome(
@@ -623,6 +632,7 @@ mod tests {
             &json!({"type":"document","id":"doc-1","section":"Runbook"}),
             &Outcome::ok(
                 json!({"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1",
+                "updatedAt":"2026-09-29T02:03:44.471Z","archivedAt":null,"hiddenAt":null,
                 "content":"Body of just this section.",
                 "section":{"heading":"Runbook","index":1,"count":3}}),
             ),
@@ -635,6 +645,46 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Body of just this section."), "{text}");
+        assert!(
+            text.contains("Updated at: 2026-09-29T02:03:44.471Z"),
+            "a caller must be able to copy this straight into expected_updated_at: {text}"
+        );
+        assert!(text.contains("Current: true"), "{text}");
+        assert!(text.contains("Archived: false"), "{text}");
+        assert!(text.contains("Hidden: false"), "{text}");
+    }
+
+    /// A full (unscoped) Document read carries the same copyable `updated_at` and honest
+    /// current/archived/hidden status as a section read, and a full Project read exposes the
+    /// `updated_at` its own guarded `edit_project(content, expected_updated_at)` requires.
+    #[test]
+    fn full_document_and_project_reads_expose_updated_at_for_the_next_guarded_edit() {
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"doc-1"}),
+            &Outcome::ok(
+                json!({"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1",
+                "updatedAt":"2026-09-29T02:03:44.471Z","archivedAt":"2026-09-29T02:04:00Z","hiddenAt":null,
+                "content":"Full body."}),
+            ),
+        );
+        assert!(
+            text.contains("Updated at: 2026-09-29T02:03:44.471Z"),
+            "{text}"
+        );
+        assert!(text.contains("Current: false"), "{text}");
+        assert!(text.contains("Archived: true"), "{text}");
+        assert!(text.contains("Hidden: false"), "{text}");
+
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"project","id":"project-1"}),
+            &Outcome::ok(json!({"project":{"id":"project-1","name":"Passport",
+                "url":"https://linear.app/project-1","content":"Passport body.",
+                "updatedAt":"2026-09-29T02:05:00Z","teams":{"nodes":[]}},
+                "documents":[]})),
+        );
+        assert!(text.contains("Updated at: 2026-09-29T02:05:00Z"), "{text}");
     }
 
     /// A save_document acknowledgement shows the updated_at a caller needs for its next guarded
@@ -926,7 +976,8 @@ mod tests {
             &Outcome::ok(document.clone()),
         );
         assert!(rendered.contains(body));
-        assert!(rendered.len() < serde_json::to_string(&Outcome::ok(document)).unwrap().len());
+        // The large body is presented exactly once, never duplicated or re-quoted.
+        assert_eq!(rendered.matches(body).count(), 1, "{rendered}");
         let exact = "Привет 🌍\n{\"legitimate\":true}\n{{ do_not_evaluate }}\nEND-OF-DOCUMENT";
         let rendered = render_outcome(
             "get_context",
