@@ -49,27 +49,30 @@ Start top-down and finish bottom-up. Parent closure never closes children. Nativ
 ## Build and connect
 
 ```sh
+cargo fetch --locked
 cargo build --release --locked
-./target/release/agent-tasks-linear --config /absolute/private/config.toml init-config
+./target/release/agent-tasks-linear --config /absolute/private/config.toml init
 ```
 
-The new config contains only `listen` (default `127.0.0.1:8777`) and a generated `token`. It is created with mode 0600 and never overwrites an existing file. Version 1 configurations and `at_*` tools are incompatible; create a new configuration explicitly. Old pilot data is not migrated.
+`init` (alias of the older `init-config`) creates a config containing only `listen` (default `127.0.0.1:8777`) and a generated `token`, with mode 0600; it never overwrites an existing file. Version 1 configurations and `at_*` tools are incompatible; create a new configuration explicitly. Old pilot data is not migrated.
 
-Set `LINEAR_API_KEY` or `LINEAR_OAUTH_TOKEN` in the gateway environment, then run:
+Local, credential-free diagnostics (exit 0 without any Linear key or network; `--json` for machine output):
 
 ```sh
 ./target/release/agent-tasks-linear --config /absolute/private/config.toml doctor
-./target/release/agent-tasks-linear --config /absolute/private/config.toml serve
+./target/release/agent-tasks-linear --config /absolute/private/config.toml config check
 ```
 
-HTTP endpoint: `http://127.0.0.1:8777/mcp`, authenticated with the config's bearer token. Run exactly one writer. The stdio bridge connects to that same writer:
+`doctor --online` additionally verifies the authenticated viewer and requires `LINEAR_API_KEY` or `LINEAR_OAUTH_TOKEN` in the environment. Then run the single writer:
+
+HTTP endpoint: `http://127.0.0.1:8777/mcp`, authenticated with the config's bearer token. Run exactly one writer. `mcp` runs the stdio bridge to that same writer (`stdio` remains a legacy alias):
 
 ```json
 {
   "mcpServers": {
     "agent-tasks-linear": {
       "command": "/absolute/path/to/agent-tasks-linear",
-      "args": ["--config", "/absolute/private/config.toml", "stdio"]
+      "args": ["--config", "/absolute/private/config.toml", "mcp"]
     }
   }
 }
@@ -88,10 +91,13 @@ Schemas, mini-docs and examples in this repository describe its coordinated rele
 ## Checks
 
 ```sh
-cargo test --locked
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
+cargo fetch --locked
+cargo xtask check
 ```
+
+The single gate covers formatting, Clippy (default and all-features), tests (default and all-features), rustdoc, the schema-first contract check against real-binary discovery/dispatch, and family structural checks. Supply-chain checks: `cargo deny --locked check`.
+
+Packaging, the release pipeline, exact-payload qualification and the owner-operated install/rollback/legacy-adoption runbook live in [docs/releasing.md](docs/releasing.md); the host-neutral registration descriptor is [registration/agent-tasks-linear.json](registration/agent-tasks-linear.json).
 
 The opt-in live test writes a disposable project in an explicitly selected team:
 
@@ -105,3 +111,7 @@ cargo test --locked --test live -- --ignored --nocapture
 The report path makes an interrupted pilot resumable. The pilot verifies real Linear writes, the two-module workflow and cold reads. Its Git artifact/merge reports are explicitly synthetic; it does not create or merge a real PR.
 
 [Checks and limits](docs/FEASIBILITY.md).
+
+## License
+
+No open-source license is granted for this product; it is proprietary to the repository owner. Infrastructure helpers copied from the family template (`crates/family-delivery`, configuration and release scaffolding) retain the template's MIT notice in [docs/TEMPLATE_MIT_LICENSE.txt](docs/TEMPLATE_MIT_LICENSE.txt); see [docs/TEMPLATE_PROVENANCE.md](docs/TEMPLATE_PROVENANCE.md) for the exact import inventory.

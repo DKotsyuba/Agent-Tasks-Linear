@@ -76,8 +76,8 @@ type Advised = (&'static str, Option<Value>, Vec<String>);
 ///
 /// Returns `{work_id, stage, next_action, conditions}`. `stage` is advisory vocabulary —
 /// `preparation`, `working`, `review`, `merge`, `closure`, `fixes`, `recovery`, `done` or
-/// `excluded` — never a new Linear status. `next_action` follows the shape built by
-/// [`action`] or is null when no single next MCP action is determined; `conditions` are the
+/// `excluded` — never a new Linear status. `next_action` follows the shape built by the
+/// private `action` helper or is null when no single next MCP action is determined; `conditions` are the
 /// authoritative guard messages still blocking progress. Work with a pending write or native
 /// drift is always recovery, never done; a pending write names its exact retry tool. A
 /// Module whose review is accepted but whose merge is not yet reported stays in the merge

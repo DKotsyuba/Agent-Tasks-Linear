@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "product": "agent-tasks-linear",
+  "version_mirror": "cargo [workspace.package] version",
+  "transport": "stdio",
+  "command": "~/.local/bin/agent-tasks-linear",
+  "args": ["mcp"],
+  "env": {
+    "ATL_CONFIG": "optional absolute protected config path; otherwise the managed launcher pins <home>/config.toml when present, falling back to the binary default (~/.config/agent-tasks-linear/config.toml)"
+  },
+  "startup_timeout_ms": 10000,
+  "tool_timeout_ms": 120000,
+  "notes": "Descriptor only; not an automatic edit of host configuration. The resident writer (serve) must already be running for the stdio bridge; see docs/releasing.md."
+}

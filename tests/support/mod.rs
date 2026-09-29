@@ -16,6 +16,27 @@ use uuid::Uuid;
 pub fn id() -> String {
     Uuid::new_v4().to_string()
 }
+
+/// The exact product binary under test: the packaged/CI payload when
+/// MCP_TEST_BINARY is set, otherwise the locally built executable.
+pub fn product_binary() -> String {
+    std::env::var("MCP_TEST_BINARY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_agent-tasks-linear").to_owned())
+}
+
+/// Run the real product binary with one subcommand and captured output; the
+/// environment never carries Linear credentials into child processes.
+pub fn run_cli(args: &[&str]) -> std::process::Output {
+    std::process::Command::new(product_binary())
+        .args(args)
+        .env_remove("LINEAR_OAUTH_TOKEN")
+        .env_remove("LINEAR_API_KEY")
+        .env_remove("ATL_CONFIG")
+        .output()
+        .expect("run product binary")
+}
 /// One fixture workspace with inspectable native entities and a one-shot response-loss switch.
 #[derive(Default)]
 pub struct Database {

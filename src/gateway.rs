@@ -69,6 +69,124 @@ pub(crate) fn priority_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
         })
 }
 
+/// One routed public operation. Contract tests derive the accepted dispatch
+/// vocabulary from this same resolution, so the catalogue cannot drift from
+/// the handlers without failing `cargo xtask contract check`.
+enum Route {
+    /// create_project
+    CreateProject,
+    /// edit_project
+    EditProject,
+    /// get_context
+    Context,
+    /// get_overview
+    Overview,
+    /// list_items
+    List,
+    /// search
+    Search,
+    /// save_document
+    Document,
+    /// upload_file
+    UploadFile,
+    /// list_files
+    ListFiles,
+    /// get_file
+    GetFile,
+    /// move_status
+    MoveStatus,
+    /// record_review
+    Review,
+    /// record_commits
+    RecordCommits,
+    /// add_comment
+    AddComment,
+    /// get_comment
+    GetComment,
+    /// resolve_comment
+    ResolveComment,
+    /// save_project_update
+    SaveProjectUpdate,
+    /// create_epic/module/task/atomic
+    CreateWork(Kind),
+    /// edit_epic/module/task/atomic
+    EditWork(Kind),
+}
+
+/// Resolve one catalogue tool name to its dispatch route; None means UNKNOWN_TOOL.
+fn route(name: &str) -> Option<Route> {
+    match name {
+        "create_project" => Some(Route::CreateProject),
+        "edit_project" => Some(Route::EditProject),
+        "get_context" => Some(Route::Context),
+        "get_overview" => Some(Route::Overview),
+        "list_items" => Some(Route::List),
+        "search" => Some(Route::Search),
+        "save_document" => Some(Route::Document),
+        "upload_file" => Some(Route::UploadFile),
+        "list_files" => Some(Route::ListFiles),
+        "get_file" => Some(Route::GetFile),
+        "move_status" => Some(Route::MoveStatus),
+        "record_review" => Some(Route::Review),
+        "record_commits" => Some(Route::RecordCommits),
+        "add_comment" => Some(Route::AddComment),
+        "get_comment" => Some(Route::GetComment),
+        "resolve_comment" => Some(Route::ResolveComment),
+        "save_project_update" => Some(Route::SaveProjectUpdate),
+        other => {
+            let (action, kind) = other.split_once('_')?;
+            if !["epic", "module", "task", "atomic"].contains(&kind) {
+                return None;
+            }
+            match action {
+                "create" => Some(Route::CreateWork(serde_json::from_value(json!(kind)).ok()?)),
+                "edit" => Some(Route::EditWork(serde_json::from_value(json!(kind)).ok()?)),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// Every tool name the dispatcher accepts, in catalogue order. Public for the
+/// schema-first contract check: this set must equal the committed catalogue.
+pub fn dispatch_vocabulary() -> Vec<&'static str> {
+    let names = vec![
+        "create_project",
+        "edit_project",
+        "create_epic",
+        "edit_epic",
+        "create_module",
+        "edit_module",
+        "create_task",
+        "edit_task",
+        "create_atomic",
+        "edit_atomic",
+        "get_context",
+        "get_overview",
+        "list_items",
+        "search",
+        "save_document",
+        "upload_file",
+        "list_files",
+        "get_file",
+        "move_status",
+        "record_review",
+        "record_commits",
+        "add_comment",
+        "get_comment",
+        "resolve_comment",
+        "save_project_update",
+    ];
+    debug_assert!(names.iter().all(|n| routes(n)));
+    names
+}
+
+/// Whether the dispatcher routes one tool name; contract tests require this
+/// for every catalogue entry.
+pub fn routes(name: &str) -> bool {
+    route(name).is_some()
+}
+
 /// One writer shared by HTTP clients and stdio bridges. No background work is performed.
 pub struct Gateway {
     /// Discoverable, strictly validated tool surface.
@@ -103,36 +221,26 @@ impl Gateway {
     }
     /// Map the closed tool vocabulary to native operations; no raw GraphQL tool is exposed.
     async fn dispatch(&self, name: &str, args: Value) -> Result<Value> {
-        match name {
-            "create_project" => self.create_project(&args).await,
-            "edit_project" => self.edit_project(&args).await,
-            "get_context" => self.context(&args).await,
-            "get_overview" => self.overview(&args).await,
-            "list_items" => self.list(&args, false).await,
-            "search" => self.list(&args, true).await,
-            "save_document" => self.document(&args).await,
-            "upload_file" => self.upload_file(&args).await,
-            "list_files" => self.list_files(&args).await,
-            "get_file" => self.get_file(&args).await,
-            "move_status" => self.move_status(&args).await,
-            "record_review" => self.review(&args).await,
-            "record_commits" => self.record_commits(&args).await,
-            "add_comment" => self.add_comment(&args).await,
-            "get_comment" => self.get_comment(&args).await,
-            "resolve_comment" => self.resolve_comment(&args).await,
-            "save_project_update" => self.save_project_update(&args).await,
-            _ => {
-                let (action, kind) = name
-                    .split_once('_')
-                    .ok_or_else(|| Fault::new("UNKNOWN_TOOL", name))?;
-                let kind: Kind = serde_json::from_value(json!(kind))
-                    .map_err(|_| Fault::new("UNKNOWN_TOOL", name))?;
-                if action == "create" {
-                    self.create_work(kind, &args).await
-                } else {
-                    self.edit_work(kind, &args).await
-                }
-            }
+        match route(name).ok_or_else(|| Fault::new("UNKNOWN_TOOL", name))? {
+            Route::CreateProject => self.create_project(&args).await,
+            Route::EditProject => self.edit_project(&args).await,
+            Route::Context => self.context(&args).await,
+            Route::Overview => self.overview(&args).await,
+            Route::List => self.list(&args, false).await,
+            Route::Search => self.list(&args, true).await,
+            Route::Document => self.document(&args).await,
+            Route::UploadFile => self.upload_file(&args).await,
+            Route::ListFiles => self.list_files(&args).await,
+            Route::GetFile => self.get_file(&args).await,
+            Route::MoveStatus => self.move_status(&args).await,
+            Route::Review => self.review(&args).await,
+            Route::RecordCommits => self.record_commits(&args).await,
+            Route::AddComment => self.add_comment(&args).await,
+            Route::GetComment => self.get_comment(&args).await,
+            Route::ResolveComment => self.resolve_comment(&args).await,
+            Route::SaveProjectUpdate => self.save_project_update(&args).await,
+            Route::CreateWork(kind) => self.create_work(kind, &args).await,
+            Route::EditWork(kind) => self.edit_work(kind, &args).await,
         }
     }
     /// Require an active native project and return its readable content.

@@ -1,0 +1,20 @@
+[package]
+name = "family-delivery"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+publish = false
+description = "Immutable single-binary delivery helper adapted from the family template (MIT)"
+
+[lints]
+workspace = true
+
+[dependencies]
+fs2 = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

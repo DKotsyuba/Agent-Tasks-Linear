@@ -97,6 +97,7 @@ impl Config {
 /// Resolve ATL_CONFIG or the user's standard configuration location.
 pub fn default_path() -> PathBuf {
     std::env::var_os("ATL_CONFIG")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default())

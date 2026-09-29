@@ -3,3 +3,7 @@
 *.local.toml
 .env
 .env.*
+/dist/
+
+# Local codegraph index, intentionally untracked
+/.codegraph/

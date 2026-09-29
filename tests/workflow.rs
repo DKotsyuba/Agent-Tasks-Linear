@@ -1,4 +1,5 @@
 //! End-to-end guarded workflow tests using native-shaped Linear HTTP responses.
+#[allow(dead_code)]
 mod support;
 use serde_json::json;
 use support::{Fixture, id};
