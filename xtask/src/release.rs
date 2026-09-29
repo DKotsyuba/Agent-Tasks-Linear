@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     fn repository_scope() {
-        assert!(repo_valid("DKotsyuba/Agent-Tasks-Linear"));
+        assert!(repo_valid("DKotsyuba/agent-tasks"));
         for r in ["x", "x/y/z", "x/y?token=a", "/x", "https://github.com/x/y"] {
             assert!(!repo_valid(r));
         }

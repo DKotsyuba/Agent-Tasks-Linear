@@ -1,5 +1,5 @@
 //! Minimal CLI for the authenticated loopback writer and standard stdio bridge.
-use agent_tasks_linear::{
+use agent_tasks::{
     catalog::Catalog,
     config::{self, Config},
     gateway::Gateway,

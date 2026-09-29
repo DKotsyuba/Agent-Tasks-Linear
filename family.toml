@@ -1,12 +1,15 @@
 schema_version = 1
-product = "agent-tasks-linear"
-repository = "DKotsyuba/Agent-Tasks-Linear"
-env_prefix = "AGENT_TASKS_LINEAR_"
+product = "agent-tasks"
+repository = "DKotsyuba/agent-tasks"
+env_prefix = "AGENT_TASKS_"
 standard_version = "1.0.0-rc.2"
 response_profile = "rust-minijinja-v1"
 devkit_version = "0.2.0"
 baseline = "rust-macos-2026-09-candidate1"
-qualification = "verified"
+# Reset on the agent-tasks-linear -> agent-tasks rename: the 0.5.0 evidence in
+# docs/releasing.md qualified the old identity, not this one. A new reviewed
+# commit citing fresh native evidence must flip this (see docs/releasing.md).
+qualification = "not_verified"
 
 # This product's own profile: a resident loopback writer/stdio bridge whose only
 # durable business state lives in Linear (external). state_schema = 0 in a delivery
@@ -19,11 +22,11 @@ host_adapter = false
 
 [compatibility]
 candidate_targets = ["aarch64-apple-darwin"]
-qualified_targets = ["aarch64-apple-darwin"]
-qualified_hosts = ["claude-code-2.1.280"]
+qualified_targets = []
+qualified_hosts = []
 
 [release]
-enabled = true
+enabled = false
 workflow = "release.yml"
 delivery_profile = "single-binary-v1"
 trust_profile = "github-authenticated"

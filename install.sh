@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Public/bootstrap installer for the single-binary-v1 profile. No tar extraction.
-# Adapted from the family template at 7f094e0 for agent-tasks-linear.
+# Adapted from the family template at 7f094e0 for agent-tasks.
 # --adopt-existing additionally adopts a known legacy plain executable after an
 # identity check; it is preserved byte-exactly next to the launcher.
 set +x
 set -euo pipefail
 umask 077
-PRODUCT='agent-tasks-linear'
-REPO='DKotsyuba/Agent-Tasks-Linear'
+PRODUCT='agent-tasks'
+REPO='DKotsyuba/agent-tasks'
 version=''
-home=${AGENT_TASKS_LINEAR_HOME:-"$HOME/.$PRODUCT"}
+home=${AGENT_TASKS_HOME:-"$HOME/.$PRODUCT"}
 bin_dir="$HOME/.local/bin"
 adopt=0
 while (($#)); do

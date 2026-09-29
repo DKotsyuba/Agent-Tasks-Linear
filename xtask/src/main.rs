@@ -1,4 +1,4 @@
-//! Rust-only product automation for agent-tasks-linear. The tool contract is
+//! Rust-only product automation for agent-tasks. The tool contract is
 //! schema-first: `schemas/tools.json` is the single authority, and this gate
 //! verifies it against the embedded catalogue, the gateway dispatch vocabulary
 //! and real-binary MCP discovery. No interpreter or generator is involved.
@@ -306,7 +306,7 @@ impl Project {
             return Err("Rust workspace invariant failed".into());
         }
         if self.family["product"].as_str() != Some(self.name.as_str())
-            || self.family["repository"].as_str() != Some("DKotsyuba/Agent-Tasks-Linear")
+            || self.family["repository"].as_str() != Some("DKotsyuba/agent-tasks")
             || self.family["standard_version"].as_str() != Some("1.0.0-rc.2")
             || self.family["response_profile"].as_str() != Some("rust-minijinja-v1")
         {
@@ -347,7 +347,7 @@ impl Project {
             "docs/FAMILY_CONTRACT.md",
             "docs/TEMPLATE_PROVENANCE.md",
             "docs/releasing.md",
-            "registration/agent-tasks-linear.json",
+            "registration/agent-tasks.json",
             ".family/manifest.json",
             ".family/origin.json",
         ] {

@@ -5,7 +5,7 @@
 #[allow(dead_code)]
 mod support;
 
-use agent_tasks_linear::config::Config;
+use agent_tasks::config::Config;
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
 use support::{id, run_cli};
@@ -18,7 +18,7 @@ fn version_reports_product_identity() {
     let text = String::from_utf8_lossy(&output.stdout);
     assert_eq!(
         text.trim(),
-        format!("agent-tasks-linear {}", env!("CARGO_PKG_VERSION"))
+        format!("agent-tasks {}", env!("CARGO_PKG_VERSION"))
     );
 }
 
@@ -35,7 +35,7 @@ fn local_doctor_needs_no_credentials_or_network() {
     ]);
     assert_eq!(output.status.code(), Some(0), "{:?}", output);
     let report: Value = serde_json::from_slice(&output.stdout).expect("doctor JSON");
-    assert_eq!(report["product"], "agent-tasks-linear");
+    assert_eq!(report["product"], "agent-tasks");
     assert_eq!(report["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(report["online"], false);
     let names: Vec<&str> = report["checks"]

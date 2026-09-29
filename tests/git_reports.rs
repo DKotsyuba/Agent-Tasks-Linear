@@ -1,5 +1,5 @@
 //! Real local Git reader and parser checks; all Git writes are disposable test setup.
-use agent_tasks_linear::git::{parse_message, read_commit};
+use agent_tasks::git::{parse_message, read_commit};
 use std::{fs, path::Path, process::Command};
 
 /// Run literal Git arguments in a fixture, requiring success and returning UTF-8 stdout.

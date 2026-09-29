@@ -3,7 +3,7 @@
 #[allow(dead_code)]
 mod support;
 
-use agent_tasks_linear::{config::Config, server};
+use agent_tasks::{config::Config, server};
 use rmcp::{
     ServiceExt,
     model::CallToolRequestParams,

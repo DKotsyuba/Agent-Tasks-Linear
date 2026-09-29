@@ -1,5 +1,5 @@
 //! Opt-in native Linear pilot. Creates a readable disposable project; reports are synthetic Git evidence.
-use agent_tasks_linear::{gateway::Gateway, linear::Linear, records::child_id};
+use agent_tasks::{gateway::Gateway, linear::Linear, records::child_id};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 use uuid::Uuid;

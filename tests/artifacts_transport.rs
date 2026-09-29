@@ -2,7 +2,7 @@
 //! signed PUT and the authenticated canonical-host download. No Gateway tool is
 //! exercised here; only `Linear`'s additive transport methods.
 
-use agent_tasks_linear::linear::{FILE_SIZE_CAP, Linear};
+use agent_tasks::linear::{FILE_SIZE_CAP, Linear};
 use axum::{
     Json, Router,
     body::Bytes,

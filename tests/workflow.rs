@@ -284,7 +284,7 @@ async fn local_commit_imports_are_durable_ordered_and_round_scoped() {
 /// Uses an isolated real Git repository and linked worktree; fixture writes never contact Linear.
 #[tokio::test]
 async fn local_repositories_preserve_content_and_support_linked_checkouts() {
-    use agent_tasks_linear::records::read_fields;
+    use agent_tasks::records::read_fields;
     use std::{fs, path::Path, process::Command};
 
     /// Run literal Git arguments in a disposable fixture repository, requiring success.
@@ -677,10 +677,10 @@ async fn project_brief_context_adds_repository_teams_and_overview_route() {
         .await;
     assert_eq!(brief["project"]["repository_path"], json!(repo));
     assert_eq!(brief["project"]["updatedAt"], json!(observed_version));
-    let rendered = agent_tasks_linear::render::render_outcome(
+    let rendered = agent_tasks::render::render_outcome(
         "get_context",
         &json!({"type":"project","id":project,"detail":"brief"}),
-        &agent_tasks_linear::model::Outcome::ok(brief.clone()),
+        &agent_tasks::model::Outcome::ok(brief.clone()),
     );
     assert!(
         rendered.contains(&format!("Updated at: {observed_version}")),
@@ -762,7 +762,7 @@ async fn edit_project_content_replace_is_guarded_and_replay_safe() {
 /// Linear may change list markers, but code, literal markers, words and destinations remain significant.
 #[test]
 fn markdown_list_markers_preserve_content() {
-    use agent_tasks_linear::records::markdown_key;
+    use agent_tasks::records::markdown_key;
     let original =
         "## План\n- [Результат](https://linear.app/example/issue/TEST-1/result): готово.";
     let native =
@@ -816,7 +816,7 @@ fn markdown_list_markers_preserve_content() {
 /// A native same-label HTTP link may represent a bare domain in prose, but altered links cannot.
 #[test]
 fn markdown_bare_domain_autolink_preserves_meaning() {
-    use agent_tasks_linear::records::markdown_equivalent;
+    use agent_tasks::records::markdown_equivalent;
     let expected =
         "## Checks\n\n- Pinned Linear DocumentFilter supports or, issue.id.in, and project.id.eq.";
     let native = "## Checks\n\n* Pinned Linear DocumentFilter supports or, [issue.id.in](<http://issue.id.in>), and project.id.eq.";
@@ -889,7 +889,7 @@ async fn markdown_list_pending_retry_preserves_manual_changes() {
 /// code literals and extra sections remain substantive differences.
 #[test]
 fn markdown_native_link_title_preserves_meaningful_differences() {
-    use agent_tasks_linear::records::markdown_equivalent;
+    use agent_tasks::records::markdown_equivalent;
     let url = "https://linear.app/example/document/spec-123";
     let expected = format!("Plan: {url}\n\nKeep [Role](https://example.com/role)");
     let native = expected.replace(url, &format!("[Spec title](<{url}>)"));
@@ -977,7 +977,7 @@ async fn markdown_document_title_pending_retry_preserves_content() {
 /// altered destinations, labels, extra prose and code literals cannot.
 #[test]
 fn markdown_mailto_autolink_preserves_meaning() {
-    use agent_tasks_linear::records::markdown_equivalent;
+    use agent_tasks::records::markdown_equivalent;
     let email = "noreply@anthropic.com";
     let expected = format!(
         "Checks:\ncargo test --workspace --locked\n\nCo-Authored-By: Claude Code <{email}>"
@@ -1046,7 +1046,7 @@ fn markdown_mailto_autolink_preserves_meaning() {
 /// while an actual change to the code content itself must still compare unequal.
 #[test]
 fn markdown_mixed_code_and_autolink_regions_compare_independently() {
-    use agent_tasks_linear::records::markdown_equivalent;
+    use agent_tasks::records::markdown_equivalent;
 
     // Inline code plus a separate bare-domain autolink in the same paragraph.
     let expected = "Use `gateway.rs` per docs, and also see gateway.rs directly.";
@@ -1124,7 +1124,7 @@ fn markdown_mixed_code_and_autolink_regions_compare_independently() {
 /// an unrelated change right after that apostrophe, or a genuinely different domain, still differs.
 #[test]
 fn markdown_possessive_apostrophe_ends_a_bare_domain_or_email() {
-    use agent_tasks_linear::records::markdown_equivalent;
+    use agent_tasks::records::markdown_equivalent;
 
     let expected = "`impl Gateway {}` uses gateway.rs's helpers.";
     let native = "`impl Gateway {}` uses [gateway.rs](<http://gateway.rs>)'s helpers.";
@@ -1152,7 +1152,7 @@ fn markdown_possessive_apostrophe_ends_a_bare_domain_or_email() {
 /// title). A real text change inside one item, or a changed URL destination, must still differ.
 #[test]
 fn markdown_ordered_list_and_document_link_normalize_together() {
-    use agent_tasks_linear::records::markdown_equivalent;
+    use agent_tasks::records::markdown_equivalent;
 
     let url = "https://linear.app/example/document/qualification-notes";
     let expected = format!(
@@ -1186,7 +1186,7 @@ fn markdown_ordered_list_and_document_link_normalize_together() {
 /// A changed label or a genuinely different destination value still differs.
 #[test]
 fn markdown_explicit_link_tolerates_angle_bracket_destination_wrapping() {
-    use agent_tasks_linear::records::markdown_equivalent;
+    use agent_tasks::records::markdown_equivalent;
 
     // A relative destination gaining angle brackets, the reported qualification case.
     let expected = "See details: [title](notes.md) for more.";
@@ -1858,8 +1858,8 @@ async fn duplicate_transition_recovers_relation_write() {
     let project = f.project().await;
     let original = f.work("atomic", &project, None).await;
     let duplicate = f.work("atomic", &project, None).await;
-    let original_aid = agent_tasks_linear::records::child_id(&original, "state");
-    let duplicate_aid = agent_tasks_linear::records::child_id(&duplicate, "state");
+    let original_aid = agent_tasks::records::child_id(&original, "state");
+    let duplicate_aid = agent_tasks::records::child_id(&duplicate, "state");
     let original_record = f.db.lock().await.attachments[&original_aid].clone();
     let url = format!(
         "https://linear.app/workspace/issue/{}/original",
@@ -1923,7 +1923,7 @@ async fn state_attachment_rejects_foreign_provenance_on_read_and_write() {
     let source = f.work("atomic", &project, None).await;
     let foreign = f.work("atomic", &project, None).await;
     let work = f.gateway.store.work(&source).await.unwrap();
-    let aid = agent_tasks_linear::records::child_id(&source, "state");
+    let aid = agent_tasks::records::child_id(&source, "state");
     for (current, original) in [
         (foreign.as_str(), serde_json::Value::Null),
         (source.as_str(), json!({"id":foreign})),
@@ -2258,7 +2258,7 @@ async fn detached_tasks_and_pending_manual_edits_block_without_overwriting() {
 /// Validate manual field adoption, native Markdown escaping, code artifacts and Project-level integration.
 #[tokio::test]
 async fn field_validation_code_work_and_project_integration() {
-    use agent_tasks_linear::records::{markdown_key, read_fields};
+    use agent_tasks::records::{markdown_key, read_fields};
     let a = id();
     let b = id();
     let description = format!("## Проверяемые модули\n\n\\[\"{a}\",\"{b}\"\\]\n");
@@ -2488,18 +2488,16 @@ async fn uncertain_creates_reviews_and_frozen_reparenting() {
         f.ok("get_context", json!({"type":"issue","id":atom})).await["workflow"]["review"]["id"],
         review["request_id"]
     );
-    let records =
-        agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom, None)
-            .await
-            .unwrap();
+    let records = agent_tasks::activity::read_activity(&f.gateway.store, "issue", &atom, None)
+        .await
+        .unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records.iter().filter(|r| r.formal_review).count(), 1);
     assert_eq!(f.db.lock().await.comments.len(), 2);
     f.mv(&atom, "In Progress").await;
-    let history =
-        agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom, None)
-            .await
-            .unwrap();
+    let history = agent_tasks::activity::read_activity(&f.gateway.store, "issue", &atom, None)
+        .await
+        .unwrap();
     assert_eq!(history.len(), 2);
     assert!(history.iter().all(|r| !r.formal_review));
     f.result("atomic", &atom).await;
