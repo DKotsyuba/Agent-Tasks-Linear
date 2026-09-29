@@ -86,7 +86,26 @@ found; it is not an exhaustive substring index. These local candidate checks
 do not replace step 6's qualification of the exact CI-produced release bytes.
 No publication or production installation is implied by these declarations.
 
+### 0.6.0 qualification scope
+
+The renamed `agent-tasks` candidate from
+`f2d4db7ea9c505cefad60b561f23c6634184e7e0` (SHA-256
+`d4f0e4803781dbdfa9dbd0b861615f36ff5a138eb36aad2a0e2eba8510d9d7a4`)
+was exercised on macOS 27.0 build 26A428, arm64, through Claude Code 2.1.280
+on 2026-09-29. Native MCP reads reported version 0.6.0 and 25 tools;
+document creation, guarded section replacement, stale-write refusal,
+identical-request replay, scoped semantic search and UTF-8/binary file
+upload/download passed. Downloaded fixtures were independently compared
+byte-for-byte. A disposable installed `agent-tasks` launcher passed local
+doctor. The exact committed source passed the full local Rust gate and
+[CI](https://github.com/DKotsyuba/agent-tasks/actions/runs/36617450316).
+
+This qualifies only the declared target/host. Publication still requires
+step 6's separate acceptance of the exact CI-produced release payload;
+these local bytes are not evidence for a different build or installation.
+
 ## Installation and legacy adoption (owner-operated)
+
 
 ```sh
 ./install.sh --version 0.6.0 [--home /absolute/home] [--bin-dir /absolute/bin]
