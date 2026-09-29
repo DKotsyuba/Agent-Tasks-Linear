@@ -1011,6 +1011,47 @@ fn markdown_mailto_autolink_preserves_meaning() {
     ));
 }
 
+/// Reproduces the reported defect: unrelated inline/fenced code elsewhere in the same body
+/// must not block a separate bare-domain or bare-email autolink from comparing equivalent,
+/// while an actual change to the code content itself must still compare unequal.
+#[test]
+fn markdown_mixed_code_and_autolink_regions_compare_independently() {
+    use agent_tasks_linear::records::markdown_equivalent;
+
+    // Inline code plus a separate bare-domain autolink in the same paragraph.
+    let expected = "Use `gateway.rs` per docs, and also see gateway.rs directly.";
+    let native =
+        "Use `gateway.rs` per docs, and also see [gateway.rs](<http://gateway.rs>) directly.";
+    assert!(markdown_equivalent(expected, native));
+    // The unrelated code span is unchanged; only the bare domain gained a native title, so
+    // altering the code itself must still be flagged as a real difference.
+    assert!(!markdown_equivalent(
+        expected,
+        &native.replace("`gateway.rs`", "`gateway.toml`")
+    ));
+
+    // Fenced code plus a separate prose email/URL in the same body.
+    let email = "team@example.com";
+    let url = "https://example.com/report";
+    let expected_fenced =
+        format!("```rust\nfn gateway() {{}}\n```\n\nContact {email} or see {url}.");
+    let native_fenced = expected_fenced
+        .replace(email, &format!("[{email}](<mailto:{email}>)"))
+        .replace(url, &format!("[Report](<{url}>)"));
+    assert!(markdown_equivalent(&expected_fenced, &native_fenced));
+    // A real change inside the fenced code must still compare unequal.
+    assert!(!markdown_equivalent(
+        &expected_fenced,
+        &native_fenced.replace("fn gateway() {}", "fn gateway() { changed() }")
+    ));
+
+    // A code span still cannot silently become a link: no leniency crosses that boundary.
+    assert!(!markdown_equivalent(
+        "`gateway.rs`",
+        "[gateway.rs](<http://gateway.rs>)"
+    ));
+}
+
 /// A pending commit import accepts Linear's mailto autolink for a co-author footer while the
 /// exact retry finalizes without conflicts or drift.
 #[tokio::test]
