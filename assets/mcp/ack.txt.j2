@@ -8,6 +8,7 @@
 {{ entity(item) }}{{ line("Health", item.health) }}
 {% if tool == "upload_file" or tool == "get_file" %}{{ line("Work ID", item.work_id) }}{{ line("Work URL", item.work_url) }}{{ line("File name", item.file_name) }}{{ line("Content type", item.content_type) }}{{ line("Size bytes", item.size_bytes) }}{{ line("Path", item.path) }}{% endif %}
 {% if tool == "save_project_update" %}{{ line("Updated at", item.updated_at) }}{% endif %}
+{% if tool == "save_document" %}{{ line("Updated at", item.updated_at) }}{{ line("Hidden", item.hidden_at is not none) }}{% endif %}
 {% if tool == "resolve_comment" %}{{ line("Resolved", item.resolved) }}{% endif %}
 {% if tool == "record_review" and not item.url %}{{ line("URL", review_url) }}{% endif %}
 {% if tool == "record_review" %}{{ line("Verdict", request.verdict|default(none)) }}{% endif %}

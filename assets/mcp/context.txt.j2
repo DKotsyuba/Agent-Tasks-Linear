@@ -31,5 +31,5 @@ Project{{ "\n" }}{{ entity(item) }}{% for team in teams %}{{ line("Team ID", tea
 {% elif kind == "project_update" %}
 Project update{{ "\n" }}{{ entity(item) }}{{ line("Health", item.health) }}{{ line("Updated at", item.updated_at) }}{{ line("Author", actor) }}{{ line("Reason", reason) }}{{ body("Body", body_text) }}
 {% else %}
-Document{{ "\n" }}{{ entity(item) }}{{ body("Content", content) }}
+Document{{ "\n" }}{{ entity(item) }}{% if section %}{{ line("Section", section.heading) }}{{ line("Section index", section.index) }}{{ line("Sections total", section.count) }}{{ line("Whole document", whole_document_route) }}{% endif %}{{ body("Content", content) }}
 {% endif %}

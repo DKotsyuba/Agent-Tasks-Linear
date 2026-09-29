@@ -195,20 +195,26 @@ fn fallback_kind(tool: &str) -> &'static str {
 }
 
 /// Select native identity fields as values; templates own their labels and order.
-/// The trailing group is the flat file envelope agreed for upload_file/list_files/get_file;
-/// it is null for every other tool's item and so never renders through `line`.
+/// One group is the flat file envelope agreed for upload_file/list_files/get_file; another is
+/// the Document search row (snippet, match source, hidden/current); both are null for every
+/// other tool's item and so never render through `line`. `updated_at` accepts either the raw
+/// native `updatedAt` or an already-public snake_case `updated_at`, since a public response
+/// shape (like the Document search row) uses the latter directly.
 fn identity(item: &Value) -> Value {
     json!({
         "id":item["id"],"identifier":item["identifier"],
         "title":if item["title"].is_string() {&item["title"]} else {&item["name"]},
         "url":item["url"],"status":item["state"]["name"],
         "priority":item["priority"],"health":item["health"],
-        "updated_at":item["updatedAt"],"resolved":item["resolvedAt"].is_string(),
+        "updated_at":if item["updatedAt"].is_string() {&item["updatedAt"]} else {&item["updated_at"]},
+        "resolved":item["resolvedAt"].is_string(),
         "project_id":item["project"]["id"],"team_id":item["team"]["id"],
         "parent_id":item["parent"]["id"],
         "work_id":item["work_id"],"work_url":item["work_url"],
         "file_name":item["file_name"],"content_type":item["content_type"],
-        "size_bytes":item["size_bytes"],"path":item["path"]
+        "size_bytes":item["size_bytes"],"path":item["path"],
+        "snippet":item["snippet"],"match_source":item["match_source"],
+        "hidden":item["hidden"],"current":item["current"],"hidden_at":item["hiddenAt"]
     })
 }
 
@@ -358,19 +364,25 @@ fn context_projection(request: &Value, data: &Value) -> Value {
         description.to_owned()
     };
     json!({"kind":kind,"item":identity(item),"description":description,"content":item["content"],
-        "body_text":body,"agent":agent,"checkout":checkout,"children":children,"commits":commits,
-        "report":report,
-        "epic":agent["epic"],"required_contract":if data["fields"]["required_contract"].is_string(){&Value::Null}else{&agent["required_contract"]},
-        "provided_contract":if data["fields"]["provided_contract"].is_string(){&Value::Null}else{&agent["provided_contract"]},
-        "review":agent["latest_review"],"questions":agent["open_questions"].as_array().cloned().unwrap_or_default(),
-        "documents":if kind=="project" {data["documents"].as_array().cloned().unwrap_or_default()} else {agent["documents"].as_array().cloned().unwrap_or_default()},
-        "teams":item["teams"]["nodes"].as_array().cloned().unwrap_or_default(),
-        "peers":data["priority_group"]["peers"].as_array().cloned().unwrap_or_default(),
-        "guidance":data["guidance"],
-        "pending_call":pending_call,
-        "discrepancies":data["discrepancies"].as_array().cloned().unwrap_or_default(),
-        "transitions":data["transitions"].as_array().cloned().unwrap_or_default(),
-        "actor":data["activity"]["actor"],"reason":data["activity"]["reason"]})
+    "body_text":body,"agent":agent,"checkout":checkout,"children":children,"commits":commits,
+    "report":report,
+    "epic":agent["epic"],"required_contract":if data["fields"]["required_contract"].is_string(){&Value::Null}else{&agent["required_contract"]},
+    "provided_contract":if data["fields"]["provided_contract"].is_string(){&Value::Null}else{&agent["provided_contract"]},
+    "review":agent["latest_review"],"questions":agent["open_questions"].as_array().cloned().unwrap_or_default(),
+    "documents":if kind=="project" {data["documents"].as_array().cloned().unwrap_or_default()} else {agent["documents"].as_array().cloned().unwrap_or_default()},
+    "teams":item["teams"]["nodes"].as_array().cloned().unwrap_or_default(),
+    "peers":data["priority_group"]["peers"].as_array().cloned().unwrap_or_default(),
+    "guidance":data["guidance"],
+    "pending_call":pending_call,
+    "discrepancies":data["discrepancies"].as_array().cloned().unwrap_or_default(),
+    "transitions":data["transitions"].as_array().cloned().unwrap_or_default(),
+    "actor":data["activity"]["actor"],"reason":data["activity"]["reason"],
+    "section":item["section"],
+    "whole_document_route":if item["section"].is_object() {
+        json!(format!("get_context type=document id={}", item["id"].as_str().unwrap_or("")))
+    } else {
+        Value::Null
+    }})
 }
 
 /// Select project cards and delta source values without printing internal hashes.
@@ -418,7 +430,11 @@ fn list_projection(tool: &str, request: &Value, data: &Value) -> Value {
         request["type"].clone()
     };
     json!({"tool":tool,"entity_type":entity_type,"items":items,
-        "has_next":data["pageInfo"]["hasNextPage"],"cursor":data["pageInfo"]["endCursor"]})
+        "has_next":data["pageInfo"]["hasNextPage"],"cursor":data["pageInfo"]["endCursor"],
+        // Document search's own honest filtered-page signal: a native page can match fewer
+        // rows than it held, or zero, while more native results remain to check.
+        "native_page_size":data["native_page_size"],"matched_in_page":data["matched_in_page"],
+        "scoped_to_project":data["scoped_to_project"]})
 }
 
 /// Select one explicitly read comment, root and reply page without shortening their bodies.
@@ -566,6 +582,77 @@ mod tests {
         assert!(listed.contains("File name: check-summary.pdf"), "{listed}");
         assert!(listed.contains("Content type: application/pdf"), "{listed}");
         assert!(listed.contains("Size bytes: 20480"), "{listed}");
+    }
+
+    /// A Document search result renders its snippet, honest match source and currentness, not
+    /// just generic identity fields, and the honest filtered-page signal shows when a native
+    /// page's real match count differs from its held size.
+    #[test]
+    fn document_search_renders_snippet_currentness_and_filtered_page_honesty() {
+        let row = json!({"id":"doc-1","title":"Runbook","url":"https://linear.app/doc-1",
+            "updated_at":"2026-09-29T00:00:00Z","current":true,"hidden":false,
+            "match_source":"content","snippet":"...the exact matched phrase in context..."});
+        let text = render_outcome(
+            "search",
+            &json!({"type":"document","query":"matched phrase","project_id":"project-1"}),
+            &Outcome::ok(json!({"nodes":[row],
+                "pageInfo":{"hasNextPage":true,"endCursor":"opaque-1"},
+                "native_page_size":10,"matched_in_page":1,"scoped_to_project":"project-1"})),
+        );
+        assert!(text.contains("Title: Runbook"), "{text}");
+        assert!(text.contains("Updated at: 2026-09-29T00:00:00Z"), "{text}");
+        assert!(text.contains("Current: true"), "{text}");
+        assert!(text.contains("Hidden: false"), "{text}");
+        assert!(text.contains("Match source: content"), "{text}");
+        assert!(
+            text.contains("Snippet") && text.contains("the exact matched phrase in context"),
+            "{text}"
+        );
+        assert!(text.contains("Scoped to Project: project-1"), "{text}");
+        assert!(text.contains("Matched in this native page: 1"), "{text}");
+        assert!(text.contains("Native page size: 10"), "{text}");
+        assert!(text.contains("filtered page"), "{text}");
+    }
+
+    /// A section-scoped Document read renders which section it is, its position among the
+    /// document's sections, and an explicit route back to the whole document.
+    #[test]
+    fn document_section_read_renders_section_info_and_whole_document_route() {
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"doc-1","section":"Runbook"}),
+            &Outcome::ok(
+                json!({"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1",
+                "content":"Body of just this section.",
+                "section":{"heading":"Runbook","index":1,"count":3}}),
+            ),
+        );
+        assert!(text.contains("Section: Runbook"), "{text}");
+        assert!(text.contains("Section index: 1"), "{text}");
+        assert!(text.contains("Sections total: 3"), "{text}");
+        assert!(
+            text.contains("Whole document: get_context type=document id=doc-1"),
+            "{text}"
+        );
+        assert!(text.contains("Body of just this section."), "{text}");
+    }
+
+    /// A save_document acknowledgement shows the updated_at a caller needs for its next guarded
+    /// edit's expected_updated_at, and the document's hidden state.
+    #[test]
+    fn save_document_ack_renders_updated_at_and_hidden_state() {
+        let text = render_outcome(
+            "save_document",
+            &json!({"request_id":"req-1","id":"doc-1"}),
+            &Outcome::ok(
+                json!({"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1",
+                "content":"Body","updatedAt":"2026-09-29T00:05:00Z","hiddenAt":"2026-09-29T00:05:00Z",
+                "replayed":false}),
+            ),
+        );
+        assert!(text.contains("Updated at: 2026-09-29T00:05:00Z"), "{text}");
+        assert!(text.contains("Hidden: true"), "{text}");
+        assert!(text.contains("Replayed: false"), "{text}");
     }
 
     /// Acknowledgements and previews render guidance, effect plans and overview attention.
