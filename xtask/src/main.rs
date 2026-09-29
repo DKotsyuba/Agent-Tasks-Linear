@@ -348,6 +348,8 @@ impl Project {
             "docs/TEMPLATE_PROVENANCE.md",
             "docs/releasing.md",
             "registration/agent-tasks-linear.json",
+            ".family/manifest.json",
+            ".family/origin.json",
         ] {
             if !self.root.join(file).is_file() {
                 return Err(format!("required file absent: {file}").into());

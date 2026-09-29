@@ -259,20 +259,21 @@ fn activate(base: &Path, manifest: &Manifest, bin_dir: &Path) -> Result<()> {
         }
     }
     // Preserve executable identity for every new process; it does not repeatedly resolve current.
-    // The launcher also pins configuration when the product home holds one:
-    // a child process that changes HOME must not silently redirect the
-    // installed product to an empty config elsewhere. Without a config in the
-    // home, the binary's own ATL_CONFIG/default resolution is preserved.
+    // The launcher also pins the installation default through ATL_CONFIG —
+    // only when the caller has not set it — and forwards argv unchanged, so
+    // precedence stays: explicit --config > explicit ATL_CONFIG > pinned
+    // installation default. A child that changes HOME cannot redirect the
+    // installed product to an empty config, and existing wrappers that pass
+    // their own --config keep working (no duplicate argument).
     let marker = format!("#!/bin/sh\n# {} managed launcher v1\n", manifest.product);
     let body = format!(
-        "{marker}set -eu\nhome={}\nbase=\"$home/standalone\"\nrelease=$(readlink \"$base/current\")\nconfig=\"$home/config.toml\"\nif [ -f \"$config\" ]; then\n  exec \"$base/$release/{}\" --config \"$config\" \"$@\"\nfi\nexec \"$base/$release/{}\" \"$@\"\n",
+        "{marker}set -eu\nhome={}\nbase=\"$home/standalone\"\nrelease=$(readlink \"$base/current\")\nif [ -z \"${{ATL_CONFIG:-}}\" ] && [ -f \"$home/config.toml\" ]; then\n  ATL_CONFIG=\"$home/config.toml\"\n  export ATL_CONFIG\nfi\nexec \"$base/$release/{}\" \"$@\"\n",
         shell_quote(
             base.parent()
                 .ok_or("installation base without a home parent")?
                 .to_str()
                 .ok_or("non-UTF8 installation path")?
         ),
-        manifest.binary,
         manifest.binary
     );
     let temp_launcher = bin_dir.join(format!(
@@ -298,14 +299,14 @@ fn activate(base: &Path, manifest: &Manifest, bin_dir: &Path) -> Result<()> {
 fn activate(_: &Path, _: &Manifest, _: &Path) -> Result<()> {
     Err("installer supports Unix only".into())
 }
-/// Install the release payload under the exclusive lock. Does not migrate,
-/// prune, restart services or change host configuration.
-pub fn install(bundle: &Path, home: &Path, bin_dir: &Path) -> Result<Manifest> {
-    let manifest = verify(bundle)?;
-    let (base, _lock) = layout(home)?;
+/// Stage the release payload into the immutable versions tree under an
+/// already-held installation lock. Every install-side refusal (conflicting
+/// immutable version, damaged bundle) happens here, before anything at the
+/// launcher path is touched.
+fn stage_release(base: &Path, bundle: &Path, manifest: &Manifest) -> Result<()> {
     let destination = base.join("releases").join(&manifest.version);
     if fs::symlink_metadata(&destination).is_ok() {
-        if verify(&destination)? != manifest {
+        if verify(&destination)? != *manifest {
             return Err("immutable version already exists with different bytes or metadata".into());
         }
     } else {
@@ -327,6 +328,14 @@ pub fn install(bundle: &Path, home: &Path, bin_dir: &Path) -> Result<Manifest> {
         verify(&stage)?;
         fs::rename(stage, &destination)?;
     }
+    Ok(())
+}
+/// Install the release payload under the exclusive lock. Does not migrate,
+/// prune, restart services or change host configuration.
+pub fn install(bundle: &Path, home: &Path, bin_dir: &Path) -> Result<Manifest> {
+    let manifest = verify(bundle)?;
+    let (base, _lock) = layout(home)?;
+    stage_release(&base, bundle, &manifest)?;
     activate(&base, &manifest, bin_dir)?;
     Ok(manifest)
 }
@@ -350,10 +359,31 @@ pub struct Adoption {
     /// Where the untouched legacy executable was preserved.
     pub backup: PathBuf,
 }
+/// Restore the verified legacy bytes to the launcher path after a failed
+/// adoption. A file that appeared concurrently at that path is never
+/// overwritten; the backup always survives either way.
+fn restore_legacy(legacy: &Path, backup: &Path, sha256: &str) -> Result<()> {
+    if fs::symlink_metadata(legacy).is_ok() {
+        return Err("launcher path changed during the failed adoption; backup preserved".into());
+    }
+    fs::copy(backup, legacy)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(legacy, fs::Permissions::from_mode(0o755))?;
+    }
+    if digest(legacy)?.1 != sha256 {
+        return Err("legacy restore verification failed; backup preserved".into());
+    }
+    Ok(())
+}
 /// Explicitly adopt a known legacy launcher: verify the unmanaged file is
 /// really this product (its `--version` output must identify the same
 /// product), preserve it byte-for-byte next to the launcher, then install the
-/// managed release. Foreign or unrecognized executables are still refused.
+/// managed release — all under one installation lock, with every install-side
+/// refusal preflighted before the stable launcher path is touched and the
+/// verified backup restored if activation still fails. Foreign or
+/// unrecognized executables are always refused.
 pub fn adopt_legacy_launcher(
     bundle: &Path,
     home: &Path,
@@ -399,16 +429,26 @@ pub fn adopt_legacy_launcher(
     if digest(&backup)?.1 != sha256 {
         return Err("legacy backup verification failed".into());
     }
+    // One lock covers staging, replacement and activation. Staging preflights
+    // every install-side refusal (conflicting immutable version, damaged
+    // payload) before the stable launcher path is removed.
+    let (base, _lock) = layout(home)?;
+    stage_release(&base, bundle, &manifest)?;
     fs::remove_file(&legacy)?;
-    let installed = install(bundle, home, bin_dir)?;
-    Ok((
-        installed,
-        Adoption {
-            version,
-            sha256,
-            backup,
-        },
-    ))
+    match activate(&base, &manifest, bin_dir) {
+        Ok(()) => Ok((
+            manifest,
+            Adoption {
+                version,
+                sha256,
+                backup,
+            },
+        )),
+        Err(error) => {
+            restore_legacy(&legacy, &backup, &sha256)?;
+            Err(error)
+        }
+    }
 }
 #[cfg(test)]
 #[allow(
@@ -572,6 +612,79 @@ mod tests {
         fs::write(bin.join("agent-test"), b"mine").unwrap();
         assert!(install(&b, &t.path().join("home"), &bin).is_err());
         assert_eq!(fs::read(bin.join("agent-test")).unwrap(), b"mine");
+    }
+    /// A rejected adoption never leaves the stable launcher path missing:
+    /// install-side refusals preflight before removal, and an activation
+    /// failure after removal restores the verified legacy bytes; the owner's
+    /// config is untouched in both cases.
+    #[cfg(unix)]
+    #[test]
+    fn failed_adoption_leaves_prior_launcher_and_config_intact() {
+        let t = tempfile::tempdir().unwrap();
+        let h = t.path().join("home");
+        let bin = t.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        fs::create_dir(&h).unwrap();
+        fs::write(h.join("config.toml"), b"listen = \"127.0.0.1:8777\"\n").unwrap();
+        let config = fs::read(h.join("config.toml")).unwrap();
+        let script = b"#!/bin/sh\necho agent-test 0.4.0\n";
+        let legacy = bin.join("agent-test");
+        fn install_legacy(path: &Path, script: &[u8]) {
+            fs::write(path, script).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // Case 1: a conflicting immutable version (same version, different
+        // bytes) is refused BEFORE the legacy executable is removed.
+        install(&fixture(t.path(), "0.9.0", 0), &h, &bin).unwrap();
+        fs::remove_file(&legacy).unwrap();
+        install_legacy(&legacy, script);
+        let conflicting = t.path().join("conflicting-source");
+        fs::write(&conflicting, b"different bytes entirely").unwrap();
+        let conflict_bundle =
+            repackage_with_source(fixture(t.path(), "0.9.0-x", 0), &conflicting, "0.9.0");
+        assert!(adopt_legacy_launcher(&conflict_bundle, &h, &bin).is_err());
+        assert_eq!(fs::read(&legacy).unwrap(), script);
+        assert_eq!(fs::read(h.join("config.toml")).unwrap(), config);
+
+        // Case 2: activation refuses a state-schema downgrade after removal;
+        // the verified backup restores the legacy bytes byte-identically and
+        // the executable stays runnable.
+        fs::remove_file(&legacy).unwrap();
+        install(&fixture(t.path(), "0.8.0", CURRENT_STATE_SCHEMA), &h, &bin).unwrap();
+        fs::remove_file(&legacy).unwrap();
+        install_legacy(&legacy, script);
+        let before = fs::read(&legacy).unwrap();
+        assert!(adopt_legacy_launcher(&fixture(t.path(), "0.9.2", 0), &h, &bin).is_err());
+        assert_eq!(fs::read(&legacy).unwrap(), before);
+        let out = std::process::Command::new(&legacy)
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "agent-test 0.4.0"
+        );
+        assert_eq!(fs::read(h.join("config.toml")).unwrap(), config);
+        // The backup survives for audit.
+        assert!(bin.join("agent-test-legacy-0.4.0").is_file());
+    }
+
+    /// Re-badge one fixture bundle to a version and swap its binary for other
+    /// bytes, refreshing the manifest hashes so integrity checks pass.
+    fn repackage_with_source(bundle: PathBuf, source: &Path, version: &str) -> PathBuf {
+        let manifest_path = bundle.join("release-manifest.json");
+        let mut m: Manifest = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        m.version = version.into();
+        let staged = bundle.join(&m.binary);
+        fs::copy(source, &staged).unwrap();
+        let (size, sha) = digest(&staged).unwrap();
+        m.size = size;
+        m.sha256 = sha;
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&m).unwrap()).unwrap();
+        bundle
     }
     /// A known legacy product executable is adopted with an identity check and
     /// a byte-exact backup; a foreign executable is refused untouched.

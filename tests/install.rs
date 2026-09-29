@@ -171,21 +171,33 @@ fn foreign_launcher_is_refused_without_explicit_adoption() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// The managed launcher pins the product home's config: a child that changes
-/// HOME still resolves the intended configuration, and a home without a
-/// config keeps the binary's own ATL_CONFIG/default resolution.
+/// Configuration precedence through the REAL installed launcher in
+/// disposable directories: explicit --config > explicit ATL_CONFIG > the
+/// pinned installation default, argv forwarded unchanged (existing wrappers
+/// that pass their own --config keep working), defaults pinned even when a
+/// child changes HOME, and no config file is ever modified.
 #[test]
-fn launcher_pins_config_against_child_home_changes() {
+fn launcher_config_precedence_and_pinning() {
     let root = std::env::temp_dir().join(format!("atl-pin-{}", id()));
     std::fs::create_dir(&root).unwrap();
     let binary = product_binary();
     let first = bundle(&root, "0.9.3", &binary);
     let home = root.join("home");
     std::fs::create_dir(&home).unwrap();
-    // A real protected config inside the product home, as the documented
-    // profile supports (the owner may adopt the existing
+    // The pinned installation default: a real protected config inside the
+    // product home (the owner may adopt the existing
     // ~/.config/agent-tasks-linear directory as the installation home).
-    agent_tasks_linear::config::Config::initialize(&home.join("config.toml")).unwrap();
+    let pinned = home.join("config.toml");
+    agent_tasks_linear::config::Config::initialize(&pinned).unwrap();
+    // A second real config an existing wrapper would pass explicitly.
+    let wrapper_dir = root.join("wrapper");
+    std::fs::create_dir(&wrapper_dir).unwrap();
+    let wrapper = wrapper_dir.join("config.toml");
+    agent_tasks_linear::config::Config::initialize(&wrapper).unwrap();
+    let (pinned_bytes, wrapper_bytes) = (
+        std::fs::read(&pinned).unwrap(),
+        std::fs::read(&wrapper).unwrap(),
+    );
     let bin_dir = root.join("bin");
     std::fs::create_dir(&bin_dir).unwrap();
     let installed = self_install(&binary, &first, &home, &bin_dir);
@@ -194,32 +206,75 @@ fn launcher_pins_config_against_child_home_changes() {
         "{}",
         String::from_utf8_lossy(&installed.stderr)
     );
+    let launcher = bin_dir.join("agent-tasks-linear");
     let fake_home = root.join("fake-child-home");
     std::fs::create_dir(&fake_home).unwrap();
-    for run in 1..=2 {
-        let doctor = Command::new(bin_dir.join("agent-tasks-linear"))
-            .args(["doctor", "--json"])
-            .env("HOME", &fake_home)
-            .env_remove("ATL_CONFIG")
-            .env_remove("LINEAR_OAUTH_TOKEN")
-            .env_remove("LINEAR_API_KEY")
-            .output()
-            .unwrap();
-        assert!(doctor.status.success(), "run {run}: {doctor:?}");
+
+    // Which config did the doctor resolve? Returns the config check object.
+    fn resolved_config(output: &std::process::Output) -> serde_json::Value {
         let report: serde_json::Value =
-            serde_json::from_slice(&doctor.stdout).expect("doctor JSON");
-        let config = report["checks"]
+            serde_json::from_slice(&output.stdout).expect("doctor JSON");
+        report["checks"]
             .as_array()
             .unwrap()
             .iter()
             .find(|c| c["name"] == "config")
-            .unwrap();
-        assert_eq!(config["status"], "ok", "run {run}");
-        let detail = config["detail"].as_str().unwrap();
-        assert!(
-            detail.contains(home.join("config.toml").to_str().unwrap()),
-            "run {run}: {detail}"
-        );
+            .cloned()
+            .unwrap()
     }
+    let run_doctor = |args: &[&str], atl: Option<&str>| {
+        let mut command = Command::new(&launcher);
+        command.args(args);
+        command
+            .env("HOME", &fake_home)
+            .env_remove("LINEAR_OAUTH_TOKEN")
+            .env_remove("LINEAR_API_KEY");
+        match atl {
+            Some(value) => command.env("ATL_CONFIG", value),
+            None => command.env_remove("ATL_CONFIG"),
+        };
+        command.output().unwrap()
+    };
+
+    // 1. No overrides: the pinned installation default is used even under a
+    //    changed child HOME.
+    let doctor = run_doctor(&["doctor", "--json"], None);
+    assert!(doctor.status.success(), "{doctor:?}");
+    let config = resolved_config(&doctor);
+    assert_eq!(config["status"], "ok");
+    assert!(
+        config["detail"]
+            .as_str()
+            .unwrap()
+            .contains(pinned.to_str().unwrap())
+    );
+
+    // 2. Explicit --config (as existing serve/connect wrappers pass) wins and
+    //    argv is forwarded unchanged — no duplicate-argument failure.
+    let doctor = run_doctor(
+        &["--config", wrapper.to_str().unwrap(), "doctor", "--json"],
+        None,
+    );
+    assert!(
+        doctor.status.success(),
+        "{}",
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+    let config = resolved_config(&doctor);
+    assert_eq!(config["status"], "ok");
+    let detail = config["detail"].as_str().unwrap();
+    assert!(detail.contains(wrapper.to_str().unwrap()), "{detail}");
+
+    // 3. Explicit ATL_CONFIG wins over the pinned default.
+    let doctor = run_doctor(&["doctor", "--json"], Some(wrapper.to_str().unwrap()));
+    assert!(doctor.status.success(), "{doctor:?}");
+    let config = resolved_config(&doctor);
+    assert_eq!(config["status"], "ok");
+    let detail = config["detail"].as_str().unwrap();
+    assert!(detail.contains(wrapper.to_str().unwrap()), "{detail}");
+
+    // 4. No config is ever modified by any launch mode.
+    assert_eq!(std::fs::read(&pinned).unwrap(), pinned_bytes);
+    assert_eq!(std::fs::read(&wrapper).unwrap(), wrapper_bytes);
     std::fs::remove_dir_all(&root).unwrap();
 }

@@ -37,11 +37,14 @@ the owner.
   SHA-pinned CI/release workflows that build once, verify exact payload bytes
   (including contract/transport/CLI acceptance through `MCP_TEST_BINARY`) and
   publish through a complete draft behind the reviewed `release` environment.
-  The managed launcher pins the product home and its `config.toml` when
-  present, so child processes that change `HOME` cannot silently redirect the
-  installed product to an empty configuration. Qualification flags remain
-  honest declarations; publication stays disabled until native host evidence
-  exists.
+  The managed launcher pins the installation default through `ATL_CONFIG`
+  only when the caller has not set it and forwards argv unchanged, so
+  configuration precedence stays explicit `--config` > explicit `ATL_CONFIG` >
+  pinned installation default > `HOME`-based default, existing wrappers that
+  pass their own `--config` keep working, and child processes that change
+  `HOME` cannot silently redirect the installed product to an empty
+  configuration. Qualification flags remain honest declarations; publication
+  stays disabled until native host evidence exists.
 
 ### Changed
 

@@ -29,6 +29,22 @@ remain proprietary to the owner with no open-source license granted.
 | `.github/workflows/ci.yml` | `scaffold/.github/workflows/ci.yml` | Same SHA-pinned actions and job split; product gate invoked via `cargo xtask check`; no secrets required for PRs. |
 | `.github/workflows/release.yml` | `scaffold/.github/workflows/release.yml` | Same SHA-pinned actions, build-once artifact, hash verification before executable permission, exact-payload tests via `MCP_TEST_BINARY`, `environment: release` approval pause, complete-draft publication. |
 
+## Machine-checkable baseline (`.family/`)
+
+`.family/origin.json` records the pinned template revision, product and
+repository in the template generator's own format; `.family/manifest.json`
+lists every managed import with its template source path, the SHA-256 of its
+baseline bytes and whether this repository deliberately adapted it;
+`.family/baseline/` holds those baseline bytes (the pinned template's files
+after the generator's identifier substitutions). This is the one-time
+adoption equivalent of the template's init-time baseline: a future template
+upgrade compares template ↔ baseline ↔ local and must treat every
+`adapted: true` file as a conflict to review, never an overwrite. The
+template's `template diff/upgrade` xtask commands themselves were not
+imported (see Not imported); the baseline is complete so a future reviewed
+wave can add them without guessing ownership. Nothing here implies release
+qualification.
+
 ## Documented migration exceptions (GOV-02)
 
 - **Clippy `unwrap_used`/`expect_used` stay `allow` at workspace level.** The

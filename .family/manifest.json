@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "devkit_version": "0.2.0",
+  "standard_version": "1.0.0-rc.2",
+  "template_repository": "DKotsyuba/agent-mcp-template",
+  "template_commit": "7f094e0463c0a6d5cf52d68d91ca32f6bc0f465f",
+  "substitutions": {
+    "__PRODUCT__": "agent-tasks-linear",
+    "__REPOSITORY__": "DKotsyuba/Agent-Tasks-Linear",
+    "__ENV_PREFIX__": "AGENT_TASKS_LINEAR_"
+  },
+  "note": "One-time adoption baseline for an existing product: baseline bytes are the pinned template's files with the generator's identifier substitutions applied. Files marked adapted=true were then deliberately changed here; a future template upgrade must treat them as conflicts to review, never overwrite. Release qualification is recorded separately in family.toml and is not implied by this file.",
+  "managed": [
+    {
+      "path": "rust-toolchain.toml",
+      "template_path": "scaffold/rust-toolchain.toml",
+      "baseline_sha256": "f7506bb7b3acb07efc86ba8a53ab9c5e1b8ceb8090f5b6855648cd3445ba1eef",
+      "adapted": false
+    },
+    {
+      "path": ".cargo/config.toml",
+      "template_path": "scaffold/.cargo/config.toml",
+      "baseline_sha256": "07e75f80544a833951c1532649fadd0ee21712b40e55b6e74b880b3c11259e36",
+      "adapted": false
+    },
+    {
+      "path": "deny.toml",
+      "template_path": "scaffold/deny.toml",
+      "baseline_sha256": "bd2ccb27802bcf7697939bae646e0176f4e65b5ecfbcaafde1bc160279be68c9",
+      "adapted": true
+    },
+    {
+      "path": "install.sh",
+      "template_path": "scaffold/install.sh",
+      "baseline_sha256": "ec2799696353f51fe31b92f6f7fe01ac55e9195b384653f3ace9ff207ce83a1e",
+      "adapted": true
+    },
+    {
+      "path": "scripts/wait-release.sh",
+      "template_path": "scaffold/scripts/wait-release.sh",
+      "baseline_sha256": "82d5cd7a123970ce218b9bb26ba64454eef47eeb99183dc4b04f00c0e95a5f53",
+      "adapted": false
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "template_path": "scaffold/.github/workflows/ci.yml",
+      "baseline_sha256": "75c7faa38a441d186292ffdb54cf45be2c2b0129901c24a058caa65ad44ee16a",
+      "adapted": true
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "template_path": "scaffold/.github/workflows/release.yml",
+      "baseline_sha256": "04a020cead28d93b1960bb7e8bb72933fac1cf2f59027061fbd2e4a026015682",
+      "adapted": true
+    },
+    {
+      "path": "crates/family-delivery/Cargo.toml",
+      "template_path": "scaffold/crates/family-delivery/Cargo.toml",
+      "baseline_sha256": "e8d901daa6343fd7a6710f50804c06fcb18f37b580cfbd7931399e6e15d2f72f",
+      "adapted": true
+    },
+    {
+      "path": "crates/family-delivery/src/lib.rs",
+      "template_path": "scaffold/crates/family-delivery/src/lib.rs",
+      "baseline_sha256": "7b5aea5077f636a14e83a882f59c186aa228c22d68fcd3f7160c70c58c3bd785",
+      "adapted": true
+    },
+    {
+      "path": "xtask/Cargo.toml",
+      "template_path": "scaffold/xtask/Cargo.toml",
+      "baseline_sha256": "f6e6cc9f3bd8e2dcc47eddbde6066ef3bcfe8027d545b80546ac72be09b07c52",
+      "adapted": true
+    },
+    {
+      "path": "xtask/src/main.rs",
+      "template_path": "scaffold/xtask/src/main.rs",
+      "baseline_sha256": "6aa896ca8be81e7fada7443c8f3e3fd62d4559eaee42b55ade7d5e8b9f4c6e20",
+      "adapted": true
+    },
+    {
+      "path": "xtask/src/release.rs",
+      "template_path": "scaffold/xtask/src/release.rs",
+      "baseline_sha256": "7573d02ebcd500fd1b0d3e3f5795eb5cdf9de532350670644133544a5fc490da",
+      "adapted": true
+    },
+    {
+      "path": "docs/FAMILY_CONTRACT.md",
+      "template_path": "scaffold/docs/FAMILY_CONTRACT.md",
+      "baseline_sha256": "9e20c9ef131ff7b98e6ee347016ebfddf98eb6c8cc01d8a2ee07b5eae0af9f46",
+      "adapted": false
+    },
+    {
+      "path": "docs/MCP_RESPONSE_STANDARD.md",
+      "template_path": "standard/MCP_RESPONSE_STANDARD.md",
+      "baseline_sha256": "eb01ac9b8aaf154bcf82539fa58fe7cb4c3e7c8d2850e1772d044f3941596995",
+      "adapted": false
+    },
+    {
+      "path": "docs/TEMPLATE_MIT_LICENSE.txt",
+      "template_path": "LICENSE",
+      "baseline_sha256": "b36789c5b6b0974c5c23d00d8362b732bc283543a5cf577ab00dc0541270f257",
+      "adapted": false
+    },
+    {
+      "path": "family.toml",
+      "template_path": "scaffold/family.toml",
+      "baseline_sha256": "9310ea663336a5f0a18b47654628c0dd8db925b7eaa1dcd38d2e86a10e36b2f2",
+      "adapted": true
+    }
+  ]
+}
