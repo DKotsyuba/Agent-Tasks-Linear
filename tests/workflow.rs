@@ -1063,6 +1063,30 @@ fn markdown_mixed_code_and_autolink_regions_compare_independently() {
         "`https://example.test/a next`",
         "`[Title](https://example.test/a) next`"
     ));
+
+    // Same defect again, in a 4-space indented code block (no fence delimiter at all) mixed
+    // with a separate, genuinely equivalent prose autolink: the indented literal changing to a
+    // link must still be flagged, even though the trailing email autolink alone is harmless.
+    assert!(!markdown_equivalent(
+        "    https://example.test/a\n\nContact team@example.com",
+        "    [Title](https://example.test/a)\n\nContact [team@example.com](mailto:team@example.com)"
+    ));
+
+    // An escaped punctuation character inside inline code is literal and distinct from the
+    // same character unescaped: normalization must never unescape inside code.
+    assert!(!markdown_equivalent(r"`\*a\*`", "`*a*`"));
+    // Unchanged escaped code next to a harmless prose autolink still compares equal.
+    assert!(markdown_equivalent(
+        r"See `\*a\*` and gateway.rs.",
+        r"See `\*a\*` and [gateway.rs](<http://gateway.rs>)."
+    ));
+
+    // An interior blank line inside a fenced block is part of the code; dropping it would
+    // silently accept a real content change.
+    assert!(!markdown_equivalent(
+        "```text\nfirst\n\nsecond\n```",
+        "```text\nfirst\nsecond\n```"
+    ));
 }
 
 /// A pending commit import accepts Linear's mailto autolink for a co-author footer while the

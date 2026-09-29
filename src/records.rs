@@ -361,6 +361,13 @@ fn in_code(ranges: &[std::ops::Range<usize>], pos: usize) -> bool {
     ranges.iter().any(|r| r.contains(&pos))
 }
 
+/// Report whether the line spanning `[start, end)` overlaps any code range at all. An indented
+/// code block's own recognized range starts after its leading indentation, not at the physical
+/// line start, so touching the line's content anywhere still counts as code for that whole line.
+fn line_in_code(ranges: &[std::ops::Range<usize>], start: usize, end: usize) -> bool {
+    ranges.iter().any(|r| r.start < end && r.end > start)
+}
+
 /// Compare requested Markdown with Linear's native rendering without losing intentional labels.
 /// A bare HTTP(S) URL may gain a native title even when closing prose punctuation follows it;
 /// a prose domain may become the same-label `http://` link at its original word boundary;
@@ -504,21 +511,32 @@ fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> boo
     expected.is_empty() && actual.is_empty()
 }
 
-/// Normalize an intact Markdown text segment using Linear's existing escape, link and whitespace rules.
-/// List boundaries are excluded by the caller; this helper does not infer or rewrite list/code syntax.
+/// Normalize an intact Markdown text segment using Linear's existing escape, link and whitespace
+/// rules, while leaving every inline code span and fenced/indented code block exactly as written:
+/// none of the three passes below ever unescapes, rewrites or trims a byte that a fresh
+/// `code_ranges` call places inside code. List boundaries are excluded by the caller; this
+/// helper does not infer or rewrite list syntax.
 fn markdown_text_key(source: &str) -> String {
-    let mut text = String::new();
-    let mut chars = source.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' && chars.peek().is_some_and(char::is_ascii_punctuation) {
-            text.push(chars.next().unwrap());
+    // Backslash-unescape, skipped inside code so an intentional literal backslash there (for
+    // example inside a code span) never collapses into the character it would escape in prose.
+    let source_code = code_ranges(source);
+    let mut text = String::with_capacity(source.len());
+    let mut chars = source.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '\\'
+            && !in_code(&source_code, i)
+            && chars
+                .peek()
+                .is_some_and(|(_, next)| next.is_ascii_punctuation())
+        {
+            text.push(chars.next().unwrap().1);
         } else {
             text.push(c);
         }
     }
     // Linear serializes bare URLs as Markdown links, including angle-bracket destinations.
-    // Ranges are recomputed each pass: an applied replacement shifts later byte offsets, and
-    // code content is never rewritten, so its positions never need to survive a shift anyway.
+    // Ranges are recomputed each pass since an applied replacement shifts later byte offsets;
+    // code content is never rewritten here, so its own positions never need to survive a shift.
     let mut offset = 0;
     while let Some(middle) = text[offset..].find("](").map(|i| offset + i) {
         let Some(open) = text[..middle].rfind('[') else {
@@ -550,11 +568,25 @@ fn markdown_text_key(source: &str) -> String {
             offset = close + 1;
         }
     }
-    text.lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    // Fold whitespace and drop blank lines, but keep any line touching code exactly as written:
+    // trimming or dropping it could erase indentation that is the block's own boundary, or an
+    // interior blank line that is itself part of the unchanged code.
+    let code = code_ranges(&text);
+    let mut lines = Vec::new();
+    let mut pos = 0;
+    for line in text.split('\n') {
+        let end = pos + line.len();
+        if line_in_code(&code, pos, end) {
+            lines.push(line);
+        } else {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                lines.push(trimmed);
+            }
+        }
+        pos = end + 1;
+    }
+    lines.join("\n")
 }
 
 /// Find the closing Markdown link parenthesis after a destination start byte offset.
