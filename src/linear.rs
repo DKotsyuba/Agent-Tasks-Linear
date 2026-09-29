@@ -313,7 +313,8 @@ impl Linear {
             .map(Value::Object)
             .ok_or_else(|| Fault::new("RECORD_MISSING", "Upload reservation is missing"))
     }
-    /// Stream local bytes to a freshly reserved signed URL, sending only its native required headers.
+    /// Send local bytes to a reserved signed URL with Content-Type/Cache-Control defaults,
+    /// then overlay the reservation's returned headers so its explicit values take precedence.
     ///
     /// Never attaches the API Authorization header: the signed URL carries its
     /// own short-lived credential, which must not receive our long-lived token.

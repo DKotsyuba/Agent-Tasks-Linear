@@ -150,6 +150,7 @@ async fn put_upload_sends_declared_headers_and_body_without_authorization() {
     task.abort();
 }
 
+/// Reservation metadata supplies the media type while omitted headers receive upload defaults.
 #[tokio::test]
 async fn put_upload_sets_default_content_type_and_cache_control_when_headers_omit_them() {
     let (linear, base, state, task) = fixture().await;
@@ -174,6 +175,7 @@ async fn put_upload_sets_default_content_type_and_cache_control_when_headers_omi
     task.abort();
 }
 
+/// An explicit reservation header replaces the corresponding default instead of being appended.
 #[tokio::test]
 async fn put_upload_lets_a_returned_header_override_the_default() {
     let (linear, base, state, task) = fixture().await;
