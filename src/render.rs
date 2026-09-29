@@ -195,15 +195,27 @@ fn fallback_kind(tool: &str) -> &'static str {
 }
 
 /// Select native identity fields as values; templates own their labels and order.
+/// One group is the flat file envelope agreed for upload_file/list_files/get_file; another is
+/// Document rows (archived/hidden/current, with snippet and match source for search only).
+/// Inapplicable fields are null and never render through `line`. `updated_at` accepts either the raw
+/// native `updatedAt` or an already-public snake_case `updated_at`, since a public response
+/// shape (like the Document search row) uses the latter directly.
 fn identity(item: &Value) -> Value {
     json!({
         "id":item["id"],"identifier":item["identifier"],
         "title":if item["title"].is_string() {&item["title"]} else {&item["name"]},
         "url":item["url"],"status":item["state"]["name"],
         "priority":item["priority"],"health":item["health"],
-        "updated_at":item["updatedAt"],"resolved":item["resolvedAt"].is_string(),
+        "updated_at":if item["updatedAt"].is_string() {&item["updatedAt"]} else {&item["updated_at"]},
+        "resolved":item["resolvedAt"].is_string(),
         "project_id":item["project"]["id"],"team_id":item["team"]["id"],
-        "parent_id":item["parent"]["id"]
+        "parent_id":item["parent"]["id"],"issue_id":item["issue"]["id"],
+        "work_id":item["work_id"],"work_url":item["work_url"],
+        "file_name":item["file_name"],"content_type":item["content_type"],
+        "size_bytes":item["size_bytes"],"path":item["path"],
+        "snippet":item["snippet"],"match_source":item["match_source"],
+        "hidden":item["hidden"],"current":item["current"],"archived":item["archived"],
+        "hidden_at":item["hiddenAt"],"archived_at":item["archivedAt"]
     })
 }
 
@@ -250,6 +262,9 @@ fn context_projection(request: &Value, data: &Value) -> Value {
         let mut item = identity(brief_item);
         item["status"] = brief_item["status"].clone();
         item["kind"] = brief_item["kind"].clone();
+        item["repository_path"] = brief_item["repository_path"].clone();
+        item["repository_url"] = brief_item["repository_url"].clone();
+        item["teams"] = brief_item["teams"].clone();
         let pending_call = data["workflow"]["pending"]["request"]
             .as_object()
             .map(|pending| {
@@ -350,19 +365,32 @@ fn context_projection(request: &Value, data: &Value) -> Value {
         description.to_owned()
     };
     json!({"kind":kind,"item":identity(item),"description":description,"content":item["content"],
-        "body_text":body,"agent":agent,"checkout":checkout,"children":children,"commits":commits,
-        "report":report,
-        "epic":agent["epic"],"required_contract":if data["fields"]["required_contract"].is_string(){&Value::Null}else{&agent["required_contract"]},
-        "provided_contract":if data["fields"]["provided_contract"].is_string(){&Value::Null}else{&agent["provided_contract"]},
-        "review":agent["latest_review"],"questions":agent["open_questions"].as_array().cloned().unwrap_or_default(),
-        "documents":if kind=="project" {data["documents"].as_array().cloned().unwrap_or_default()} else {agent["documents"].as_array().cloned().unwrap_or_default()},
-        "teams":item["teams"]["nodes"].as_array().cloned().unwrap_or_default(),
-        "peers":data["priority_group"]["peers"].as_array().cloned().unwrap_or_default(),
-        "guidance":data["guidance"],
-        "pending_call":pending_call,
-        "discrepancies":data["discrepancies"].as_array().cloned().unwrap_or_default(),
-        "transitions":data["transitions"].as_array().cloned().unwrap_or_default(),
-        "actor":data["activity"]["actor"],"reason":data["activity"]["reason"]})
+    "body_text":body,"agent":agent,"checkout":checkout,"children":children,"commits":commits,
+    "report":report,
+    "epic":agent["epic"],"required_contract":if data["fields"]["required_contract"].is_string(){&Value::Null}else{&agent["required_contract"]},
+    "provided_contract":if data["fields"]["provided_contract"].is_string(){&Value::Null}else{&agent["provided_contract"]},
+    "review":agent["latest_review"],"questions":agent["open_questions"].as_array().cloned().unwrap_or_default(),
+    "documents":if kind=="project" {data["documents"].as_array().cloned().unwrap_or_default()} else {agent["documents"].as_array().cloned().unwrap_or_default()},
+    "teams":item["teams"]["nodes"].as_array().cloned().unwrap_or_default(),
+    "peers":data["priority_group"]["peers"].as_array().cloned().unwrap_or_default(),
+    "guidance":data["guidance"],
+    "pending_call":pending_call,
+    "discrepancies":data["discrepancies"].as_array().cloned().unwrap_or_default(),
+    "transitions":data["transitions"].as_array().cloned().unwrap_or_default(),
+    "actor":data["activity"]["actor"],"reason":data["activity"]["reason"],
+    "section":item["section"],
+    "whole_document_route":if item["section"].is_object() {
+        json!(format!("get_context type=document id={}", item["id"].as_str().unwrap_or("")))
+    } else {
+        Value::Null
+    },
+    "current":if kind == "document" {
+        json!(crate::sections::document_is_current(item))
+    } else {
+        Value::Null
+    },
+    "issue_route":item["issue"]["id"].as_str().map(|id| json!(format!("get_context type=issue id={id}")))
+    })
 }
 
 /// Select project cards and delta source values without printing internal hashes.
@@ -404,8 +432,17 @@ fn list_projection(tool: &str, request: &Value, data: &Value) -> Value {
     let items: Vec<Value> = data["nodes"].as_array().into_iter().flatten().enumerate().map(|(i,item)| {
         json!({"item":identity(item),"activity":data["activity_records"].get(i).unwrap_or(&Value::Null)})
     }).collect();
-    json!({"tool":tool,"entity_type":request["type"],"items":items,
-        "has_next":data["pageInfo"]["hasNextPage"],"cursor":data["pageInfo"]["endCursor"]})
+    let entity_type = if tool == "list_files" {
+        json!("file")
+    } else {
+        request["type"].clone()
+    };
+    json!({"tool":tool,"entity_type":entity_type,"items":items,
+        "has_next":data["pageInfo"]["hasNextPage"],"cursor":data["pageInfo"]["endCursor"],
+        // Document search's own honest filtered-page signal: a native page can match fewer
+        // rows than it held, or zero, while more native results remain to check.
+        "native_page_size":data["native_page_size"],"matched_in_page":data["matched_in_page"],
+        "scoped_to_project":data["scoped_to_project"]})
 }
 
 /// Select one explicitly read comment, root and reply page without shortening their bodies.
@@ -496,6 +533,312 @@ mod tests {
                 "{name}: {text}"
             );
         }
+    }
+
+    /// File operations render their own agreed fields (work item, name, type, size, path),
+    /// not just the shared identity block, for both the single-item ack shape and list_files.
+    #[test]
+    fn file_operations_render_their_dedicated_fields() {
+        let file = json!({"id":"attachment-1","title":"Check summary","url":"https://uploads.linear.app/attachment-1",
+            "work_id":"issue-1","work_url":"https://linear.app/example/issue/MYT-1/a-task",
+            "file_name":"check-summary.pdf","content_type":"application/pdf","size_bytes":20480,
+            "replayed":false});
+        for tool in ["upload_file", "get_file"] {
+            let text = render_outcome(
+                tool,
+                &json!({"request_id":"req-1"}),
+                &Outcome::ok(file.clone()),
+            );
+            assert!(text.contains("ID: attachment-1"), "{tool}: {text}");
+            assert!(text.contains("Work ID: issue-1"), "{tool}: {text}");
+            assert!(
+                text.contains("Work URL: https://linear.app/example/issue/MYT-1/a-task"),
+                "{tool}: {text}"
+            );
+            assert!(
+                text.contains("File name: check-summary.pdf"),
+                "{tool}: {text}"
+            );
+            assert!(
+                text.contains("Content type: application/pdf"),
+                "{tool}: {text}"
+            );
+            assert!(text.contains("Size bytes: 20480"), "{tool}: {text}");
+            assert!(
+                !text.contains("Path:"),
+                "{tool}: absent path stays hidden: {text}"
+            );
+        }
+        let mut downloaded = file.clone();
+        downloaded["path"] = json!("/srv/agent/downloads/check-summary.pdf");
+        let text = render_outcome(
+            "get_file",
+            &json!({"request_id":"req-1"}),
+            &Outcome::ok(downloaded),
+        );
+        assert!(
+            text.contains("Path: /srv/agent/downloads/check-summary.pdf"),
+            "{text}"
+        );
+
+        let listed = render_outcome(
+            "list_files",
+            &json!({"work_id":"issue-1"}),
+            &Outcome::ok(json!({"nodes":[file],"pageInfo":{"hasNextPage":false,"endCursor":null}})),
+        );
+        assert!(listed.contains("list_files: file"), "{listed}");
+        assert!(listed.contains("File name: check-summary.pdf"), "{listed}");
+        assert!(listed.contains("Content type: application/pdf"), "{listed}");
+        assert!(listed.contains("Size bytes: 20480"), "{listed}");
+    }
+
+    /// A Document search result renders its snippet, honest match source and currentness, not
+    /// just generic identity fields, and the honest filtered-page signal shows when a native
+    /// page's real match count differs from its held size.
+    #[test]
+    fn document_search_renders_snippet_currentness_and_filtered_page_honesty() {
+        let row = json!({"id":"doc-1","title":"Runbook","url":"https://linear.app/doc-1",
+            "updated_at":"2026-09-29T00:00:00Z","current":true,"hidden":false,
+            "match_source":"content","snippet":"...the exact matched phrase in context..."});
+        let text = render_outcome(
+            "search",
+            &json!({"type":"document","query":"matched phrase","project_id":"project-1"}),
+            &Outcome::ok(json!({"nodes":[row],
+                "pageInfo":{"hasNextPage":true,"endCursor":"opaque-1"},
+                "native_page_size":10,"matched_in_page":1,"scoped_to_project":"project-1"})),
+        );
+        assert!(text.contains("Title: Runbook"), "{text}");
+        assert!(text.contains("Updated at: 2026-09-29T00:00:00Z"), "{text}");
+        assert!(text.contains("Current: true"), "{text}");
+        assert!(text.contains("Hidden: false"), "{text}");
+        assert!(text.contains("Match source: content"), "{text}");
+        assert!(
+            text.contains("Snippet") && text.contains("the exact matched phrase in context"),
+            "{text}"
+        );
+        assert!(text.contains("Scoped to Project: project-1"), "{text}");
+        assert!(text.contains("Matched in this native page: 1"), "{text}");
+        assert!(text.contains("Native page size: 10"), "{text}");
+        assert!(text.contains("filtered page"), "{text}");
+    }
+
+    /// A section-scoped Document read renders which section it is, its position among the
+    /// document's sections, an explicit route back to the whole document, and — like a full
+    /// read — a copyable `updated_at` and honest current/archived/hidden status: a caller must
+    /// be able to take this value straight into a guarded edit's `expected_updated_at` without
+    /// a second read.
+    #[test]
+    fn document_section_read_renders_section_info_and_whole_document_route() {
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"doc-1","section":"Runbook"}),
+            &Outcome::ok(
+                json!({"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1",
+                "updatedAt":"2026-09-29T02:03:44.471Z","archivedAt":null,"hiddenAt":null,
+                "content":"Body of just this section.",
+                "section":{"heading":"Runbook","index":1,"count":3}}),
+            ),
+        );
+        assert!(text.contains("Section: Runbook"), "{text}");
+        assert!(text.contains("Section index: 1"), "{text}");
+        assert!(text.contains("Sections total: 3"), "{text}");
+        assert!(
+            text.contains("Whole document: get_context type=document id=doc-1"),
+            "{text}"
+        );
+        assert!(text.contains("Body of just this section."), "{text}");
+        assert!(
+            text.contains("Updated at: 2026-09-29T02:03:44.471Z"),
+            "a caller must be able to copy this straight into expected_updated_at: {text}"
+        );
+        assert!(text.contains("Current: true"), "{text}");
+        assert!(text.contains("Archived: false"), "{text}");
+        assert!(text.contains("Hidden: false"), "{text}");
+    }
+
+    /// A full (unscoped) Document read carries the same copyable `updated_at` and honest
+    /// current/archived/hidden status as a section read, and a full Project read exposes the
+    /// `updated_at` its own guarded `edit_project(content, expected_updated_at)` requires.
+    #[test]
+    fn full_document_and_project_reads_expose_updated_at_for_the_next_guarded_edit() {
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"doc-1"}),
+            &Outcome::ok(
+                json!({"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1",
+                "updatedAt":"2026-09-29T02:03:44.471Z","archivedAt":"2026-09-29T02:04:00Z","hiddenAt":null,
+                "content":"Full body."}),
+            ),
+        );
+        assert!(
+            text.contains("Updated at: 2026-09-29T02:03:44.471Z"),
+            "{text}"
+        );
+        assert!(text.contains("Current: false"), "{text}");
+        assert!(text.contains("Archived: true"), "{text}");
+        assert!(text.contains("Hidden: false"), "{text}");
+
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"project","id":"project-1"}),
+            &Outcome::ok(json!({"project":{"id":"project-1","name":"Passport",
+                "url":"https://linear.app/project-1","content":"Passport body.",
+                "updatedAt":"2026-09-29T02:05:00Z","teams":{"nodes":[]}},
+                "documents":[]})),
+        );
+        assert!(text.contains("Updated at: 2026-09-29T02:05:00Z"), "{text}");
+    }
+
+    /// A save_document acknowledgement shows the updated_at a caller needs for its next guarded
+    /// edit's expected_updated_at, and the document's hidden state.
+    #[test]
+    fn save_document_ack_renders_updated_at_and_hidden_state() {
+        let text = render_outcome(
+            "save_document",
+            &json!({"request_id":"req-1","id":"doc-1"}),
+            &Outcome::ok(
+                json!({"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1",
+                "content":"Body","updatedAt":"2026-09-29T00:05:00Z","hiddenAt":"2026-09-29T00:05:00Z",
+                "replayed":false}),
+            ),
+        );
+        assert!(text.contains("Updated at: 2026-09-29T00:05:00Z"), "{text}");
+        assert!(text.contains("Hidden: true"), "{text}");
+        assert!(text.contains("Replayed: false"), "{text}");
+    }
+
+    /// A Document rebound to (or already owned by) an Issue keeps that Issue visible — as an
+    /// ID and a get_context route — in its save_document ACK and in a full or section
+    /// get_context read and a document search result; existing data already selects `issue {id}`, so this is presentation only,
+    /// no extra API call. A Project-attached Document is unaffected (no Issue ID line).
+    #[test]
+    fn document_shows_its_owning_issue_in_ack_and_full_and_section_reads() {
+        let issue_doc = json!({"id":"569aaac5-45df-4e04-992f-1a28b68a5a0e","title":"Notes",
+            "url":"https://linear.app/doc-1","content":"Body",
+            "updatedAt":"2026-09-29T02:03:44.471Z","archivedAt":null,"hiddenAt":null,
+            "issue":{"id":"9b3d0592-c385-48ee-97da-15a46ff1f2ec"},"project":null,
+            "replayed":false});
+
+        let ack = render_outcome(
+            "save_document",
+            &json!({"request_id":"req-1","id":"569aaac5-45df-4e04-992f-1a28b68a5a0e"}),
+            &Outcome::ok(issue_doc.clone()),
+        );
+        assert!(
+            ack.contains("Issue ID: 9b3d0592-c385-48ee-97da-15a46ff1f2ec"),
+            "{ack}"
+        );
+
+        let full = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"569aaac5-45df-4e04-992f-1a28b68a5a0e"}),
+            &Outcome::ok(issue_doc.clone()),
+        );
+        assert!(
+            full.contains("Issue ID: 9b3d0592-c385-48ee-97da-15a46ff1f2ec"),
+            "{full}"
+        );
+        assert!(
+            full.contains(
+                "Issue context: get_context type=issue id=9b3d0592-c385-48ee-97da-15a46ff1f2ec"
+            ),
+            "{full}"
+        );
+
+        let found = render_outcome(
+            "search",
+            &json!({"type":"document"}),
+            &Outcome::ok(json!({"nodes":[issue_doc.clone()],"pageInfo":{"hasNextPage":false}})),
+        );
+        assert!(
+            found.contains("Issue ID: 9b3d0592-c385-48ee-97da-15a46ff1f2ec"),
+            "{found}"
+        );
+
+        let mut section_doc = issue_doc;
+        section_doc["content"] = json!("Section body only.");
+        section_doc["section"] = json!({"heading":"Runbook","index":1,"count":2});
+        let section = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"569aaac5-45df-4e04-992f-1a28b68a5a0e","section":"Runbook"}),
+            &Outcome::ok(section_doc),
+        );
+        assert!(
+            section.contains("Issue ID: 9b3d0592-c385-48ee-97da-15a46ff1f2ec"),
+            "{section}"
+        );
+
+        let project_doc = json!({"id":"doc-2","title":"Plan","url":"https://linear.app/doc-2",
+            "content":"Body","project":{"id":"project-1"}});
+        let project_read = render_outcome(
+            "get_context",
+            &json!({"type":"document","id":"doc-2"}),
+            &Outcome::ok(project_doc),
+        );
+        assert!(!project_read.contains("Issue ID:"), "{project_read}");
+        assert!(
+            project_read.contains("Project ID: project-1"),
+            "{project_read}"
+        );
+    }
+
+    /// An ordinary list_items(document) row surfaces the same version/currentness/history
+    /// fields as search — Updated at, Current, Archived, Hidden — using the shared
+    /// document_link shape; it never invents a snippet or match source, which only a real
+    /// search query produces.
+    #[test]
+    fn ordinary_document_list_surfaces_currentness_without_an_invented_snippet() {
+        let row = json!({"id":"doc-1","title":"Runbook","url":"https://linear.app/doc-1",
+            "updated_at":"2026-09-29T02:03:44.471Z","current":true,"archived":false,"hidden":false,
+            "issue":{"id":"issue-1"},"project":null});
+        let text = render_outcome(
+            "list_items",
+            &json!({"type":"document","project_id":"project-1"}),
+            &Outcome::ok(json!({"nodes":[row],"pageInfo":{"hasNextPage":false,"endCursor":null}})),
+        );
+        assert!(
+            text.contains("Updated at: 2026-09-29T02:03:44.471Z"),
+            "{text}"
+        );
+        assert!(text.contains("Current: true"), "{text}");
+        assert!(text.contains("Archived: false"), "{text}");
+        assert!(text.contains("Hidden: false"), "{text}");
+        assert!(!text.contains("Snippet"), "{text}");
+        assert!(!text.contains("Match source"), "{text}");
+    }
+
+    /// A full/role Issue context's document links leave a current document unlabelled (no
+    /// redundant flag noise) but visibly mark a historical one present in that same list as
+    /// Current: false, Archived/Hidden — never an unlabelled, current-looking entry.
+    #[test]
+    fn role_context_document_links_label_historical_entries_not_current_ones() {
+        let current_doc = json!({"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1",
+            "current":true,"archived":false,"hidden":false});
+        let hidden_doc = json!({"id":"doc-2","title":"Old draft","url":"https://linear.app/doc-2",
+            "current":false,"archived":false,"hidden":true});
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"issue","id":"issue-1","view":"lead"}),
+            &Outcome::ok(
+                json!({"issue":{"id":"issue-1","title":"Task","url":"https://linear.app/issue-1"},
+                "agent_context":{"documents":[current_doc,hidden_doc]}}),
+            ),
+        );
+        assert!(text.contains("Document: Guide"), "{text}");
+        assert!(text.contains("Document: Old draft"), "{text}");
+        assert!(
+            text.contains("Current: false") && text.contains("Hidden: true"),
+            "the historical link must be visibly labelled: {text}"
+        );
+        // A current document's own block carries no redundant Current/Archived/Hidden line.
+        let guide_block =
+            &text[text.find("Document: Guide").unwrap()..text.find("Document: Old draft").unwrap()];
+        assert!(
+            !guide_block.contains("Current:")
+                && !guide_block.contains("Archived:")
+                && !guide_block.contains("Hidden:"),
+            "a current link needs no noisy redundant flag: {guide_block}"
+        );
     }
 
     /// Acknowledgements and previews render guidance, effect plans and overview attention.
@@ -595,6 +938,44 @@ mod tests {
         assert!(text.contains("include_archived=true"));
         assert!(text.contains("Server version: 0.3.0"));
         assert!(text.contains("Tools: 22"));
+        assert!(!text.contains("Presentation failed"), "{text}");
+    }
+
+    /// A brief Project context renders its parsed repository path/url, native teams and the
+    /// overview route, not just generic identity fields — these are easy to drop silently
+    /// since the shared brief item only carries them through explicit projection keys.
+    #[test]
+    fn brief_project_context_renders_repository_teams_and_overview_route() {
+        let brief = json!({"detail":"brief",
+            "project":{"id":"project-1","name":"Passport","url":"https://linear.app/project-1",
+                "repository_path":"/srv/agent/checkouts/example-product",
+                "repository_url":"https://github.com/example/product",
+                "teams":[{"id":"team-1","name":"Platform"}]},
+            "documents":[],
+            "full_context":{"project_documents":"list_items type=document project_id=project-1",
+                "archive":"list_items type=document project_id=project-1 include_archived=true",
+                "overview":"get_overview project_id=project-1"},
+            "runtime":{"version":"0.3.0","tools":25}});
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"project","id":"project-1","detail":"brief"}),
+            &Outcome::ok(brief),
+        );
+        assert!(text.contains("Title: Passport"), "{text}");
+        assert!(
+            text.contains("Repository: /srv/agent/checkouts/example-product"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Repository URL: https://github.com/example/product"),
+            "{text}"
+        );
+        assert!(text.contains("Team ID: team-1"), "{text}");
+        assert!(text.contains("Team name: Platform"), "{text}");
+        assert!(
+            text.contains("Overview: get_overview project_id=project-1"),
+            "{text}"
+        );
         assert!(!text.contains("Presentation failed"), "{text}");
     }
 
@@ -731,7 +1112,8 @@ mod tests {
             &Outcome::ok(document.clone()),
         );
         assert!(rendered.contains(body));
-        assert!(rendered.len() < serde_json::to_string(&Outcome::ok(document)).unwrap().len());
+        // The large body is presented exactly once, never duplicated or re-quoted.
+        assert_eq!(rendered.matches(body).count(), 1, "{rendered}");
         let exact = "Привет 🌍\n{\"legitimate\":true}\n{{ do_not_evaluate }}\nEND-OF-DOCUMENT";
         let rendered = render_outcome(
             "get_context",

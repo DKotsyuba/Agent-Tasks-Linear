@@ -404,10 +404,47 @@ impl Gateway {
     }
     /// Patch requested project fields, preserving omitted sections, prose and documents.
     /// Null removes either repository field; supplied paths must be existing local Git checkouts.
+    /// `content` replaces the whole body instead, guarded by `expected_updated_at` against a
+    /// stale read; it is rejected together with any targeted field in the same call.
     /// Returns the native project or a validation/API fault without changing work statuses.
     async fn edit_project(&self, a: &Value) -> Result<Value> {
         let id = self.resolve("project", text(a, "id")?).await?;
         let p = self.project(&id).await?;
+        if let Some(content) = a.get("content").and_then(Value::as_str) {
+            require(
+                ["title", "description", "repository_path", "repository_url"]
+                    .iter()
+                    .all(|key| a.get(*key).is_none()),
+                "INVALID_INPUT",
+                "content replaces the whole body; combine it with no other project edit",
+            )?;
+            require(
+                a.get("expected_updated_at").is_some(),
+                "PRECONDITION_REQUIRED",
+                "Whole-body content edits require expected_updated_at from a fresh read",
+            )?;
+            if markdown_equivalent(content, p["content"].as_str().unwrap_or("")) {
+                let mut replayed = p.clone();
+                replayed["replayed"] = json!(true);
+                return Ok(replayed);
+            }
+            require(
+                p["updatedAt"] == text(a, "expected_updated_at")?,
+                "PENDING_CONFLICT",
+                "Project changed since it was read; preserve the concurrent edit",
+            )?;
+            let mut native = self
+                .store
+                .linear
+                .call(
+                    "MUpdateProject",
+                    json!({"id":id,"input":{"content":content}}),
+                )
+                .await?["projectUpdate"]["project"]
+                .clone();
+            native["replayed"] = json!(false);
+            return Ok(native);
+        }
         let mut input = json!({});
         if let Some(v) = a.get("title") {
             input["name"] = v.clone();
@@ -1880,13 +1917,14 @@ impl Gateway {
         let mut activity = BTreeMap::new();
         activity.insert(
             project_id.to_owned(),
-            crate::activity::read_activity(&self.store, "project", project_id).await?,
+            crate::activity::read_activity(&self.store, "project", project_id, None).await?,
         );
         for work in &graph {
-            if work.meta.is_some() {
+            if let Some(meta) = &work.meta {
                 activity.insert(
                     work.id().to_owned(),
-                    crate::activity::read_activity(&self.store, "issue", work.id()).await?,
+                    crate::activity::read_activity(&self.store, "issue", work.id(), Some(meta))
+                        .await?,
                 );
             }
         }
@@ -1895,7 +1933,7 @@ impl Gateway {
                 .as_str()
                 .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "ProjectUpdate has no ID"))?;
             let mut records =
-                crate::activity::read_activity(&self.store, "project_update", id).await?;
+                crate::activity::read_activity(&self.store, "project_update", id, None).await?;
             records.push(crate::activity::project_update_record(update)?);
             activity.insert(id.to_owned(), records);
         }
@@ -2126,7 +2164,8 @@ impl Gateway {
         json!({
             "issue":issue_id.map(|id| format!("get_context type=issue id={id}")),
             "project_documents":format!("list_items type=document project_id={project_id}"),
-            "archive":format!("list_items type=document project_id={project_id} include_archived=true")
+            "archive":format!("list_items type=document project_id={project_id} include_archived=true"),
+            "overview":format!("get_overview project_id={project_id}")
         })
     }
 
@@ -2190,9 +2229,13 @@ impl Gateway {
                             json!({"filter":{"project":{"id":{"eq":id}}},"includeArchived":false}),
                         )
                         .await?;
+                    let passport_fields = read_fields(p["content"].as_str().unwrap_or(""))?;
                     return Ok(json!({
                         "detail":"brief",
-                        "project":{"id":p["id"],"name":p["name"],"url":p["url"]},
+                        "project":{"id":p["id"],"name":p["name"],"url":p["url"],"updatedAt":p["updatedAt"],
+                            "repository_path":passport_fields["repository_path"],
+                            "repository_url":passport_fields["repository_url"],
+                            "teams":p["teams"]["nodes"]},
                         "documents":docs
                             .iter()
                             .filter(|d| crate::sections::document_is_current(d))
@@ -2264,8 +2307,13 @@ impl Gateway {
                 if a["detail"] == "brief" {
                     // Brief keeps the actual state, current results, blockers, the recovery
                     // payload and the latest applicable handoff, and routes to full content.
-                    let activity =
-                        crate::activity::read_activity(&self.store, "issue", w.id()).await?;
+                    let activity = crate::activity::read_activity(
+                        &self.store,
+                        "issue",
+                        w.id(),
+                        w.meta.as_ref(),
+                    )
+                    .await?;
                     let documents = self.ancestry_documents(&w, &g, None, false).await?;
                     return Ok(json!({
                         "detail":"brief",
@@ -2297,8 +2345,13 @@ impl Gateway {
                     for target in std::iter::once(&w).chain(children) {
                         activity.insert(
                             target.id().to_owned(),
-                            crate::activity::read_activity(&self.store, "issue", target.id())
-                                .await?,
+                            crate::activity::read_activity(
+                                &self.store,
+                                "issue",
+                                target.id(),
+                                target.meta.as_ref(),
+                            )
+                            .await?,
                         );
                     }
                     let documents = self
@@ -2463,6 +2516,97 @@ impl Gateway {
                     .map(crate::activity::project_update_record)
                     .collect::<Result<Vec<_>>>()?
             );
+            return Ok(page);
+        }
+        if !search && kind == "project" && a.get("repository_path").is_some() {
+            require(
+                [
+                    "project_id",
+                    "parent_id",
+                    "target_type",
+                    "target_id",
+                    "team_id",
+                    "kind",
+                    "status",
+                    "priority",
+                    "order_by",
+                ]
+                .iter()
+                .all(|key| a.get(*key).is_none()),
+                "INVALID_INPUT",
+                "repository_path selects Projects directly; combine it with no other list filter",
+            )?;
+            let identity = crate::git::repository_identity(text(a, "repository_path")?)?;
+            let include_archived = a
+                .get("include_archived")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let candidates = self
+                .store
+                .pages(
+                    "QProjects",
+                    "projects",
+                    json!({"includeArchived":include_archived}),
+                )
+                .await?;
+            let mut nodes = vec![];
+            let mut inaccessible = vec![];
+            for p in &candidates {
+                let Some(stored_path) =
+                    read_fields(p["content"].as_str().unwrap_or(""))?["repository_path"]
+                        .as_str()
+                        .map(str::to_owned)
+                else {
+                    continue;
+                };
+                match crate::git::repository_identity(&stored_path) {
+                    Ok(stored_identity) if stored_identity == identity => nodes.push(p.clone()),
+                    Ok(_) => {}
+                    Err(_) => {
+                        inaccessible.push(json!({"id":p["id"],"repository_path":stored_path}))
+                    }
+                }
+            }
+            return Ok(json!({
+                "nodes":nodes,
+                "pageInfo":{"hasNextPage":false,"endCursor":null},
+                "inaccessible_stored_checkouts":inaccessible
+            }));
+        }
+        if kind == "team" {
+            require(!search, "INVALID_INPUT", "Team search is unavailable")?;
+            require(
+                [
+                    "project_id",
+                    "parent_id",
+                    "target_type",
+                    "target_id",
+                    "team_id",
+                    "kind",
+                    "status",
+                    "priority",
+                    "order_by",
+                    "repository_path",
+                ]
+                .iter()
+                .all(|key| a.get(*key).is_none()),
+                "INVALID_INPUT",
+                "Issue, Comment and Project filters do not apply to Teams",
+            )?;
+            let page = self
+                .store
+                .linear
+                .call(
+                    "QTeams",
+                    json!({"first":a.get("first").unwrap_or(&json!(50)),"after":a.get("after").unwrap_or(&Value::Null)}),
+                )
+                .await?["teams"]
+                .clone();
+            require(
+                page["nodes"].is_array(),
+                "INCOMPLETE_DATA",
+                "Team page is missing",
+            )?;
             return Ok(page);
         }
         let (query, field) = match (search, kind) {

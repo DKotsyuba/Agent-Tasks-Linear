@@ -53,6 +53,8 @@ Descriptions have readable Russian level-two section headings. Use level-three o
 
 `repository_path` uses the dedicated `Локальный репозиторий` section. Project edits preserve omitted fields and documents; null removes either repository field. Adding a path preserves old prose in `Репозиторий`. Modules and code Atomics outside Modules inherit omitted repository fields at creation; only valid external URLs are inherited from that legacy section. Existing work can be updated explicitly with `edit_module`/`edit_atomic`; later Project edits do not rewrite existing work. Task and nested Atomic context includes the current Module repository path, URL, branch, worktree and lead.
 
+`edit_project(content, expected_updated_at)` replaces the whole Project passport body instead of one targeted field, under the same guarded-write shape as a Document: `content` is rejected together with any of `title`/`description`/`repository_path`/`repository_url` in the same call — combine at most one targeted field set or one whole-body replace, never both. A missing `expected_updated_at` is `PRECONDITION_REQUIRED`; a byte-identical `content` (via the same Markdown-equivalence comparison used elsewhere) confirms `replayed: true` with no write, even before checking the precondition. Otherwise the current native `updatedAt` is compared to `expected_updated_at`; a mismatch is `PENDING_CONFLICT` — the concurrent edit is preserved, never overwritten — and only a match proceeds to one write, confirmed before being returned. There is no native compare-and-swap here either: this precondition only catches drift this same reader already observed.
+
 Supplied local paths are validated before create/edit writes. Starting a Module or standalone code Atomic requires a local path or legacy URL. With `repository_path`, readiness also validates its worktree. Normal repositories and linked worktrees are accepted; missing, relative, non-Git and bare directories are rejected. Validation runs only local `git rev-parse --show-toplevel`, without shell interpolation, with bounded output and a two-second process deadline. Git must be installed on the gateway host. Context and check-only transition calls use the same read-only readiness check. URL-only legacy records retain field-based readiness; supplying a local path opts into local checks. Branch remains a required declared field. Planning and non-code work need no repository.
 
 The Rust `git::read_commit(path, hash)` reader accepts an unambiguous hexadecimal object hash (4–64 digits), never a branch or revision expression. Each Git process has a two-second deadline and a 64 KiB stdout limit. It reads the commit object's exact UTF-8 message, resolves the full SHA, and records the canonical common Git directory so linked worktrees share an identity. Git replacement objects and inherited repository overrides are ignored. No Git writes or network operations occur. The message requires a Conventional Commit subject and nonempty `Result:` and `Checks:` sections; `Notes:` is optional. Original text, Git author/date and structured sections are returned as `git::GitCommit`. Checks remain the author's report, not independent verification. Missing/ambiguous objects, malformed messages, unavailable Git, encoding errors and limit failures are explicit.
@@ -64,6 +66,10 @@ The Rust `git::read_commit(path, hash)` reader accepts an unambiguous hexadecima
 `reports::module_report(&Work, &[Work]) -> Result<ModuleReport>` is the pure shared Module composer. Module context exposes its result as `module_report`: summary, reported_checks, notes, tasks_done/tasks_total, excluded_count, source_commits, unfinished, excluded and pr_draft. Results are grouped by child with shared commit content emitted once; each source reference names all contributing work IDs. Current-round imports are used when present, otherwise manual/non-code result fields and artifact links are retained. Native Task statuses determine Done/total; Atomics are reported but not counted as Tasks. Canceled/Duplicate direct children are visible separately and counted in excluded_count. Unfinished work and old-round-only snapshots never count as completed results. Empty or fully excluded Modules may retain their existing manual summary/checks. Missing child metadata/status and native field-size overflow fail explicitly.
 
 Module review readiness uses that same composer and still requires every child finished and a real pr_url. The In Review transition copies its derived summary/checks to native fields through the existing pending-write path, invalidating an old review when the content changes. No second manual report is required. pr_draft is Markdown text only; no PR is created or published. Review acceptance and the real merge report remain required for Module Done.
+
+## Project entry
+
+`list_items(type: team)` lists native teams with native pagination and no other filter, for a real `team_id` before `create_project` rather than a guessed internal ID. `list_items(type: project, repository_path: <absolute path>)` resolves that local checkout's canonical common Git directory (`git rev-parse --path-format=absolute --git-common-dir`, resolving symlinks) and returns every stored Project whose own recorded `repository_path` resolves to the same directory: the primary checkout and any of its linked worktrees match identically, since a linked worktree's common directory is the same physical location. An unknown or non-Git supplied path fails explicitly with `INVALID_REPOSITORY`, before any Project is read. Several Projects can legitimately share one checkout and are all returned. A Project whose own stored `repository_path` no longer resolves (moved or deleted checkout) is reported separately in `inaccessible_stored_checkouts`, never silently dropped from the result or turned into a fatal error for the rest of the lookup. `repository_path` cannot be combined with any other `list_items` filter. `get_context(type: project, detail: brief)` adds that Project's parsed `repository_path`/`repository_url`, native teams (id, name), the observed `updatedAt` version for the next guarded passport edit, and a `get_overview` route alongside its existing document routes.
 
 ## Priority views
 
@@ -102,6 +108,8 @@ Duplicate is a [system-managed Linear status](https://linear.app/docs/configurin
 
 `add_comment` writes a native Linear Comment on an Issue, Project or ProjectUpdate. Its `request_id` is the native comment ID, so an identical retry reads the created comment after an uncertain response. A reply's `parent_id` must belong to the same target. `get_comment` accepts a full UUID or a native Linear permalink and returns the comment, root and one native page of replies. Ordinary fragments contain a short comment hash; ProjectUpdate comments use short update and comment tokens. Lookup resolves the Project URL slug, searches only that Project's bounded native updates for a unique token match, then compares the complete native Comment URL. A changed Project or update URL cannot select another comment. `list_items(type: comment)` supports native cursors and target/parent filters. `resolve_comment` resolves or reopens a root thread through Linear's native operations. Comments do not change work status or act as review approval.
 
+A `kind: "handoff"` comment on a managed Issue is stamped with that work's current round and revision at write time — the caller supplies only the checkpoint body. A read selects the newest handoff whose stamped round matches the work's *current* round as `handoff.current`; any other handoff (a different or superseded round) stays visible under `handoff.history`, never silently replaced or discarded. `revision_changed: true` on the current-round handoff means a content edit bumped the work's revision after that checkpoint was written, so its prose may already be stale relative to the current recorded content — a caller reading `handoff.current` should treat that flag as a prompt to check the actual current fields, not trust the checkpoint blindly.
+
 Activity comments show Kind, Role and Actor on separate lines, with optional Session, Recipient and source links. A question requires a recipient. The typed ActivityRecord projection contains the native ID/URL/target/thread/times, content, and optional review details; ordinary unformatted comments read as notes. The current workflow attachment alone identifies a formal review, so an arbitrary comment saying “accepted” cannot approve work. Code commit imports add one deterministic progress comment per persisted current-round LocalGitReport. If the comment response is lost after the task result is saved, replay of the original import finishes the journal from that snapshot without rereading Git.
 
 `save_project_update` creates or edits a native ProjectUpdate only by explicit call. The caller selects onTrack, atRisk or offTrack and supplies a visible author, health reason and body; no read publishes an update. Creation uses request_id as the native ID, so retrying an unknown outcome reads the existing update. Edits require id, project_id and the last observed updatedAt as expected_updated_at. A changed native update with a different timestamp blocks the edit instead of overwriting it. `get_context(type: project_update)` and `list_items(type: project_update)` return native health, URLs and typed activity records; lists retain native cursor pagination. A Project comment is still a separate Comment without health, and none of these operations changes Issue status.
@@ -129,9 +137,8 @@ visibility already lets it call `gateway.rs`'s private helpers (`resolve`,
 `project`, `store`, `with_guidance`, …) without those helpers becoming public.
 `gateway.rs` only adds the one-line `mod <name>;` declaration and, where a new
 public tool needs it, one arm in `dispatch()`. `src/gateway/documents.rs`
-holds the `save_document` handler; a corresponding `src/gateway/artifacts.rs`
-is reserved for file operations, declared and wired up when that handler is
-implemented.
+holds the `save_document` handler; `src/gateway/artifacts.rs` holds
+`upload_file`/`list_files`/`get_file`, reusing the same seam.
 
 The generated tool surface (`schemas/tools.json`, `schemas/examples.json`,
 `src/render.rs` templates, `assets/mcp/*.txt.j2`) has exactly one owner and
@@ -141,41 +148,57 @@ child module and, where they touch shared dispatch, GraphQL operation text or
 test fixtures, as explicitly scoped edits named in the accepted contract —
 never as hand edits to the generated schema files themselves.
 
-## Agreed document and file provider contract
+## Document and file provider contract
 
-These shapes are agreed and not yet implemented; they describe the target
-contract for the `gateway::documents` and `gateway::artifacts` handlers, not
-current behavior. `save_document`/`get_context(type: document)` keep the
-existing metadata (`id, title, url, content, updatedAt, archivedAt, hiddenAt,
-project, issue`) and existing create semantics (`request_id` as native ID,
-exactly one Project or Issue parent). An edit that changes content, title,
-visibility or parent requires `expected_updated_at`, taken from a fresh read;
-a missing precondition is a distinct `PRECONDITION_REQUIRED` fault, not a
-silent write. `content` without `section` replaces the whole body. `section`
-is a unique heading text (not a regex), valid only together with `id`, and
+`save_document`/`get_context(type: document)` keep the existing metadata
+(`id, title, url, content, updatedAt, archivedAt, hiddenAt, project, issue`)
+and existing create semantics (`request_id` as native ID, exactly one Project
+or Issue parent; a new Document rejects `section`/`expected_updated_at`, which
+have no prior state to guard). Editing an existing Document is guarded:
+`content` without `section` replaces the whole body; `section` is a unique
+heading text (not a regex), valid only together with `content`, and
 `save_document(id, section, content)` replaces only that section's body,
-keeping its heading and every byte outside its range; a missing or ambiguous
+keeping its heading and every byte outside its range — a missing or ambiguous
 heading fails before any write. `hidden: bool` maps to native `hiddenAt`
-(now/null) and only writes when the state actually changes. A proposed state
-already equal to native state confirms `replayed: true` with no write, even
-after a restart; otherwise the current `updatedAt` is compared to
-`expected_updated_at` before writing once. A document is current iff both
-`archivedAt` and `hiddenAt` are null; `search`/`list_items(type: document)`
-accept `project_id` and `include_archived`, and each result row carries
-title, url, owning Project/Issue, updated time, currentness and a short
-honestly-sourced snippet, never a fabricated match.
+(now/null) and only writes when the state actually changes; `project_id`/
+`issue_id` rebind to exactly one new parent, explicitly clearing the other. A
+proposed state already equal to native state confirms `replayed: true` with
+no write, even after a restart; otherwise a missing `expected_updated_at` is a
+distinct `PRECONDITION_REQUIRED` fault naming the `get_context` route, a stale
+one is `PENDING_CONFLICT`, and the write happens once with its result
+confirmed before being returned. `get_context(type: document, section: ...)`
+returns that section's body as `content` plus `section: {heading, index,
+count}` and a route back to the whole document; the response is otherwise the
+normal Document envelope. A document is current iff both `archivedAt` and
+`hiddenAt` are null. `list_items(type: document)` keeps the plain native page
+(optionally scoped by `project_id`); `search(type: document)` additionally
+scopes to a Project (a Document attached to it directly, or to one of its
+Issues), defaults to 10 results and never returns more than 25 regardless of
+`first`, applies `include_archived` to both archived and hidden material
+against one native page, and each result row carries title, url, owning
+Project/Issue, updated time, currentness and a short honestly-sourced
+snippet — the literal matched title/content substring when one exists, a
+plain content preview marked `"semantic"` otherwise, never a fabricated
+literal match. A native page can hold fewer or more real matches than it
+returned, including zero, while `pageInfo.hasNextPage` still promises more to
+check; that filtered-page state is reported explicitly, never presented as an
+exhausted, empty search.
 
 File operations are three focused tools: `upload_file` reads one local file
 (host-side absolute path, bounded to 10,000,000 bytes), reserves a
 deterministic native attachment ID per issue/request, and compares replay
-intent (not only a content digest) before treating a retry as identical.
-`list_files` returns only user artifacts for one work item, excluding
-internal workflow attachments. `get_file` resolves and validates artifact
-ownership/type, downloads through the canonical authenticated asset URL,
-writes through a sibling temporary file, and never silently overwrites a
-different existing file at the same destination (`FILE_EXISTS` on conflict,
-`replayed: true` only for byte-identical content). None of these three tools
-returns binary content, a signed URL or a secret in its text response.
+intent (filename, content type, size, digest, title, note) before treating a
+retry as identical; changed intent is `REQUEST_CONFLICT`. `list_files` returns
+only user artifacts for one work item, excluding internal workflow
+attachments. `get_file` resolves and validates artifact ownership/type,
+downloads through the canonical authenticated asset URL while verifying the
+bytes against the digest recorded at upload time, writes through a sibling
+temporary file, and never silently overwrites a different existing file at
+the same destination (`FILE_EXISTS` on conflict, `replayed: true` only for
+byte-identical content). None of these three tools returns binary content, a
+signed URL or a secret in its text response; artifact attachments live in
+their own `metadata.artifact` namespace, fully separate from the canonical
+`metadata.workflow` state record.
 
 ## Manual changes and failures
 

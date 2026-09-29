@@ -10,15 +10,17 @@ query QLabels($first:Int!,$after:String) { issueLabels(first:$first,after:$after
 
 query QIssueLabel($id:String!) { issueLabel(id:$id) {id name} }
 
-query QProject($id:String!) {project(id:$id) {id name description content url archivedAt teams {nodes {id} pageInfo {hasNextPage endCursor}}}}
+query QProject($id:String!) {project(id:$id) {id name description content url updatedAt archivedAt teams {nodes {id name} pageInfo {hasNextPage endCursor}}}}
 
-query QProjects($filter:ProjectFilter,$first:Int!,$after:String,$includeArchived:Boolean!) { projects(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id name description url} pageInfo { hasNextPage endCursor }} }
+query QProjects($filter:ProjectFilter,$first:Int!,$after:String,$includeArchived:Boolean!) { projects(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id name description content url updatedAt} pageInfo { hasNextPage endCursor }} }
 
 query QIssue($id:String!) { issue(id:$id) {id identifier title description url updatedAt archivedAt startedAt completedAt priority priorityLabel prioritySortOrder team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }} }
 
 query QIssues($filter:IssueFilter,$first:Int!,$after:String,$includeArchived:Boolean!) { issues(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id identifier title description url updatedAt archivedAt startedAt completedAt priority priorityLabel prioritySortOrder team { id } project { id name url } parent { id } state { id name type } labels(first:100) { nodes { id name } pageInfo {hasNextPage endCursor} }} pageInfo { hasNextPage endCursor }} }
 
 query QAttachmentById($id:String!) {attachment(id:$id) {id title url metadata issue {id} originalIssue {id}}}
+
+query QStateAttachments($filter:AttachmentFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {attachments(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id title url metadata issue {id} originalIssue {id}} pageInfo {hasNextPage endCursor}}}
 
 query QArtifact($id:String!) {attachment(id:$id) {id title url metadata issue {id}}}
 
@@ -56,7 +58,7 @@ mutation MCreateIssueRelation($input:IssueRelationCreateInput!) {issueRelationCr
 
 mutation MCreateProject($input:ProjectCreateInput!) {projectCreate(input:$input) {success project {id name content url}}}
 
-mutation MUpdateProject($id:String!,$input:ProjectUpdateInput!) {projectUpdate(id:$id,input:$input) {success project {id name content url}}}
+mutation MUpdateProject($id:String!,$input:ProjectUpdateInput!) {projectUpdate(id:$id,input:$input) {success project {id name content url updatedAt}}}
 
 mutation MUpsertRecord($input:AttachmentCreateInput!) {attachmentCreate(input:$input) {success attachment {id metadata}}}
 
