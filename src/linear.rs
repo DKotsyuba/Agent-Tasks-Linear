@@ -324,15 +324,42 @@ impl Linear {
                 "Upload reservation is missing its signed URL",
             )
         })?;
-        let mut request = self.client.put(url).timeout(FILE_TIMEOUT);
-        for header in upload_file["headers"].as_array().into_iter().flatten() {
-            if let (Some(key), Some(value)) = (header["key"].as_str(), header["value"].as_str()) {
-                request = request.header(key, value);
+        // Linear's own upload guide sets these two headers before layering the
+        // reservation's returned headers on top; an omitted returned header must
+        // not leave the signed PUT without the Content-Type/Cache-Control the
+        // signature was computed against.
+        let mut headers = header::HeaderMap::new();
+        if let Some(content_type) = upload_file["contentType"]
+            .as_str()
+            .and_then(|v| header::HeaderValue::from_str(v).ok())
+        {
+            headers.insert(header::CONTENT_TYPE, content_type);
+        }
+        headers.insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("public, max-age=31536000"),
+        );
+        for entry in upload_file["headers"].as_array().into_iter().flatten() {
+            if let (Some(key), Some(value)) = (entry["key"].as_str(), entry["value"].as_str())
+                && let (Ok(name), Ok(value)) = (
+                    header::HeaderName::from_bytes(key.as_bytes()),
+                    header::HeaderValue::from_str(value),
+                )
+            {
+                headers.insert(name, value);
             }
         }
-        let response = request.body(bytes).send().await.map_err(|_| {
-            Fault::new("LINEAR_UNAVAILABLE", "Signed upload was not received").uncertain()
-        })?;
+        let response = self
+            .client
+            .put(url)
+            .timeout(FILE_TIMEOUT)
+            .headers(headers)
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|_| {
+                Fault::new("LINEAR_UNAVAILABLE", "Signed upload was not received").uncertain()
+            })?;
         require(
             response.status().is_success(),
             "LINEAR_PARTIAL_ERROR",
