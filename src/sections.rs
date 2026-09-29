@@ -122,9 +122,17 @@ pub fn find_section<'a>(content: &'a str, heading_text: &str) -> Result<Section<
 /// and every byte outside the section's range unchanged.
 pub fn replace_section(content: &str, heading_text: &str, new_body: &str) -> Result<String> {
     let (items, i, end) = locate(content, heading_text)?;
-    let mut out = String::with_capacity(content.len() + new_body.len());
+    let mut out = String::with_capacity(content.len() + new_body.len() + 1);
     out.push_str(&content[..items[i].body_start]);
     out.push_str(new_body);
+    // A replacement body without its own trailing newline would otherwise run directly into
+    // whatever follows: a plain heading loses the line break an ATX heading needs to parse at
+    // all, and a fenced code block loses the closing fence's own line, silently absorbing every
+    // byte after it (including the next heading) as more code. One newline is the minimum that
+    // keeps both the replaced body and everything after it independently parseable again.
+    if end < content.len() && !new_body.ends_with('\n') {
+        out.push('\n');
+    }
     out.push_str(&content[end..]);
     Ok(out)
 }
@@ -167,6 +175,29 @@ mod tests {
             replaced,
             "# Title\n\nIntro.\n\n## Описание\nNew body.\n\n## Границы\n\nOther.\n"
         );
+    }
+
+    #[test]
+    fn replacement_without_a_trailing_newline_keeps_the_next_heading_independent() {
+        let doc = "# Control\n\n## First\n\nuntouched\n\n## Work\n\nold\n\n## Last\n\nkeep\n";
+        // A valid, complete fenced block with no trailing newline at all: the naive splice
+        // would run the closing fence directly into "## Last", leaving the fence unclosed and
+        // absorbing "Last" as code instead of a heading.
+        let replaced = replace_section(doc, "Work", "new\n\n```text\ncode\n```").unwrap();
+        // Reparse the edited document itself, not just compare against one fixture string: a
+        // regression that only breaks the byte layout without changing the exact expected
+        // string would otherwise slip through undetected.
+        let control = find_section(&replaced, "Control").unwrap();
+        assert_eq!(control.index, 1);
+        assert_eq!(control.count, 4);
+        let first = find_section(&replaced, "First").unwrap();
+        assert_eq!(first.body, "\nuntouched\n\n");
+        let work = find_section(&replaced, "Work").unwrap();
+        assert_eq!(work.body, "new\n\n```text\ncode\n```\n");
+        let last = find_section(&replaced, "Last").unwrap();
+        assert_eq!(last.index, 4);
+        assert_eq!(last.count, 4);
+        assert_eq!(last.body, "\nkeep\n");
     }
 
     #[test]
