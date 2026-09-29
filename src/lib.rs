@@ -15,3 +15,6 @@ pub mod reports;
 pub mod rules;
 pub mod sections;
 pub mod server;
+
+/// Public schema-first contract surface used by `cargo xtask contract check`.
+pub use gateway::{dispatch_vocabulary, routes};

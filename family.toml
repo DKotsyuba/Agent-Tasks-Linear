@@ -1,0 +1,29 @@
+schema_version = 1
+product = "agent-tasks-linear"
+repository = "DKotsyuba/Agent-Tasks-Linear"
+env_prefix = "AGENT_TASKS_LINEAR_"
+standard_version = "1.0.0-rc.2"
+response_profile = "rust-minijinja-v1"
+devkit_version = "0.2.0"
+baseline = "rust-macos-2026-09-candidate1"
+qualification = "not_verified"
+
+# This product's own profile: a resident loopback writer/stdio bridge whose only
+# durable business state lives in Linear (external). state_schema = 0 in a delivery
+# manifest therefore means "no local business state", never state = "none".
+[profiles]
+process = "resident"
+state = "external"
+transports = ["stdio", "streamable-http"]
+host_adapter = false
+
+[compatibility]
+candidate_targets = ["aarch64-apple-darwin"]
+qualified_targets = []
+qualified_hosts = []
+
+[release]
+enabled = false
+workflow = "release.yml"
+delivery_profile = "single-binary-v1"
+trust_profile = "github-authenticated"

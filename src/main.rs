@@ -40,6 +40,10 @@ async fn main() {
     }
 }
 /// Load protected configuration and dispatch without printing API or bearer secrets.
+#[allow(
+    clippy::print_stdout,
+    reason = "Explicit CLI branches only; the stdio branch writes protocol exclusively through the transport"
+)]
 async fn run(cli: Cli) -> Result<()> {
     let path = cli.config.unwrap_or_else(config::default_path);
     if matches!(cli.command, Command::InitConfig) {

@@ -270,7 +270,7 @@ fn context_projection(request: &Value, data: &Value) -> Value {
             .map(|pending| {
                 serde_json::to_string_pretty(&json!({
                     "tool":pending.get("tool"),"arguments":pending.get("arguments")}))
-                .expect("JSON values serialize")
+                .unwrap_or_else(|_| "pending call unavailable".to_owned())
             });
         return json!({"kind":"brief","item":item,"fields":data["fields"],
             "guidance":data["guidance"],
@@ -343,7 +343,7 @@ fn context_projection(request: &Value, data: &Value) -> Value {
             serde_json::to_string_pretty(
                 &json!({"tool":pending.get("tool"),"arguments":pending.get("arguments")}),
             )
-            .expect("JSON values serialize")
+            .unwrap_or_else(|_| "pending call unavailable".to_owned())
         });
     let body = if data["activity"]["body"].is_string() {
         &data["activity"]["body"]
