@@ -13,4 +13,5 @@ pub mod records;
 pub mod render;
 pub mod reports;
 pub mod rules;
+pub mod sections;
 pub mod server;
