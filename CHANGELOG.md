@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.5.0
+
+First standardized infrastructure release of the existing 25-tool Linear
+workflow MCP: family-standard workspace, gates, delivery, installer and CI,
+with the public tool contract, resident writer/stdio bridge architecture and
+protected configuration preserved unchanged. Publication is gated: the
+release workflow stays disabled until native host evidence is recorded by
+the owner.
+
 ### Added
 
 - Family-standard repository infrastructure: Cargo workspace with pinned Rust
@@ -37,5 +48,3 @@
 - The Node catalogue generator (`scripts/catalog.mjs`) was removed;
   `schemas/tools.json` is the single documented schema-first authority,
   verified by Rust tooling against actual discovery and dispatch.
-
-No published release is implied by the Cargo package version.

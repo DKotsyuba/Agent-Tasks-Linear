@@ -346,6 +346,8 @@ impl Project {
             "docs/MCP_RESPONSE_STANDARD.md",
             "docs/FAMILY_CONTRACT.md",
             "docs/TEMPLATE_PROVENANCE.md",
+            "docs/releasing.md",
+            "registration/agent-tasks-linear.json",
         ] {
             if !self.root.join(file).is_file() {
                 return Err(format!("required file absent: {file}").into());

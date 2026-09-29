@@ -97,6 +97,8 @@ cargo xtask check
 
 The single gate covers formatting, Clippy (default and all-features), tests (default and all-features), rustdoc, the schema-first contract check against real-binary discovery/dispatch, and family structural checks. Supply-chain checks: `cargo deny --locked check`.
 
+Packaging, the release pipeline, exact-payload qualification and the owner-operated install/rollback/legacy-adoption runbook live in [docs/releasing.md](docs/releasing.md); the host-neutral registration descriptor is [registration/agent-tasks-linear.json](registration/agent-tasks-linear.json).
+
 The opt-in live test writes a disposable project in an explicitly selected team:
 
 ```sh
@@ -109,3 +111,7 @@ cargo test --locked --test live -- --ignored --nocapture
 The report path makes an interrupted pilot resumable. The pilot verifies real Linear writes, the two-module workflow and cold reads. Its Git artifact/merge reports are explicitly synthetic; it does not create or merge a real PR.
 
 [Checks and limits](docs/FEASIBILITY.md).
+
+## License
+
+No open-source license is granted for this product; it is proprietary to the repository owner. Infrastructure helpers copied from the family template (`crates/family-delivery`, configuration and release scaffolding) retain the template's MIT notice in [docs/TEMPLATE_MIT_LICENSE.txt](docs/TEMPLATE_MIT_LICENSE.txt); see [docs/TEMPLATE_PROVENANCE.md](docs/TEMPLATE_PROVENANCE.md) for the exact import inventory.
