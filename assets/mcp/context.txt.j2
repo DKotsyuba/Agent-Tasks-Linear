@@ -21,7 +21,7 @@ Issue{{ "\n" }}{{ entity(item) }}{{ body("Description", description) }}
 {% if not report %}{% for commit in commits %}{{ line("Commit", commit.sha) }}{{ line("Subject", commit.subject) }}{% endfor %}{% endif %}
 {% if review %}{{ heading("Latest review") }}{{ line("URL", review.url|default(none)) }}{{ line("Verdict", review.verdict|default(none)) }}{{ body("Summary", review.summary|default(none)) }}{{ body("Findings", review.findings|default(none)) }}{% endif %}
 {% for question in questions %}{{ body("Open question", question.body) }}{{ line("URL", question.url) }}{{ line("Recipient", question.recipient|default(none)) }}{% endfor %}
-{% for document in documents %}{{ line("Document", document.title) }}{{ line("Document ID", document.id) }}{{ line("Document URL", document.url) }}{% endfor %}
+{% for document in documents %}{{ line("Document", document.title) }}{{ line("Document ID", document.id) }}{{ line("Document URL", document.url) }}{% if not document.current %}{{ line("Current", document.current) }}{{ line("Archived", document.archived) }}{{ line("Hidden", document.hidden) }}{% endif %}{% endfor %}
 {{ advice(guidance|default(none)) }}{% for peer in peers %}{{ line("Priority peer", peer.identifier) }}{{ line("Peer ID", peer.id) }}{{ line("Peer status", peer.status) }}{% endfor %}
 {% if pending_call %}{{ "\n" }}## Pending mutation recovery{{ "\n" }}Retry the same tool with these exact argument values after inspecting native state:{{ "\n" }}```json{{ "\n" }}{{ pending_call }}{{ "\n" }}```{{ "\n" }}{% endif %}
 {% for problem in discrepancies %}{{ line("Discrepancy", problem) }}{% endfor %}

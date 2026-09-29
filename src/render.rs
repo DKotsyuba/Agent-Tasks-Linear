@@ -214,7 +214,7 @@ fn identity(item: &Value) -> Value {
         "file_name":item["file_name"],"content_type":item["content_type"],
         "size_bytes":item["size_bytes"],"path":item["path"],
         "snippet":item["snippet"],"match_source":item["match_source"],
-        "hidden":item["hidden"],"current":item["current"],
+        "hidden":item["hidden"],"current":item["current"],"archived":item["archived"],
         "hidden_at":item["hiddenAt"],"archived_at":item["archivedAt"]
     })
 }
@@ -779,6 +779,65 @@ mod tests {
         assert!(
             project_read.contains("Project ID: project-1"),
             "{project_read}"
+        );
+    }
+
+    /// An ordinary list_items(document) row surfaces the same version/currentness/history
+    /// fields as search — Updated at, Current, Archived, Hidden — using the shared
+    /// document_link shape; it never invents a snippet or match source, which only a real
+    /// search query produces.
+    #[test]
+    fn ordinary_document_list_surfaces_currentness_without_an_invented_snippet() {
+        let row = json!({"id":"doc-1","title":"Runbook","url":"https://linear.app/doc-1",
+            "updated_at":"2026-09-29T02:03:44.471Z","current":true,"archived":false,"hidden":false,
+            "issue":{"id":"issue-1"},"project":null});
+        let text = render_outcome(
+            "list_items",
+            &json!({"type":"document","project_id":"project-1"}),
+            &Outcome::ok(json!({"nodes":[row],"pageInfo":{"hasNextPage":false,"endCursor":null}})),
+        );
+        assert!(
+            text.contains("Updated at: 2026-09-29T02:03:44.471Z"),
+            "{text}"
+        );
+        assert!(text.contains("Current: true"), "{text}");
+        assert!(text.contains("Archived: false"), "{text}");
+        assert!(text.contains("Hidden: false"), "{text}");
+        assert!(!text.contains("Snippet"), "{text}");
+        assert!(!text.contains("Match source"), "{text}");
+    }
+
+    /// A full/role Issue context's document links leave a current document unlabelled (no
+    /// redundant flag noise) but visibly mark a historical one present in that same list as
+    /// Current: false, Archived/Hidden — never an unlabelled, current-looking entry.
+    #[test]
+    fn role_context_document_links_label_historical_entries_not_current_ones() {
+        let current_doc = json!({"id":"doc-1","title":"Guide","url":"https://linear.app/doc-1",
+            "current":true,"archived":false,"hidden":false});
+        let hidden_doc = json!({"id":"doc-2","title":"Old draft","url":"https://linear.app/doc-2",
+            "current":false,"archived":false,"hidden":true});
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"issue","id":"issue-1","view":"lead"}),
+            &Outcome::ok(
+                json!({"issue":{"id":"issue-1","title":"Task","url":"https://linear.app/issue-1"},
+                "agent_context":{"documents":[current_doc,hidden_doc]}}),
+            ),
+        );
+        assert!(text.contains("Document: Guide"), "{text}");
+        assert!(text.contains("Document: Old draft"), "{text}");
+        assert!(
+            text.contains("Current: false") && text.contains("Hidden: true"),
+            "the historical link must be visibly labelled: {text}"
+        );
+        // A current document's own block carries no redundant Current/Archived/Hidden line.
+        let guide_block =
+            &text[text.find("Document: Guide").unwrap()..text.find("Document: Old draft").unwrap()];
+        assert!(
+            !guide_block.contains("Current:")
+                && !guide_block.contains("Archived:")
+                && !guide_block.contains("Hidden:"),
+            "a current link needs no noisy redundant flag: {guide_block}"
         );
     }
 
