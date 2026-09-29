@@ -53,6 +53,8 @@ pub struct Database {
     pub base: String,
     /// Uploaded artifact bytes by filename, standing in for Linear's asset host.
     pub assets: BTreeMap<String, Vec<u8>>,
+    /// Calls received per operation name, for request-count regression checks.
+    pub operation_counts: BTreeMap<String, u32>,
 }
 /// Native standard workflow names in the fixture.
 pub const STATES: [&str; 7] = [
@@ -89,6 +91,7 @@ async fn graphql(
 ) -> Json<Value> {
     let mut db = db.lock().await;
     let op = request["operationName"].as_str().unwrap();
+    *db.operation_counts.entry(op.to_owned()).or_insert(0) += 1;
     let v = &request["variables"];
     let id = v["id"].as_str().unwrap_or("");
     let input = &v["input"];
@@ -148,6 +151,23 @@ async fn graphql(
         )),
         "QAttachmentById" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
         "QArtifact" => db.attachments.get(id).cloned().map(|v| ("attachment", v)),
+        "QStateAttachments" => {
+            let wanted = v["filter"]["id"]["in"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            Some((
+                "attachments",
+                issue_page(
+                    db.attachments
+                        .values()
+                        .filter(|a| wanted.contains(&a["id"]))
+                        .cloned()
+                        .collect(),
+                    v,
+                ),
+            ))
+        }
         "QWorkAttachments" => Some((
             "issue",
             json!({"attachments":issue_page(

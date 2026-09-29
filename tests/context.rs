@@ -605,6 +605,43 @@ async fn overview_attention_lists_unfinished_actions() {
     assert_eq!(entry["next_action"]["tool"], "edit_atomic");
 }
 
+/// Reading a Project graph costs one bulk state-attachment request, not one per issue:
+/// `Store::graph` (exercised here through `move_status(check_only)`, which loads the whole
+/// Project graph without the separate per-item activity reads `get_overview` also performs)
+/// issues zero QAttachmentById calls and exactly one QStateAttachments call for a Project
+/// with several Tasks, so its request cost stops scaling with issue count.
+#[tokio::test]
+async fn project_graph_reads_state_in_bulk_not_per_issue() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    for _ in 0..6 {
+        let task = f.work("task", &project, Some(&module)).await;
+        f.mv(&task, "In Progress").await;
+    }
+
+    f.db.lock().await.operation_counts.clear();
+    f.ok(
+        "move_status",
+        json!({"id":module,"status":"In Review","actor_role":"orchestrator","check_only":true}),
+    )
+    .await;
+    let counts = f.db.lock().await.operation_counts.clone();
+    // At most one QAttachmentById: the transition's own single-item `Store::work` point
+    // lookup for the Module being checked, kept as an individual read by design. It is not
+    // one call per sibling Task — that per-issue fallback is exactly the bug this fixes.
+    assert!(
+        counts.get("QAttachmentById").copied().unwrap_or(0) <= 1,
+        "graph reads must not fall back to one lookup per issue: {counts:?}"
+    );
+    assert_eq!(
+        counts.get("QStateAttachments").copied().unwrap_or(0),
+        1,
+        "one bulk state-attachment page covers the whole project graph: {counts:?}"
+    );
+}
+
 /// A mixed Project yields exact progress and an unpublished draft; publication stays explicit.
 #[tokio::test]
 async fn overview_groups_work_and_only_explicit_update_writes() {

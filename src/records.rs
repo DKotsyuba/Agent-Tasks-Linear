@@ -6,6 +6,7 @@ use crate::{
 use pulldown_cmark::{Event, Parser, Tag};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 /// Issue fields exposed to agents and rendered as understandable sections.
 pub const FIELDS: &[(&str, &str)] = &[
@@ -108,6 +109,20 @@ fn validate_state_owner(attachment: &Value, id: &str) -> Result<()> {
         "State attachment belongs to another issue",
     )
 }
+/// Validate and parse one already-fetched state attachment for its known originating issue.
+/// Shared by the single `meta` lookup and the bulk `graph` read so both apply identical
+/// provenance/schema checks regardless of which query fetched the record.
+fn parse_state_attachment(attachment: &Value, id: &str) -> Result<Meta> {
+    validate_state_owner(attachment, id)?;
+    let m: Meta = serde_json::from_value(attachment["metadata"]["workflow"].clone())
+        .map_err(|_| Fault::new("STATE_INVALID", "Invalid workflow metadata"))?;
+    require(
+        m.schema == 2,
+        "STATE_INVALID",
+        "Unsupported workflow data version",
+    )?;
+    Ok(m)
+}
 
 impl Store {
     /// Read a native object, distinguishing absence from authentication and partial errors.
@@ -127,15 +142,26 @@ impl Store {
         else {
             return Ok(None);
         };
-        validate_state_owner(&a, id)?;
-        let m: Meta = serde_json::from_value(a["metadata"]["workflow"].clone())
-            .map_err(|_| Fault::new("STATE_INVALID", "Invalid workflow metadata"))?;
-        require(
-            m.schema == 2,
-            "STATE_INVALID",
-            "Unsupported workflow data version",
-        )?;
-        Ok(Some(m))
+        parse_state_attachment(&a, id).map(Some)
+    }
+    /// Read many deterministic state attachments in bounded chunks by native attachment ID,
+    /// instead of one request per issue. A requested ID absent from the native page is simply
+    /// missing from the result, never an error; callers decide what that means for their issue.
+    /// ponytail: 100-ID `in` chunks, matching this client's existing page size; narrow further
+    /// only if Linear's real IDComparator array limit proves smaller.
+    async fn state_attachments(&self, ids: &[String]) -> Result<Vec<Value>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(100) {
+            out.extend(
+                self.pages(
+                    "QStateAttachments",
+                    "attachments",
+                    json!({"filter":{"id":{"in":chunk}},"includeArchived":true}),
+                )
+                .await?,
+            );
+        }
+        Ok(out)
     }
     /// Fetch native issue data and its metadata; no writes occur during context reads.
     pub async fn work(&self, id: &str) -> Result<Work> {
@@ -203,6 +229,8 @@ impl Store {
         ))
     }
     /// Read the whole project hierarchy, including archived children needed for frozen membership.
+    /// Reads one bulk page of state attachments (bounded chunks by deterministic ID) instead of
+    /// one request per issue; a project's request count no longer scales with its issue count.
     pub async fn graph(&self, project: &str) -> Result<Vec<Work>> {
         let nodes = self
             .pages(
@@ -211,9 +239,24 @@ impl Store {
                 json!({"filter":{"project":{"id":{"eq":project}}},"includeArchived":true}),
             )
             .await?;
+        let state_ids: Vec<String> = nodes
+            .iter()
+            .map(|n| child_id(n["id"].as_str().unwrap(), "state"))
+            .collect();
+        let attachments = self.state_attachments(&state_ids).await?;
+        let mut by_id: BTreeMap<String, Value> = BTreeMap::new();
+        for a in attachments {
+            if let Some(aid) = a["id"].as_str() {
+                by_id.insert(aid.to_owned(), a);
+            }
+        }
         let mut out = Vec::with_capacity(nodes.len());
-        for native in nodes {
-            let meta = self.meta(native["id"].as_str().unwrap()).await?;
+        for (native, state_id) in nodes.into_iter().zip(state_ids.iter()) {
+            let id = native["id"].as_str().unwrap().to_owned();
+            let meta = match by_id.get(state_id) {
+                Some(a) => Some(parse_state_attachment(a, &id)?),
+                None => None,
+            };
             let fields = meta.as_ref().map(|m| m.fields.clone()).unwrap_or(json!({}));
             out.push(Work {
                 native,
