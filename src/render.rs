@@ -196,8 +196,8 @@ fn fallback_kind(tool: &str) -> &'static str {
 
 /// Select native identity fields as values; templates own their labels and order.
 /// One group is the flat file envelope agreed for upload_file/list_files/get_file; another is
-/// the Document search row (snippet, match source, hidden/current); both are null for every
-/// other tool's item and so never render through `line`. `updated_at` accepts either the raw
+/// Document rows (archived/hidden/current, with snippet and match source for search only).
+/// Inapplicable fields are null and never render through `line`. `updated_at` accepts either the raw
 /// native `updatedAt` or an already-public snake_case `updated_at`, since a public response
 /// shape (like the Document search row) uses the latter directly.
 fn identity(item: &Value) -> Value {
