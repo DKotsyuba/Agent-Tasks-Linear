@@ -297,22 +297,16 @@ pub fn markdown_key(value: &str) -> String {
 /// an email address, angle-bracketed `<address>` or bare in prose, may become the
 /// same-label `mailto:` link.
 /// Different destinations or labels, code, extra prose and list boundaries still differ.
+/// The per-part walk below compares literally by default: a code span's own backtick is not
+/// introduced by native rendering, so it forces a mismatch at that position on either side.
+/// Lenient link matching therefore never crosses into or out of a code region, whether or not
+/// unrelated code appears elsewhere in the same document.
 /// The comparison is directional and never rewrites either source.
 pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
     let expected_key = markdown_key(expected);
     let actual_key = markdown_key(actual);
     if expected_key == actual_key {
         return true;
-    }
-    // A code span or block makes a URL literal; conservative disagreement preserves that content.
-    if expected.contains('\u{60}')
-        || actual.contains('\u{60}')
-        || Parser::new(expected)
-            .any(|event| matches!(event, Event::Code(_) | Event::Start(Tag::CodeBlock(_))))
-        || Parser::new(actual)
-            .any(|event| matches!(event, Event::Code(_) | Event::Start(Tag::CodeBlock(_))))
-    {
-        return false;
     }
     let expected_parts: Vec<String> = serde_json::from_str(&expected_key).unwrap();
     let actual_parts: Vec<String> = serde_json::from_str(&actual_key).unwrap();
