@@ -422,3 +422,156 @@ async fn document_search_snippet_survives_lowercase_byte_length_changes() {
             .contains("needle")
     );
 }
+
+/// list_items(type=document) defaults to current material exactly like search already does: a
+/// hidden Document (created before the visible one, so a page-ordering bug cannot pass by
+/// coincidence) is excluded by default and reappears, truthfully flagged, once include_archived
+/// is set. Native `includeArchived` alone never covers hidden. A fresh Project already seeds its
+/// own standard documents (for example a Runbook), so this checks the two new documents by id
+/// rather than assuming an exact total count.
+#[tokio::test]
+async fn document_list_excludes_hidden_by_default() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+
+    let hidden = f
+        .ok(
+            "save_document",
+            json!({"project_id":project,"title":"Archive candidate","content":"body"}),
+        )
+        .await;
+    f.ok(
+        "save_document",
+        json!({"id":hidden["id"],"hidden":true,"expected_updated_at":hidden["updatedAt"]}),
+    )
+    .await;
+    let visible = f
+        .ok(
+            "save_document",
+            json!({"project_id":project,"title":"Visible doc","content":"body"}),
+        )
+        .await;
+
+    let default_list = f
+        .ok(
+            "list_items",
+            json!({"type":"document","project_id":project}),
+        )
+        .await;
+    let nodes = default_list["nodes"].as_array().unwrap();
+    let visible_row = nodes.iter().find(|n| n["id"] == visible["id"]).unwrap();
+    assert_eq!(visible_row["hidden"], false);
+    assert_eq!(visible_row["current"], true);
+    assert!(!nodes.iter().any(|n| n["id"] == hidden["id"]));
+    assert_eq!(
+        default_list["native_page_size"].as_u64().unwrap(),
+        default_list["matched_in_page"].as_u64().unwrap() + 1
+    );
+
+    let with_archived = f
+        .ok(
+            "list_items",
+            json!({"type":"document","project_id":project,"include_archived":true}),
+        )
+        .await;
+    let all_nodes = with_archived["nodes"].as_array().unwrap();
+    assert!(all_nodes.iter().any(|n| n["id"] == visible["id"]));
+    let hidden_row = all_nodes.iter().find(|n| n["id"] == hidden["id"]).unwrap();
+    assert_eq!(hidden_row["hidden"], true);
+    assert_eq!(hidden_row["current"], false);
+}
+
+/// get_context(type=project) document links, both brief and full, exclude a hidden Document by
+/// default, matching list and search; the hidden node is created before the visible one.
+#[tokio::test]
+async fn document_project_context_excludes_hidden_by_default() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+
+    let hidden = f
+        .ok(
+            "save_document",
+            json!({"project_id":project,"title":"Hidden","content":"body"}),
+        )
+        .await;
+    f.ok(
+        "save_document",
+        json!({"id":hidden["id"],"hidden":true,"expected_updated_at":hidden["updatedAt"]}),
+    )
+    .await;
+    let visible = f
+        .ok(
+            "save_document",
+            json!({"project_id":project,"title":"Visible","content":"body"}),
+        )
+        .await;
+
+    let brief = f
+        .ok(
+            "get_context",
+            json!({"type":"project","id":project,"detail":"brief"}),
+        )
+        .await;
+    let brief_docs = brief["documents"].as_array().unwrap();
+    assert!(brief_docs.iter().any(|d| d["id"] == visible["id"]));
+    assert!(!brief_docs.iter().any(|d| d["id"] == hidden["id"]));
+
+    let full = f
+        .ok("get_context", json!({"type":"project","id":project}))
+        .await;
+    let full_docs = full["documents"].as_array().unwrap();
+    assert!(full_docs.iter().any(|d| d["id"] == visible["id"]));
+    assert!(!full_docs.iter().any(|d| d["id"] == hidden["id"]));
+}
+
+/// A hidden Document attached to the Issue itself is excluded from the compact brief slice
+/// exactly like a Project-attached one, and reappears in the full lead/reviewer view (which
+/// already includes archived material) with a truthful hidden flag rather than silently as
+/// current, matching the existing archived-Document behaviour in that same full view.
+#[tokio::test]
+async fn document_issue_context_links_respect_hidden_and_truthful_full_flags() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+
+    let hidden = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module,"title":"Hidden note","content":"body"}),
+        )
+        .await;
+    f.ok(
+        "save_document",
+        json!({"id":hidden["id"],"hidden":true,"expected_updated_at":hidden["updatedAt"]}),
+    )
+    .await;
+    let visible = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module,"title":"Visible note","content":"body"}),
+        )
+        .await;
+
+    let brief = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":module,"detail":"brief"}),
+        )
+        .await;
+    let brief_docs = brief["documents"].as_array().unwrap();
+    assert!(brief_docs.iter().any(|d| d["id"] == visible["id"]));
+    assert!(!brief_docs.iter().any(|d| d["id"] == hidden["id"]));
+
+    let lead = f
+        .ok(
+            "get_context",
+            json!({"type":"issue","id":module,"view":"lead"}),
+        )
+        .await;
+    let lead_docs = lead["agent_context"]["documents"].as_array().unwrap();
+    let visible_link = lead_docs.iter().find(|d| d["id"] == visible["id"]).unwrap();
+    assert_eq!(visible_link["hidden"], false);
+    let hidden_link = lead_docs.iter().find(|d| d["id"] == hidden["id"]).unwrap();
+    assert_eq!(hidden_link["hidden"], true);
+    assert_eq!(hidden_link["current"], false);
+}

@@ -28,7 +28,7 @@ query QProjectUpdate($id:String!) {projectUpdate(id:$id) {id url body health cre
 
 query QProjectUpdates($filter:ProjectUpdateFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {projectUpdates(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id url body health createdAt updatedAt archivedAt project {id} user {id name}} pageInfo {hasNextPage endCursor}}}
 
-query QDocuments($filter:DocumentFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {documents(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id title url archivedAt project {id} issue {id}} pageInfo { hasNextPage endCursor }}}
+query QDocuments($filter:DocumentFilter,$first:Int!,$after:String,$includeArchived:Boolean!) {documents(filter:$filter,first:$first,after:$after,includeArchived:$includeArchived) {nodes {id title url updatedAt archivedAt hiddenAt project {id} issue {id}} pageInfo { hasNextPage endCursor }}}
 
 query QComment($id:String!) {comment(id:$id) {id url body createdAt updatedAt resolvedAt resolvingCommentId parent {id} issue {id} project {id} projectUpdate {id} user {id name}}}
 
