@@ -3,7 +3,7 @@ use crate::{
     linear::Linear,
     model::{Fault, Meta, Result, Work, require},
 };
-use pulldown_cmark::{Event, Parser, Tag};
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -291,16 +291,42 @@ pub fn markdown_key(value: &str) -> String {
     serde_json::to_string(&parts).unwrap()
 }
 
+/// Byte ranges of inline code spans and fenced/indented code blocks in `text`, using the same
+/// CommonMark parser as the rest of this module. Literal code content inside these ranges is
+/// never pattern-matched as a link or bare autolink target; a URL or `[label](url)` shape found
+/// there is opaque text, not markup, regardless of what surrounds the code elsewhere.
+fn code_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut fence_start = None;
+    for (event, range) in Parser::new(text).into_offset_iter() {
+        match event {
+            Event::Code(_) => ranges.push(range),
+            Event::Start(Tag::CodeBlock(_)) => fence_start = Some(range.start),
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = fence_start.take() {
+                    ranges.push(start..range.end);
+                }
+            }
+            _ => {}
+        }
+    }
+    ranges
+}
+
+/// Report whether byte offset `pos` in the text `ranges` were computed from lies inside code.
+fn in_code(ranges: &[std::ops::Range<usize>], pos: usize) -> bool {
+    ranges.iter().any(|r| r.contains(&pos))
+}
+
 /// Compare requested Markdown with Linear's native rendering without losing intentional labels.
 /// A bare HTTP(S) URL may gain a native title even when closing prose punctuation follows it;
 /// a prose domain may become the same-label `http://` link at its original word boundary;
 /// an email address, angle-bracketed `<address>` or bare in prose, may become the
 /// same-label `mailto:` link.
-/// Different destinations or labels, code, extra prose and list boundaries still differ.
-/// The per-part walk below compares literally by default: a code span's own backtick is not
-/// introduced by native rendering, so it forces a mismatch at that position on either side.
-/// Lenient link matching therefore never crosses into or out of a code region, whether or not
-/// unrelated code appears elsewhere in the same document.
+/// Different destinations or labels, code, extra prose and list boundaries still differ: the
+/// per-part walk only ever applies this leniency outside a code span or block, on either side,
+/// so unrelated code elsewhere in the same document never blocks a real match and a literal
+/// code region is never silently treated as a link or vice versa.
 /// The comparison is directional and never rewrites either source.
 pub fn markdown_equivalent(expected: &str, actual: &str) -> bool {
     let expected_key = markdown_key(expected);
@@ -375,9 +401,16 @@ fn prose_boundary(rest: &str) -> bool {
 /// explicit labels, changed destinations and surrounding prose remain visible. Bare forms may
 /// end at any closing prose punctuation, exactly where Linear's autolinker closes a link.
 fn same_text_with_native_link_title(mut expected: &str, mut actual: &str) -> bool {
+    let expected_len = expected.len();
+    let actual_len = actual.len();
+    let expected_code = code_ranges(expected);
+    let actual_code = code_ranges(actual);
     let mut previous = None;
     while !expected.is_empty() && !actual.is_empty() {
-        if actual.starts_with('[')
+        let in_code = in_code(&expected_code, expected_len - expected.len())
+            || in_code(&actual_code, actual_len - actual.len());
+        if !in_code
+            && actual.starts_with('[')
             && let Some(middle) = actual.find("](")
             && !actual[1..middle].bytes().any(|b| b == b'[' || b == b']')
             && let Some(close) = link_end(actual, middle + 2)
@@ -441,6 +474,8 @@ fn markdown_text_key(source: &str) -> String {
         }
     }
     // Linear serializes bare URLs as Markdown links, including angle-bracket destinations.
+    // Ranges are recomputed each pass: an applied replacement shifts later byte offsets, and
+    // code content is never rewritten, so its positions never need to survive a shift anyway.
     let mut offset = 0;
     while let Some(middle) = text[offset..].find("](").map(|i| offset + i) {
         let Some(open) = text[..middle].rfind('[') else {
@@ -450,6 +485,11 @@ fn markdown_text_key(source: &str) -> String {
         let Some(close) = link_end(&text, middle + 2) else {
             break;
         };
+        let code = code_ranges(&text);
+        if in_code(&code, open) || in_code(&code, close) {
+            offset = close + 1;
+            continue;
+        }
         let label = &text[open + 1..middle];
         let destination = text[middle + 2..close]
             .trim()
