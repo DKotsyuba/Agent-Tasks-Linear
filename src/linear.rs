@@ -3,12 +3,19 @@
 use crate::model::{Fault, Result, require};
 use reqwest::{Client, Url, header};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 /// The official endpoint; the API credential is never sent to document URLs.
 pub const ENDPOINT: &str = "https://api.linear.app/graphql";
 /// Static reviewed operations; callers select one by its declared name.
 pub const OPERATIONS: &str = include_str!("graphql/operations.graphql");
+/// The only host ever sent the Authorization header for a file transfer.
+pub const ASSET_HOST: &str = "uploads.linear.app";
+/// Product cap shared by upload and download transport: one file, one request.
+pub const FILE_SIZE_CAP: u64 = 10_000_000;
+/// Wall-clock bound for one signed upload or authenticated download.
+const FILE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// An HTTP client with a protected authorization value and bounded responses.
 #[derive(Clone)]
@@ -19,6 +26,9 @@ pub struct Linear {
     endpoint: Url,
     /// Secret authentication header, absent until the user provides a token.
     authorization: Option<header::HeaderValue>,
+    /// Host allowed to receive the Authorization header for asset downloads;
+    /// only a loopback fixture may differ from [`ASSET_HOST`].
+    asset_host: String,
 }
 
 impl Linear {
@@ -27,9 +37,13 @@ impl Linear {
         Self::build(
             ENDPOINT,
             token.map(|t| if oauth { format!("Bearer {t}") } else { t }),
+            ASSET_HOST,
         )
     }
     /// Construct a mock client for an unauthenticated loopback HTTP fixture only.
+    ///
+    /// Asset transfers are also confined to this same loopback host, standing
+    /// in for the production `uploads.linear.app` asset host.
     pub fn mock(endpoint: &str) -> Result<Self> {
         let url = Url::parse(endpoint)
             .map_err(|_| Fault::new("CONFIG_INVALID", "Invalid fixture URL"))?;
@@ -39,10 +53,11 @@ impl Linear {
             "CONFIG_INVALID",
             "Fixtures must use loopback HTTP",
         )?;
-        Self::build(endpoint, Some("fixture".into()))
+        let asset_host = url.host_str().unwrap();
+        Self::build(endpoint, Some("fixture".into()), asset_host)
     }
     /// Validate the secret without logging it and construct a nonredirecting client.
-    fn build(endpoint: &str, token: Option<String>) -> Result<Self> {
+    fn build(endpoint: &str, token: Option<String>, asset_host: &str) -> Result<Self> {
         let authorization = token
             .map(|v| {
                 let mut header = header::HeaderValue::from_str(&v)
@@ -60,6 +75,7 @@ impl Linear {
             client,
             endpoint: Url::parse(endpoint).unwrap(),
             authorization,
+            asset_host: asset_host.into(),
         })
     }
     /// Whether a credential was configured; this does not prove validity or permissions.
@@ -272,5 +288,143 @@ impl Linear {
             "INCOMPLETE_DATA",
             "Attachment page budget exhausted",
         ))
+    }
+    /// Reserve a signed upload slot for one file, never a public asset.
+    pub async fn reserve_upload(
+        &self,
+        content_type: &str,
+        filename: &str,
+        size: u64,
+    ) -> Result<Value> {
+        require(
+            size > 0 && size <= FILE_SIZE_CAP,
+            "INVALID_INPUT",
+            format!("File size must be 1..={FILE_SIZE_CAP} bytes"),
+        )?;
+        let data = self
+            .call(
+                "MFileUpload",
+                json!({"contentType":content_type,"filename":filename,"size":size,"makePublic":false}),
+            )
+            .await?;
+        data["fileUpload"]["uploadFile"]
+            .as_object()
+            .cloned()
+            .map(Value::Object)
+            .ok_or_else(|| Fault::new("RECORD_MISSING", "Upload reservation is missing"))
+    }
+    /// Send local bytes to a reserved signed URL with Content-Type/Cache-Control defaults,
+    /// then overlay the reservation's returned headers so its explicit values take precedence.
+    ///
+    /// Never attaches the API Authorization header: the signed URL carries its
+    /// own short-lived credential, which must not receive our long-lived token.
+    pub async fn put_upload(&self, upload_file: &Value, bytes: Vec<u8>) -> Result<()> {
+        let url = upload_file["uploadUrl"].as_str().ok_or_else(|| {
+            Fault::new(
+                "RECORD_MISSING",
+                "Upload reservation is missing its signed URL",
+            )
+        })?;
+        // Linear's own upload guide sets these two headers before layering the
+        // reservation's returned headers on top; an omitted returned header must
+        // not leave the signed PUT without the Content-Type/Cache-Control the
+        // signature was computed against.
+        let mut headers = header::HeaderMap::new();
+        if let Some(content_type) = upload_file["contentType"]
+            .as_str()
+            .and_then(|v| header::HeaderValue::from_str(v).ok())
+        {
+            headers.insert(header::CONTENT_TYPE, content_type);
+        }
+        headers.insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("public, max-age=31536000"),
+        );
+        for entry in upload_file["headers"].as_array().into_iter().flatten() {
+            if let (Some(key), Some(value)) = (entry["key"].as_str(), entry["value"].as_str())
+                && let (Ok(name), Ok(value)) = (
+                    header::HeaderName::from_bytes(key.as_bytes()),
+                    header::HeaderValue::from_str(value),
+                )
+            {
+                headers.insert(name, value);
+            }
+        }
+        let response = self
+            .client
+            .put(url)
+            .timeout(FILE_TIMEOUT)
+            .headers(headers)
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|_| {
+                Fault::new("LINEAR_UNAVAILABLE", "Signed upload was not received").uncertain()
+            })?;
+        require(
+            response.status().is_success(),
+            "LINEAR_PARTIAL_ERROR",
+            format!(
+                "Signed upload rejected the file (HTTP {})",
+                response.status().as_u16()
+            ),
+        )
+    }
+    /// Stream one canonical asset with the existing Authorization header, bounded to the product cap.
+    ///
+    /// Refuses any host but the configured asset host so the credential is
+    /// never sent to an attacker-controlled URL. Returns the bytes and their
+    /// lowercase hex SHA-256 digest, computed while streaming.
+    pub async fn get_asset(&self, asset_url: &str) -> Result<(Vec<u8>, String)> {
+        let url = Url::parse(asset_url)
+            .map_err(|_| Fault::new("INVALID_INPUT", "Malformed asset URL"))?;
+        require(
+            url.scheme() == "https" || self.asset_host != ASSET_HOST,
+            "INVALID_INPUT",
+            "Asset URL must use https",
+        )?;
+        require(
+            url.host_str() == Some(self.asset_host.as_str()),
+            "INVALID_INPUT",
+            format!("Asset URL must be hosted on {}", self.asset_host),
+        )?;
+        let auth = self.authorization.as_ref().ok_or_else(|| {
+            Fault::new(
+                "LINEAR_TOKEN_MISSING",
+                "Set LINEAR_API_KEY or LINEAR_OAUTH_TOKEN before accessing Linear",
+            )
+        })?;
+        let mut response = self
+            .client
+            .get(url)
+            .header(header::AUTHORIZATION, auth.clone())
+            .timeout(FILE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|_| Fault::new("LINEAR_UNAVAILABLE", "Asset download was not received"))?;
+        require(
+            response.status().is_success(),
+            "LINEAR_UNAVAILABLE",
+            format!(
+                "Asset download failed (HTTP {})",
+                response.status().as_u16()
+            ),
+        )?;
+        let mut bytes = Vec::new();
+        let mut digest = Sha256::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| Fault::new("LINEAR_UNAVAILABLE", "Incomplete asset download"))?
+        {
+            require(
+                bytes.len() as u64 + chunk.len() as u64 <= FILE_SIZE_CAP,
+                "INCOMPLETE_DATA",
+                format!("Asset exceeds the {FILE_SIZE_CAP}-byte product cap"),
+            )?;
+            digest.update(&chunk);
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok((bytes, format!("{:x}", digest.finalize())))
     }
 }

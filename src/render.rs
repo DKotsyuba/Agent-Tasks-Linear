@@ -37,7 +37,7 @@ fn environment() -> Option<&'static Environment<'static>> {
         .as_ref()
 }
 
-/// Map all 22 public tools to the template that owns their result layout.
+/// Map all 25 public tools to the template that owns their result layout.
 fn template_for(tool: &str) -> Option<&'static str> {
     Some(match tool {
         "create_project"
@@ -51,6 +51,8 @@ fn template_for(tool: &str) -> Option<&'static str> {
         | "create_atomic"
         | "edit_atomic"
         | "save_document"
+        | "upload_file"
+        | "get_file"
         | "move_status"
         | "record_review"
         | "record_commits"
@@ -59,7 +61,7 @@ fn template_for(tool: &str) -> Option<&'static str> {
         | "save_project_update" => "ack",
         "get_context" => "context",
         "get_overview" => "overview",
-        "list_items" | "search" => "list",
+        "list_items" | "search" | "list_files" => "list",
         "get_comment" => "comment",
         _ => return None,
     })
@@ -76,7 +78,7 @@ pub fn render_outcome(tool: &str, request: &Value, outcome: &Outcome) -> String 
         let projection = match tool {
             "get_context" => context_projection(request, &outcome.data),
             "get_overview" => overview_projection(&outcome.data),
-            "list_items" | "search" => list_projection(tool, request, &outcome.data),
+            "list_items" | "search" | "list_files" => list_projection(tool, request, &outcome.data),
             "get_comment" => comment_projection(&outcome.data),
             _ => ack_projection(tool, request, &outcome.data),
         };
@@ -115,7 +117,9 @@ fn valid_success_shape(tool: &str, request: &Value, data: &Value) -> bool {
             }
         },
         "get_overview" => data["project_id"].is_string() && data["cursor"].is_string(),
-        "list_items" | "search" => data["nodes"].is_array() && data["pageInfo"].is_object(),
+        "list_items" | "search" | "list_files" => {
+            data["nodes"].is_array() && data["pageInfo"].is_object()
+        }
         "get_comment" => {
             data["comment"]["id"].is_string()
                 && data["activity"].is_object()
@@ -182,6 +186,7 @@ fn fallback_kind(tool: &str) -> &'static str {
     match tool {
         "create_project" | "edit_project" | "get_overview" => "project",
         "save_document" => "document",
+        "upload_file" | "get_file" | "list_files" => "file",
         "get_comment" | "resolve_comment" => "comment",
         "save_project_update" => "project_update",
         "add_comment" => "",
@@ -204,7 +209,7 @@ fn identity(item: &Value) -> Value {
 
 /// Select mutation confirmation data without mirroring the submitted body.
 fn ack_projection(tool: &str, request: &Value, data: &Value) -> Value {
-    let native = if tool == "save_document" {
+    let native = if matches!(tool, "save_document" | "upload_file" | "get_file") {
         data
     } else {
         ["issue", "project", "project_update", "comment", "review"]
@@ -433,12 +438,13 @@ mod tests {
     #[test]
     fn every_catalog_tool_has_a_template_and_realistic_shape() {
         let catalog = crate::catalog::Catalog::new().unwrap();
-        assert_eq!(catalog.tools.len(), 22);
+        assert_eq!(catalog.tools.len(), 25);
         for tool in catalog.tools {
             let name = tool["name"].as_str().unwrap();
             assert!(template_for(name).is_some(), "{name}");
             let request = json!({"request_id":"req-1","type":"issue"});
             let native = json!({"id":"issue-1","identifier":"MYT-1","title":"A task","url":"https://linear.app/example/issue/MYT-1/a-task","state":{"name":"In Progress"}});
+            let file = json!({"id":"attachment-1","title":"Report","url":"https://uploads.linear.app/attachment-1","work_id":"issue-1","work_url":"https://linear.app/example/issue/MYT-1/a-task","file_name":"report.pdf","content_type":"application/pdf","size_bytes":1024,"replayed":false});
             let data = match name {
                 "get_context" => {
                     json!({"issue":native,"fields":{},"transitions":[{"status":"Done","allowed":false,"conditions":["Checks required"]}]})
@@ -448,6 +454,9 @@ mod tests {
                 }
                 "list_items" | "search" => {
                     json!({"nodes":[native],"pageInfo":{"hasNextPage":true,"endCursor":"opaque-1"}})
+                }
+                "list_files" => {
+                    json!({"nodes":[file],"pageInfo":{"hasNextPage":false,"endCursor":null}})
                 }
                 "get_comment" => {
                     json!({"comment":{"id":"comment-1","url":"https://linear.app/comment-1"},"activity":{"kind":"note","body":"Exact comment body"},"replies":{"nodes":[],"pageInfo":{"hasNextPage":false}}})
@@ -461,6 +470,7 @@ mod tests {
                 "save_document" => {
                     json!({"id":"document-1","title":"Plan","url":"https://linear.app/document-1","content":"Do not echo this submitted body"})
                 }
+                "upload_file" | "get_file" => file.clone(),
                 "record_review" => {
                     json!({"review":{"id":"review-1"},"url":"https://linear.app/review-1"})
                 }
