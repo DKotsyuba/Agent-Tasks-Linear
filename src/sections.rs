@@ -15,14 +15,18 @@ pub fn document_is_current(document: &Value) -> bool {
     is_current(&document["archivedAt"], &document["hiddenAt"])
 }
 
-/// One Document link with native ownership visibility: id/title/url plus updated_at, archived,
-/// hidden and the derived current flag, the same currentness signal every document-listing
-/// route (list, search and current-context links) agrees on.
+/// One Document link with native ownership visibility: id/title/url, whatever `project`/`issue`
+/// parent the caller already fetched (passed through verbatim, native `null` when the Document
+/// has no such parent; never a fresh lookup), plus updated_at, archived, hidden and the derived
+/// current flag, the same currentness signal every document-listing route (list, search and
+/// current-context links) agrees on.
 pub fn document_link(document: &Value) -> Value {
     json!({
         "id": document["id"],
         "title": document["title"],
         "url": document["url"],
+        "project": document["project"],
+        "issue": document["issue"],
         "updated_at": document["updatedAt"],
         "archived": !document["archivedAt"].is_null(),
         "hidden": !document["hiddenAt"].is_null(),
@@ -34,7 +38,10 @@ pub fn document_link(document: &Value) -> Value {
 /// Headings inside fenced/indented code blocks are never produced here, because the
 /// CommonMark parser reads that text as a code block, not as a heading.
 struct Heading {
+    /// ATX/setext heading level, 1 through 6.
     level: u8,
+    /// Rendered heading text: inline code and soft/hard breaks are folded into plain characters
+    /// and a single space respectively, then the whole line is trimmed.
     text: String,
     /// Byte offset where the heading itself starts (its line, for setext its text line).
     start: usize,
@@ -46,12 +53,20 @@ struct Heading {
 /// plus the exact body bytes between that heading and the next same-or-higher heading.
 #[derive(Debug)]
 pub struct Section<'a> {
+    /// The matched heading's own rendered text, trimmed.
     pub heading: String,
+    /// 1-based position of the matched heading among every heading in the document.
     pub index: usize,
+    /// Total number of headings in the document, for navigation alongside `index`.
     pub count: usize,
+    /// Exact body bytes between the heading's own line and the next same-or-higher heading (or
+    /// the end of the document), excluding the heading line itself.
     pub body: &'a str,
 }
 
+/// Collect every heading in `content`, in document order, using the same CommonMark parser as
+/// the rest of this module. A heading inside a fenced/indented code block never appears here,
+/// because the parser reads that text as code, not as a heading.
 fn headings(content: &str) -> Vec<Heading> {
     let mut out = Vec::new();
     let mut open: Option<(u8, usize, String)> = None;
@@ -245,6 +260,21 @@ mod tests {
     fn rejects_missing_heading() {
         let err = find_section("## Only\n\nbody\n", "Absent").unwrap_err();
         assert_eq!(err.code, "SECTION_NOT_FOUND");
+    }
+
+    #[test]
+    fn headings_collects_level_and_rendered_text_in_document_order() {
+        // A setext heading's text may itself span multiple lines: the soft break between them
+        // folds into a single space, exercising that path alongside an ATX heading with an
+        // inline code span.
+        let doc = "Soft\nbreak heading\n===\n\n## `Code` heading\n\nBody.\n";
+        let items = headings(doc);
+        let levels_and_text: Vec<(u8, &str)> =
+            items.iter().map(|h| (h.level, h.text.as_str())).collect();
+        assert_eq!(
+            levels_and_text,
+            vec![(1, "Soft break heading"), (2, "Code heading")]
+        );
     }
 
     #[test]

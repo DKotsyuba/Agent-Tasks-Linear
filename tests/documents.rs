@@ -428,11 +428,14 @@ async fn document_search_snippet_survives_lowercase_byte_length_changes() {
 /// coincidence) is excluded by default and reappears, truthfully flagged, once include_archived
 /// is set. Native `includeArchived` alone never covers hidden. A fresh Project already seeds its
 /// own standard documents (for example a Runbook), so this checks the two new documents by id
-/// rather than assuming an exact total count.
+/// rather than assuming an exact total count. Rows must keep their native Project/Issue
+/// ownership: the shared row shape passes through whatever parent was already fetched rather
+/// than dropping it.
 #[tokio::test]
 async fn document_list_excludes_hidden_by_default() {
     let f = Fixture::new().await;
     let project = f.project().await;
+    let module = f.work("module", &project, None).await;
 
     let hidden = f
         .ok(
@@ -451,6 +454,12 @@ async fn document_list_excludes_hidden_by_default() {
             json!({"project_id":project,"title":"Visible doc","content":"body"}),
         )
         .await;
+    let issue_attached = f
+        .ok(
+            "save_document",
+            json!({"issue_id":module,"title":"Issue-attached doc","content":"body"}),
+        )
+        .await;
 
     let default_list = f
         .ok(
@@ -462,6 +471,7 @@ async fn document_list_excludes_hidden_by_default() {
     let visible_row = nodes.iter().find(|n| n["id"] == visible["id"]).unwrap();
     assert_eq!(visible_row["hidden"], false);
     assert_eq!(visible_row["current"], true);
+    assert_eq!(visible_row["project"]["id"], project);
     assert!(!nodes.iter().any(|n| n["id"] == hidden["id"]));
     assert_eq!(
         default_list["native_page_size"].as_u64().unwrap(),
@@ -479,6 +489,17 @@ async fn document_list_excludes_hidden_by_default() {
     let hidden_row = all_nodes.iter().find(|n| n["id"] == hidden["id"]).unwrap();
     assert_eq!(hidden_row["hidden"], true);
     assert_eq!(hidden_row["current"], false);
+    assert_eq!(hidden_row["project"]["id"], project);
+
+    // Unscoped, an Issue-attached Document's own Issue ownership is likewise preserved.
+    let unscoped_list = f.ok("list_items", json!({"type":"document"})).await;
+    let unscoped_nodes = unscoped_list["nodes"].as_array().unwrap();
+    let issue_row = unscoped_nodes
+        .iter()
+        .find(|n| n["id"] == issue_attached["id"])
+        .unwrap();
+    assert_eq!(issue_row["issue"]["id"], module);
+    assert!(issue_row["project"].is_null());
 }
 
 /// get_context(type=project) document links, both brief and full, exclude a hidden Document by
