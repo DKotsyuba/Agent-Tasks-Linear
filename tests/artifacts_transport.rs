@@ -151,6 +151,50 @@ async fn put_upload_sends_declared_headers_and_body_without_authorization() {
 }
 
 #[tokio::test]
+async fn put_upload_sets_default_content_type_and_cache_control_when_headers_omit_them() {
+    let (linear, base, state, task) = fixture().await;
+    let upload_file = json!({
+        "uploadUrl": format!("{base}/upload/defaults.bin"),
+        "contentType": "application/pdf",
+        "headers": [],
+    });
+    linear
+        .put_upload(&upload_file, b"hello".to_vec())
+        .await
+        .unwrap();
+    let recorded = state.lock().await;
+    assert_eq!(
+        recorded.recorded.headers.get("content-type").unwrap(),
+        "application/pdf"
+    );
+    assert_eq!(
+        recorded.recorded.headers.get("cache-control").unwrap(),
+        "public, max-age=31536000"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn put_upload_lets_a_returned_header_override_the_default() {
+    let (linear, base, state, task) = fixture().await;
+    let upload_file = json!({
+        "uploadUrl": format!("{base}/upload/override.bin"),
+        "contentType": "application/pdf",
+        "headers": [{"key":"Content-Type","value":"application/x-custom"}],
+    });
+    linear
+        .put_upload(&upload_file, b"hello".to_vec())
+        .await
+        .unwrap();
+    let recorded = state.lock().await;
+    assert_eq!(
+        recorded.recorded.headers.get("content-type").unwrap(),
+        "application/x-custom"
+    );
+    task.abort();
+}
+
+#[tokio::test]
 async fn put_upload_reports_a_clean_rejection_as_not_uncertain() {
     let (linear, base, _state, task) = fixture().await;
     let upload_file = json!({
