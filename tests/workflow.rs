@@ -521,6 +521,10 @@ fn markdown_list_markers_preserve_content() {
             "- Outer\n  + Inner\n    continuation",
             "* Outer\n  * Inner\n    continuation",
         ),
+        // Ordered markers: delimiter (`)` vs `.`), renumbering and loose-vs-tight spacing are
+        // all presentational, exactly like bullet markers already are.
+        ("1) One\n\n2) Two", "1. One\n2. Two"),
+        ("1. One\n2. Two", "5) One\n7) Two"),
     ] {
         assert_eq!(markdown_key(before), markdown_key(after));
     }
@@ -544,6 +548,11 @@ fn markdown_list_markers_preserve_content() {
         ("`a+b`", "`a-b`"),
         ("\\+ item", "+ item"),
         ("- item", "\\+ item"),
+        // A real content change inside an ordered item, a literal "1)" in code, and an escaped
+        // (non-list) ordered marker must all still compare as genuinely different.
+        ("1) One\n2) Two", "1) One\n2) Three"),
+        ("`1) not a list`", "`2) not a list`"),
+        ("1\\) not a list", "1) a list"),
     ] {
         assert_ne!(markdown_key(before), markdown_key(after), "{before}");
     }
@@ -880,6 +889,41 @@ fn markdown_possessive_apostrophe_ends_a_bare_domain_or_email() {
     let bare_email = format!("Contact {email}'s team for access.");
     let native_email = bare_email.replace(email, &format!("[{email}](<mailto:{email}>)"));
     assert!(markdown_equivalent(&bare_email, &native_email));
+}
+
+/// Reproduces a real qualification-report mismatch: a loose ordered list using `)` delimiters,
+/// combined with a bare Document URL elsewhere in the same list item, both normalized by native
+/// rendering at once (`)` to `.`, loose to tight, and the bare URL gaining its Document's own
+/// title). A real text change inside one item, or a changed URL destination, must still differ.
+#[test]
+fn markdown_ordered_list_and_document_link_normalize_together() {
+    use agent_tasks_linear::records::markdown_equivalent;
+
+    let url = "https://linear.app/example/document/qualification-notes";
+    let expected = format!(
+        "Summary line.\n\n\
+         1) First item text.\n\n\
+         2) Second item references ({url}) the report.\n\n\
+         3) Third item text."
+    );
+    let native = format!(
+        "Summary line.\n\
+         1. First item text.\n\
+         2. Second item references ([Qualification notes]({url})) the report.\n\
+         3. Third item text."
+    );
+    assert!(markdown_equivalent(&expected, &native));
+
+    // A real change inside one item still differs.
+    assert!(!markdown_equivalent(
+        &expected,
+        &native.replace("Third item text.", "Third item text, revised.")
+    ));
+    // A changed Document URL destination still differs.
+    assert!(!markdown_equivalent(
+        &expected,
+        &native.replace("qualification-notes", "qualification-notes-different")
+    ));
 }
 
 /// A pending commit import accepts Linear's mailto autolink for a co-author footer while the

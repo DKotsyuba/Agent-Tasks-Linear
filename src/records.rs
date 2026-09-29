@@ -249,11 +249,28 @@ impl Store {
     }
 }
 
-/// Return a comparison key across Linear's whitespace, punctuation escapes, links and unordered list markers.
-/// Parser-recognized `-`/`*` list boundaries are encoded separately from normalized text,
-/// so escaped literal markers and markers in code cannot collide with list syntax.
-/// Unparsed backticks disable list folding conservatively. Text, destinations, headings and unknown
-/// sections remain significant; the serialized key is comparison-only and performs no writes.
+/// Byte length of the list marker (bullet or ordered) starting at `bytes`, or `None` if it does
+/// not start with one: `-`/`*`/`+` is one byte; an ordered marker is one or more ASCII digits
+/// followed by `.` or `)`, Linear's two supported ordered delimiters, consumed together since a
+/// native reply may renumber or change the delimiter without changing the item's own content.
+fn list_marker_len(bytes: &[u8]) -> Option<usize> {
+    if matches!(bytes.first(), Some(b'-' | b'*' | b'+')) {
+        return Some(1);
+    }
+    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits > 0 && matches!(bytes.get(digits), Some(b'.' | b')')) {
+        Some(digits + 1)
+    } else {
+        None
+    }
+}
+
+/// Return a comparison key across Linear's whitespace, punctuation escapes, links and bullet or
+/// ordered list markers. Parser-recognized list-item boundaries are encoded separately from
+/// normalized text, so escaped literal markers and markers in code cannot collide with list
+/// syntax. Unparsed backticks disable list folding conservatively. Text, destinations, headings
+/// and unknown sections remain significant; the serialized key is comparison-only and performs
+/// no writes.
 pub fn markdown_key(value: &str) -> String {
     // Native Linear links gain the target's title. In typed URL sections only,
     // the destination is the field value; preserve labels in all ordinary prose.
@@ -280,10 +297,10 @@ pub fn markdown_key(value: &str) -> String {
     if !ambiguous {
         for (event, range) in events {
             if matches!(event, Event::Start(Tag::Item))
-                && matches!(source.as_bytes().get(range.start), Some(b'-' | b'*' | b'+'))
+                && let Some(marker_len) = list_marker_len(&source.as_bytes()[range.start..])
             {
                 parts.push(markdown_text_key(&source[start..range.start]));
-                start = range.start + 1;
+                start = range.start + marker_len;
             }
         }
     }
