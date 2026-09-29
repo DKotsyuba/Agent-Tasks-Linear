@@ -926,6 +926,37 @@ fn markdown_ordered_list_and_document_link_normalize_together() {
     ));
 }
 
+/// An explicit link's destination may gain or lose its optional `<...>` wrapper for any scheme,
+/// not only http(s): the same presentational CommonMark syntax, never a destination change.
+/// A changed label or a genuinely different destination value still differs.
+#[test]
+fn markdown_explicit_link_tolerates_angle_bracket_destination_wrapping() {
+    use agent_tasks_linear::records::markdown_equivalent;
+
+    // A relative destination gaining angle brackets, the reported qualification case.
+    let expected = "See details: [title](notes.md) for more.";
+    let native = "See details: [title](<notes.md>) for more.";
+    assert!(markdown_equivalent(expected, native));
+    // Losing the wrapper the other way is the same equivalence.
+    assert!(markdown_equivalent(native, expected));
+
+    // A real label change still differs.
+    assert!(!markdown_equivalent(
+        expected,
+        &native.replace("title", "renamed")
+    ));
+    // A real destination change still differs, wrapper or not.
+    assert!(!markdown_equivalent(
+        expected,
+        &native.replace("notes.md", "other.md")
+    ));
+
+    // A mailto destination gaining the same wrapper.
+    let mail_expected = "Contact [support](mailto:team@example.test) for help.";
+    let mail_native = "Contact [support](<mailto:team@example.test>) for help.";
+    assert!(markdown_equivalent(mail_expected, mail_native));
+}
+
 /// A pending commit import accepts Linear's mailto autolink for a co-author footer while the
 /// exact retry finalizes without conflicts or drift.
 #[tokio::test]

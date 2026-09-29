@@ -510,9 +510,11 @@ fn markdown_text_key(source: &str) -> String {
             text.push(c);
         }
     }
-    // Linear serializes bare URLs as Markdown links, including angle-bracket destinations.
-    // Ranges are recomputed each pass since an applied replacement shifts later byte offsets;
-    // code content is never rewritten here, so its own positions never need to survive a shift.
+    // An explicit link's destination may or may not be wrapped in `<...>`; that wrapper is
+    // purely presentational CommonMark syntax for the same destination, for any scheme
+    // (relative, mailto, http(s) or otherwise), so it is stripped here unconditionally. Ranges
+    // are recomputed each pass since an applied replacement shifts later byte offsets; code
+    // content is never rewritten here, so its own positions never need to survive a shift.
     let mut offset = 0;
     while let Some(middle) = text[offset..].find("](").map(|i| offset + i) {
         let Some(open) = text[..middle].rfind('[') else {
@@ -532,17 +534,13 @@ fn markdown_text_key(source: &str) -> String {
             .trim()
             .trim_start_matches('<')
             .trim_end_matches('>');
-        if destination.starts_with("https://") || destination.starts_with("http://") {
-            let replacement = if label == destination {
-                destination.to_owned()
-            } else {
-                format!("[{label}]({destination})")
-            };
-            text.replace_range(open..=close, &replacement);
-            offset = open + replacement.len();
+        let replacement = if label == destination {
+            destination.to_owned()
         } else {
-            offset = close + 1;
-        }
+            format!("[{label}]({destination})")
+        };
+        text.replace_range(open..=close, &replacement);
+        offset = open + replacement.len();
     }
     // Fold whitespace and drop blank lines, but keep any line touching code exactly as written:
     // trimming or dropping it could erase indentation that is the block's own boundary, or an
