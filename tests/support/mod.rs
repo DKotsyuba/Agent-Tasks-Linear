@@ -307,8 +307,13 @@ async fn graphql(
                                 || issues
                                     .is_some_and(|ids| ids.iter().any(|id| i["issue"]["id"] == *id))
                         };
+                        // An absent or empty filter is unrestricted, matching native semantics.
                         clauses.map_or_else(
-                            || filter.is_null() || matches(filter),
+                            || {
+                                filter.is_null()
+                                    || filter.as_object().is_some_and(|m| m.is_empty())
+                                    || matches(filter)
+                            },
                             |items| items.iter().any(matches),
                         )
                     })
