@@ -184,6 +184,10 @@ returned, including zero, while `pageInfo.hasNextPage` still promises more to
 check; that filtered-page state is reported explicitly, never presented as an
 exhausted, empty search.
 
+Search uses Linear's native ranking and indexing; it does not guarantee
+exhaustive substring retrieval or immediate discovery of a newly written
+opaque token. Use a known Document URL with `get_context` for exact retrieval.
+
 File operations are three focused tools: `upload_file` reads one local file
 (host-side absolute path, bounded to 10,000,000 bytes), reserves a
 deterministic native attachment ID per issue/request, and compares replay

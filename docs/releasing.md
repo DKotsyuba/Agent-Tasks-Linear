@@ -68,6 +68,24 @@ the owner from the real host, and only that record justifies flipping
 `qualified_targets`/`qualified_hosts`, `qualification` and `release.enabled`
 in a reviewed commit.
 
+### 0.5.0 qualification scope
+
+The local candidate from `88e4348000540c0e9ec2b1e0cbb33474b205848a`
+(SHA-256 `1f89a9e84197300df061a2c0925e73ecf0852df321b3b5351bbc94b49e15611a`)
+was exercised on macOS 27.0 build 26A428, arm64, through Claude Code 2.1.280
+on 2026-09-29. Native MCP document creation, guarded section replacement
+with preserved sibling content, identical-request replay, and UTF-8/binary
+attachment upload/download passed. Both downloaded fixtures were compared
+byte-for-byte. A disposable installed launcher passed local doctor with 25
+tools under a changed child HOME and an explicit configuration argument.
+The source also passed [CI](https://github.com/DKotsyuba/Agent-Tasks-Linear/actions/runs/36598775453).
+
+Qualification covers that target and host only. Native Linear search returned
+title/content/semantic matches, but an opaque hyphenated body marker was not
+found; it is not an exhaustive substring index. These local candidate checks
+do not replace step 6's qualification of the exact CI-produced release bytes.
+No publication or production installation is implied by these declarations.
+
 ## Installation and legacy adoption (owner-operated)
 
 ```sh
