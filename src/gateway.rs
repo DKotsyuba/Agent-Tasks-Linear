@@ -1,4 +1,5 @@
 //! Explicit workflow operations over native Linear entities and local Git source snapshots.
+mod artifacts;
 mod documents;
 use crate::{
     catalog::Catalog,
@@ -110,6 +111,9 @@ impl Gateway {
             "list_items" => self.list(&args, false).await,
             "search" => self.list(&args, true).await,
             "save_document" => self.document(&args).await,
+            "upload_file" => self.upload_file(&args).await,
+            "list_files" => self.list_files(&args).await,
+            "get_file" => self.get_file(&args).await,
             "move_status" => self.move_status(&args).await,
             "record_review" => self.review(&args).await,
             "record_commits" => self.record_commits(&args).await,
