@@ -709,7 +709,7 @@ mod tests {
 
     /// A Document rebound to (or already owned by) an Issue keeps that Issue visible — as an
     /// ID and a get_context route — in its save_document ACK and in a full or section
-    /// get_context read; QDocument already selects `issue {id}`, so this is presentation only,
+    /// get_context read and a document search result; existing data already selects `issue {id}`, so this is presentation only,
     /// no extra API call. A Project-attached Document is unaffected (no Issue ID line).
     #[test]
     fn document_shows_its_owning_issue_in_ack_and_full_and_section_reads() {
@@ -743,6 +743,16 @@ mod tests {
                 "Issue context: get_context type=issue id=9b3d0592-c385-48ee-97da-15a46ff1f2ec"
             ),
             "{full}"
+        );
+
+        let found = render_outcome(
+            "search",
+            &json!({"type":"document"}),
+            &Outcome::ok(json!({"nodes":[issue_doc.clone()],"pageInfo":{"hasNextPage":false}})),
+        );
+        assert!(
+            found.contains("Issue ID: 9b3d0592-c385-48ee-97da-15a46ff1f2ec"),
+            "{found}"
         );
 
         let mut section_doc = issue_doc;
