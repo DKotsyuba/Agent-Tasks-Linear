@@ -2040,6 +2040,11 @@ impl Gateway {
         } else {
             reference
         };
+        require(
+            a["section"].is_null() || kind == "document",
+            "INVALID_INPUT",
+            "section is only valid with type=document",
+        )?;
         match kind {
             "project" => {
                 let p = self.project(id).await?;
@@ -2070,7 +2075,26 @@ impl Gateway {
                     .await?;
                 Ok(json!({"project":p,"documents":docs}))
             }
-            "document" => self.store.linear.object("QDocument", "document", id).await,
+            "document" => {
+                let document = self
+                    .store
+                    .linear
+                    .object("QDocument", "document", id)
+                    .await?;
+                let Some(heading) = a["section"].as_str() else {
+                    return Ok(document);
+                };
+                let content = document["content"].as_str().unwrap_or("");
+                let section = crate::sections::find_section(content, heading)?;
+                let mut selected = document.clone();
+                selected["content"] = json!(section.body);
+                selected["section"] = json!({
+                    "heading": section.heading,
+                    "index": section.index,
+                    "count": section.count,
+                });
+                Ok(selected)
+            }
             "project_update" => {
                 let update = self
                     .store
