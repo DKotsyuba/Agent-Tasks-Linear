@@ -120,6 +120,63 @@ Start requires participating Modules Done with merge reports. The Atomic stores 
 
 A changed or reopened Module invalidates earlier integration. Repeat the Atomic explicitly by returning it to In Progress, running its scenarios again and submitting new results/review. A stale integration already In Progress can explicitly restart in that same status with a fresh round. Participating Modules must remain free of native discrepancies through integration review and closure. Epics with multiple delivered Modules require current successful integration coverage before final review.
 
+## Provider module seams
+
+`Gateway` grows through small child modules under `src/gateway/`, not through
+unbounded growth of `gateway.rs` itself. A child module declares its own
+`impl Gateway { pub(super) async fn ... }` blocks; ordinary Rust module-tree
+visibility already lets it call `gateway.rs`'s private helpers (`resolve`,
+`project`, `store`, `with_guidance`, …) without those helpers becoming public.
+`gateway.rs` only adds the one-line `mod <name>;` declaration and, where a new
+public tool needs it, one arm in `dispatch()`. `src/gateway/documents.rs`
+holds the `save_document` handler; a corresponding `src/gateway/artifacts.rs`
+is reserved for file operations, declared and wired up when that handler is
+implemented.
+
+The generated tool surface (`schemas/tools.json`, `schemas/examples.json`,
+`src/render.rs` templates, `assets/mcp/*.txt.j2`) has exactly one owner and
+one generator (`scripts/catalog.mjs`, run with no network access and no other
+side effect). Provider changes land as Rust handler code inside their own
+child module and, where they touch shared dispatch, GraphQL operation text or
+test fixtures, as explicitly scoped edits named in the accepted contract —
+never as hand edits to the generated schema files themselves.
+
+## Agreed document and file provider contract
+
+These shapes are agreed and not yet implemented; they describe the target
+contract for the `gateway::documents` and `gateway::artifacts` handlers, not
+current behavior. `save_document`/`get_context(type: document)` keep the
+existing metadata (`id, title, url, content, updatedAt, archivedAt, hiddenAt,
+project, issue`) and existing create semantics (`request_id` as native ID,
+exactly one Project or Issue parent). An edit that changes content, title,
+visibility or parent requires `expected_updated_at`, taken from a fresh read;
+a missing precondition is a distinct `PRECONDITION_REQUIRED` fault, not a
+silent write. `content` without `section` replaces the whole body. `section`
+is a unique heading text (not a regex), valid only together with `id`, and
+`save_document(id, section, content)` replaces only that section's body,
+keeping its heading and every byte outside its range; a missing or ambiguous
+heading fails before any write. `hidden: bool` maps to native `hiddenAt`
+(now/null) and only writes when the state actually changes. A proposed state
+already equal to native state confirms `replayed: true` with no write, even
+after a restart; otherwise the current `updatedAt` is compared to
+`expected_updated_at` before writing once. A document is current iff both
+`archivedAt` and `hiddenAt` are null; `search`/`list_items(type: document)`
+accept `project_id` and `include_archived`, and each result row carries
+title, url, owning Project/Issue, updated time, currentness and a short
+honestly-sourced snippet, never a fabricated match.
+
+File operations are three focused tools: `upload_file` reads one local file
+(host-side absolute path, bounded to 10,000,000 bytes), reserves a
+deterministic native attachment ID per issue/request, and compares replay
+intent (not only a content digest) before treating a retry as identical.
+`list_files` returns only user artifacts for one work item, excluding
+internal workflow attachments. `get_file` resolves and validates artifact
+ownership/type, downloads through the canonical authenticated asset URL,
+writes through a sibling temporary file, and never silently overwrites a
+different existing file at the same destination (`FILE_EXISTS` on conflict,
+`replayed: true` only for byte-identical content). None of these three tools
+returns binary content, a signed URL or a secret in its text response.
+
 ## Manual changes and failures
 
 Every guarded operation reads fresh Linear state. Status, parent/project, type-label, completion and frozen-membership inconsistencies are reported and block forward progress. Reads do not fix state. Restore structural changes explicitly in Linear; use the documented reopen/edit paths for state/content repair.
