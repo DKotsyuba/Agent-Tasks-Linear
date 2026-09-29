@@ -1,4 +1,4 @@
-# Agent-Tasks-Linear
+# agent-tasks
 
 Rust MCP for an explicit agent workflow using native Linear Projects, Issues and Documents. Work has readable names, requirements, results and artifact links. Agents execute outside this service.
 
@@ -26,7 +26,7 @@ Twenty-five tools. Issue titles use one leading `[EPIC]`, `[MODULE]`, `[TASK]` o
 
 ## Role skills
 
-Two concise role skills ship as committed repository files: `skills/agent-tasks-linear-orchestrator/` for whoever coordinates the project, and `skills/agent-tasks-linear-module-lead/` for each persistent module lead. Install them through your agent's supported skill mechanism by referencing or copying those committed directories into its skills location; no plugin or framework is added. Each skill describes its role cycle only and points to the discovery mini-docs for exact call shapes.
+Two concise role skills ship as committed repository files: `skills/agent-tasks-orchestrator/` for whoever coordinates the project, and `skills/agent-tasks-module-lead/` for each persistent module lead. Install them through your agent's supported skill mechanism by referencing or copying those committed directories into its skills location; no plugin or framework is added. Each skill describes its role cycle only and points to the discovery mini-docs for exact call shapes.
 
 MCP tool calls return one concise plain-text block rendered from embedded MiniJinja templates. The agent-facing response has no duplicate `structuredContent`; `isError` reflects the operation outcome. Internal Gateway outcomes and input schemas remain structured. See [the output contract](docs/architecture.md#mcp-result-presentation).
 
@@ -51,7 +51,7 @@ Start top-down and finish bottom-up. Parent closure never closes children. Nativ
 ```sh
 cargo fetch --locked
 cargo build --release --locked
-./target/release/agent-tasks-linear --config /absolute/private/config.toml init
+./target/release/agent-tasks --config /absolute/private/config.toml init
 ```
 
 `init` (alias of the older `init-config`) creates a config containing only `listen` (default `127.0.0.1:8777`) and a generated `token`, with mode 0600; it never overwrites an existing file. Version 1 configurations and `at_*` tools are incompatible; create a new configuration explicitly. Old pilot data is not migrated.
@@ -59,8 +59,8 @@ cargo build --release --locked
 Local, credential-free diagnostics (exit 0 without any Linear key or network; `--json` for machine output):
 
 ```sh
-./target/release/agent-tasks-linear --config /absolute/private/config.toml doctor
-./target/release/agent-tasks-linear --config /absolute/private/config.toml config check
+./target/release/agent-tasks --config /absolute/private/config.toml doctor
+./target/release/agent-tasks --config /absolute/private/config.toml config check
 ```
 
 `doctor --online` additionally verifies the authenticated viewer and requires `LINEAR_API_KEY` or `LINEAR_OAUTH_TOKEN` in the environment. Then run the single writer:
@@ -70,15 +70,15 @@ HTTP endpoint: `http://127.0.0.1:8777/mcp`, authenticated with the config's bear
 ```json
 {
   "mcpServers": {
-    "agent-tasks-linear": {
-      "command": "/absolute/path/to/agent-tasks-linear",
+    "agent-tasks": {
+      "command": "/absolute/path/to/agent-tasks",
       "args": ["--config", "/absolute/private/config.toml", "mcp"]
     }
   }
 }
 ```
 
-Configuration also supports `ATL_CONFIG`. Credentials never belong in tool arguments, issues, documents or source control. Without a Linear token, tool discovery works and data calls report the missing credential.
+Configuration also supports `ATL_CONFIG`, and a fresh install without either defaults to `~/.config/agent-tasks/config.toml`, falling back to the pre-rename `~/.config/agent-tasks-linear/config.toml` only when a config already exists there and not at the new default. Credentials never belong in tool arguments, issues, documents or source control. Without a Linear token, tool discovery works and data calls report the missing credential.
 
 All connected clients are trusted. `actor`, `reviewer` and `actor_role` describe who performed work; they are not independent authenticated identities. The orchestrator reports its role when closing reviewed work.
 
@@ -97,7 +97,7 @@ cargo xtask check
 
 The single gate covers formatting, Clippy (default and all-features), tests (default and all-features), rustdoc, the schema-first contract check against real-binary discovery/dispatch, and family structural checks. Supply-chain checks: `cargo deny --locked check`.
 
-Packaging, the release pipeline, exact-payload qualification and the owner-operated install/rollback/legacy-adoption runbook live in [docs/releasing.md](docs/releasing.md); the host-neutral registration descriptor is [registration/agent-tasks-linear.json](registration/agent-tasks-linear.json).
+Packaging, the release pipeline, exact-payload qualification and the owner-operated install/rollback/legacy-adoption runbook live in [docs/releasing.md](docs/releasing.md); the host-neutral registration descriptor is [registration/agent-tasks.json](registration/agent-tasks.json).
 
 The opt-in live test writes a disposable project in an explicitly selected team:
 

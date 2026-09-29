@@ -100,7 +100,54 @@ pub fn default_path() -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-                .join(".config/agent-tasks-linear/config.toml")
+            standard_path(&PathBuf::from(std::env::var_os("HOME").unwrap_or_default()))
         })
+}
+/// The post-rename default, falling back to the pre-rename
+/// `agent-tasks-linear` path only when a config already exists there and not
+/// at the new default; never overwrites or moves either file.
+fn standard_path(home: &Path) -> PathBuf {
+    let current = home.join(".config/agent-tasks/config.toml");
+    if current.is_file() {
+        return current;
+    }
+    let legacy = home.join(".config/agent-tasks-linear/config.toml");
+    if legacy.is_file() {
+        return legacy;
+    }
+    current
+}
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "Test fixtures fail explicitly")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_path_prefers_new_default_and_falls_back_to_legacy() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        // Neither exists: the new default path, even though absent.
+        assert_eq!(
+            standard_path(home),
+            home.join(".config/agent-tasks/config.toml")
+        );
+        // Only the legacy pre-rename config exists: fall back to it.
+        fs::create_dir_all(home.join(".config/agent-tasks-linear")).unwrap();
+        fs::write(home.join(".config/agent-tasks-linear/config.toml"), b"").unwrap();
+        assert_eq!(
+            standard_path(home),
+            home.join(".config/agent-tasks-linear/config.toml")
+        );
+        // Both exist: the new default wins, the legacy file is left untouched.
+        fs::create_dir_all(home.join(".config/agent-tasks")).unwrap();
+        fs::write(home.join(".config/agent-tasks/config.toml"), b"").unwrap();
+        assert_eq!(
+            standard_path(home),
+            home.join(".config/agent-tasks/config.toml")
+        );
+        assert!(
+            home.join(".config/agent-tasks-linear/config.toml")
+                .is_file()
+        );
+    }
 }

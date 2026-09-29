@@ -1,6 +1,6 @@
 ---
-name: agent-tasks-linear-orchestrator
-description: "Run the trusted-agent Linear workflow as the orchestrator: plan and delegate work, watch what needs attention, order independent review, merge PRs and close reviewed Modules, Epics and integration checks. Use when you coordinate an Agent-Tasks-Linear project, assign Modules to leads, or decide what closes next; not for implementing an assigned Module yourself."
+name: agent-tasks-orchestrator
+description: "Run the trusted-agent Linear workflow as the orchestrator: plan and delegate work, watch what needs attention, order independent review, merge PRs and close reviewed Modules, Epics and integration checks. Use when you coordinate an agent-tasks project, assign Modules to leads, or decide what closes next; not for implementing an assigned Module yourself."
 metadata:
   version: 1
 ---

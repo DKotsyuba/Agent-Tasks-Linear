@@ -1,6 +1,6 @@
 //! Static checks against the pinned official Linear schema, without claiming live API validation.
 
-use agent_tasks_linear::linear::OPERATIONS;
+use agent_tasks::linear::OPERATIONS;
 use graphql_parser::{query as q, schema as s};
 use std::collections::BTreeMap;
 
@@ -124,7 +124,7 @@ fn static_graphql_operations_match_official_snapshot() {
 /// The stable public tool identity: exactly these 25 names, in discovery order.
 #[test]
 fn catalog_pins_all_25_tool_names() {
-    let catalog = agent_tasks_linear::catalog::Catalog::new().unwrap();
+    let catalog = agent_tasks::catalog::Catalog::new().unwrap();
     let names: Vec<&str> = catalog
         .tools
         .iter()
@@ -166,7 +166,7 @@ fn catalog_pins_all_25_tool_names() {
 /// embedded catalogue, so schema widening never drifts from the published examples.
 #[test]
 fn catalog_examples_match_the_d2_input_contract() {
-    let catalog = agent_tasks_linear::catalog::Catalog::new().unwrap();
+    let catalog = agent_tasks::catalog::Catalog::new().unwrap();
     let examples: serde_json::Value =
         serde_json::from_str(include_str!("../schemas/examples.json")).unwrap();
     let cases = examples["cases"].as_array().unwrap();
@@ -196,10 +196,7 @@ fn exactly_two_role_skills_ship() {
     dirs.sort();
     assert_eq!(
         dirs,
-        vec![
-            "agent-tasks-linear-module-lead",
-            "agent-tasks-linear-orchestrator"
-        ]
+        vec!["agent-tasks-module-lead", "agent-tasks-orchestrator"]
     );
     for dir in &dirs {
         let md = std::fs::read_to_string(skills.join(dir).join("SKILL.md")).unwrap();

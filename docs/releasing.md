@@ -42,7 +42,7 @@ cargo deny --locked check
    `release` GitHub environment (required reviewer, `v*` tag policy). While it
    waits, the owner downloads the artifact of that run and verifies those
    exact bytes on the real Mac host (for example `MCP_TEST_BINARY=<downloaded
-   binary> cargo test --frozen -p agent-tasks-linear --test contract --test
+   binary> cargo test --frozen -p agent-tasks --test contract --test
    transport --test cli`, plus `doctor` and a disposable-home install), then
    approves the environment. A locally rebuilt binary is never accepted as
    evidence for the published payload; this gate additionally qualifies the
@@ -54,7 +54,7 @@ cargo deny --locked check
    `release.enabled = false`, `qualification != "verified"` or empty
    qualified targets/hosts, then creates a complete draft, downloads and
    verifies it, and publishes it.
-8. **Observe**: `scripts/wait-release.sh --repo DKotsyuba/Agent-Tasks-Linear
+8. **Observe**: `scripts/wait-release.sh --repo DKotsyuba/agent-tasks
    --tag vX.Y.Z --commit <full sha> [--result-file path]` binds repository,
    annotated tag, workflow run/attempt and downloaded asset hashes. Integrity
    is not provenance: `provenance_verification` stays `not_performed`.
@@ -89,8 +89,8 @@ No publication or production installation is implied by these declarations.
 ## Installation and legacy adoption (owner-operated)
 
 ```sh
-./install.sh --version 0.5.0 [--home /absolute/home] [--bin-dir /absolute/bin]
-./install.sh --version 0.5.0 --home ~/.config/agent-tasks-linear --adopt-existing
+./install.sh --version 0.6.0 [--home /absolute/home] [--bin-dir /absolute/bin]
+./install.sh --version 0.6.0 --home ~/.config/agent-tasks --adopt-existing
 ```
 
 The installer verifies SHA256SUMS and the release manifest before executing
@@ -99,35 +99,46 @@ immutable version directories under `<home>/standalone/`, a managed launcher
 in `--bin-dir`, and nothing else — the owner's `config.toml`, credentials and
 client registrations are untouched. Re-installing the same version with the
 same bytes is a no-op; different bytes are refused. Rollback:
-`agent-tasks-linear releases use <version> --home <home> --bin-dir <bin>`.
+`agent-tasks releases use <version> --home <home> --bin-dir <bin>`.
 Rolling back code never undoes Linear-side changes.
 
-**Adopting the pre-template 0.4.0 plain executable** at
-`~/.local/bin/agent-tasks-linear` is explicit: `--adopt-existing` asks the
-delivery helper to run the old file's `--version`, refuses anything that does
-not identify as this product, preserves the old executable byte-exactly as
-`<bin>/agent-tasks-linear-legacy-0.4.0` (sha256 recorded), and only then
-replaces it with the managed launcher. Foreign or unrecognized launchers are
-always refused, with or without the flag.
+The rename to `agent-tasks` does not touch the existing `agent-tasks-linear`
+0.5 installation: it is a separately named launcher and home, left running
+until the owner has verified the new install and chooses to retire it.
+
+**Adopting a pre-existing plain executable** at the new
+`~/.local/bin/agent-tasks` path is explicit: `--adopt-existing` asks the
+delivery helper to run that file's `--version`, refuses anything that does
+not identify as this product (so an unrelated foreign executable already at
+that path, for example an old Python CLI, is left untouched), preserves the
+adopted executable byte-exactly as `<bin>/agent-tasks-legacy-<version>`
+(sha256 recorded), and only then replaces it with the managed launcher.
+Foreign or unrecognized launchers are always refused, with or without the
+flag.
 
 The managed launcher pins the installation default through `ATL_CONFIG` —
 only when the caller has not set it and `<home>/config.toml` exists — and
 forwards argv unchanged. Configuration precedence is therefore: an explicit
 `--config` argument (as the existing serve/connect wrappers pass) > an
 explicit `ATL_CONFIG` > the pinned installation default > the binary's own
-`HOME`-based default. A child process that changes `HOME` cannot silently
-redirect the installed product to an empty configuration, and wrappers
-passing their own `--config` never hit a duplicate-argument error. No global
-environment or user file is modified. Using the existing
-`~/.config/agent-tasks-linear` directory as the installation home keeps the
-live config and credentials in place with no migration. Stop the idle writer
-before switching versions and restart it explicitly afterwards; the installer
-never restarts, drains or prunes anything.
+default, which is `~/.config/agent-tasks/config.toml`, falling back to the
+pre-rename `~/.config/agent-tasks-linear/config.toml` only when a config
+already exists there and not at the new default. A child process that
+changes `HOME` cannot silently redirect the installed product to an empty
+configuration, and wrappers passing their own `--config` never hit a
+duplicate-argument error. No global environment or user file is modified;
+neither default path is ever created, moved or overwritten by this fallback,
+it only changes which existing file is read. Using the existing
+`~/.config/agent-tasks-linear` directory's `config.toml` as the new
+installation home's config (copied, not moved) keeps the live credentials in
+place with no forced migration. Stop the idle writer before switching
+versions and restart it explicitly afterwards; the installer never restarts,
+drains or prunes anything.
 
 ## Host registration
 
-`registration/agent-tasks-linear.json` is the host-neutral descriptor
-(product identity, stdio command through the stable managed launcher,
-optional env, timeouts). It is a descriptor, not an automatic edit of any
-host configuration; registering with a specific client is the owner's
-explicit action using that client's supported mechanism.
+`registration/agent-tasks.json` is the host-neutral descriptor (product
+identity, stdio command through the stable managed launcher, optional env,
+timeouts). It is a descriptor, not an automatic edit of any host
+configuration; registering with a specific client is the owner's explicit
+action using that client's supported mechanism.
