@@ -642,6 +642,71 @@ async fn project_graph_reads_state_in_bulk_not_per_issue() {
     );
 }
 
+/// get_overview's per-work activity read reuses the Meta `Store::graph` already loaded
+/// instead of a redundant `Store::meta` point read per item: zero QAttachmentById calls for
+/// a Project with several Tasks, not one per Task.
+#[tokio::test]
+async fn overview_reuses_graph_meta_without_a_redundant_lookup_per_work_item() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    for _ in 0..6 {
+        let task = f.work("task", &project, Some(&module)).await;
+        f.mv(&task, "In Progress").await;
+    }
+
+    f.db.lock().await.operation_counts.clear();
+    f.ok("get_overview", json!({"project_id":project})).await;
+    let counts = f.db.lock().await.operation_counts.clone();
+    assert_eq!(
+        counts.get("QAttachmentById").copied().unwrap_or(0),
+        0,
+        "overview must reuse graph Meta, not re-fetch it per work item: {counts:?}"
+    );
+    assert_eq!(
+        counts.get("QStateAttachments").copied().unwrap_or(0),
+        1,
+        "{counts:?}"
+    );
+    // The remaining per-work QComments read is real, distinct activity per issue — not
+    // eliminated here, only the redundant Meta re-fetch is.
+    assert!(
+        counts.get("QComments").copied().unwrap_or(0) >= 7,
+        "{counts:?}"
+    );
+}
+
+/// A role-view get_context read reuses the requested issue's and its children's Meta already
+/// loaded by `Store::work`/`Store::graph`, instead of a redundant `Store::meta` point read per
+/// child: the constant single-item lookup for the requested issue itself, not one more per
+/// child in its agent-context activity map.
+#[tokio::test]
+async fn role_context_reuses_graph_meta_for_children_without_a_lookup_each() {
+    let f = Fixture::new().await;
+    let project = f.project().await;
+    let module = f.work("module", &project, None).await;
+    f.mv(&module, "In Progress").await;
+    for _ in 0..6 {
+        let task = f.work("task", &project, Some(&module)).await;
+        f.mv(&task, "In Progress").await;
+    }
+
+    f.db.lock().await.operation_counts.clear();
+    f.ok(
+        "get_context",
+        json!({"type":"issue","id":module,"view":"lead"}),
+    )
+    .await;
+    let counts = f.db.lock().await.operation_counts.clone();
+    // One point lookup for the requested Module itself (Store::work inside `loaded`); its six
+    // Tasks must come from the already-loaded graph, not six more individual lookups.
+    assert!(
+        counts.get("QAttachmentById").copied().unwrap_or(0) <= 1,
+        "children's Meta must come from the graph, not one lookup per child: {counts:?}"
+    );
+}
+
 /// A mixed Project yields exact progress and an unpublished draft; publication stays explicit.
 #[tokio::test]
 async fn overview_groups_work_and_only_explicit_update_writes() {

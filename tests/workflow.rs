@@ -2274,16 +2274,18 @@ async fn uncertain_creates_reviews_and_frozen_reparenting() {
         f.ok("get_context", json!({"type":"issue","id":atom})).await["workflow"]["review"]["id"],
         review["request_id"]
     );
-    let records = agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom)
-        .await
-        .unwrap();
+    let records =
+        agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom, None)
+            .await
+            .unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records.iter().filter(|r| r.formal_review).count(), 1);
     assert_eq!(f.db.lock().await.comments.len(), 2);
     f.mv(&atom, "In Progress").await;
-    let history = agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom)
-        .await
-        .unwrap();
+    let history =
+        agent_tasks_linear::activity::read_activity(&f.gateway.store, "issue", &atom, None)
+            .await
+            .unwrap();
     assert_eq!(history.len(), 2);
     assert!(history.iter().all(|r| !r.formal_review));
     f.result("atomic", &atom).await;

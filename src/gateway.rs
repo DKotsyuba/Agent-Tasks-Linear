@@ -1917,13 +1917,14 @@ impl Gateway {
         let mut activity = BTreeMap::new();
         activity.insert(
             project_id.to_owned(),
-            crate::activity::read_activity(&self.store, "project", project_id).await?,
+            crate::activity::read_activity(&self.store, "project", project_id, None).await?,
         );
         for work in &graph {
-            if work.meta.is_some() {
+            if let Some(meta) = &work.meta {
                 activity.insert(
                     work.id().to_owned(),
-                    crate::activity::read_activity(&self.store, "issue", work.id()).await?,
+                    crate::activity::read_activity(&self.store, "issue", work.id(), Some(meta))
+                        .await?,
                 );
             }
         }
@@ -1932,7 +1933,7 @@ impl Gateway {
                 .as_str()
                 .ok_or_else(|| Fault::new("INCOMPLETE_DATA", "ProjectUpdate has no ID"))?;
             let mut records =
-                crate::activity::read_activity(&self.store, "project_update", id).await?;
+                crate::activity::read_activity(&self.store, "project_update", id, None).await?;
             records.push(crate::activity::project_update_record(update)?);
             activity.insert(id.to_owned(), records);
         }
@@ -2143,8 +2144,13 @@ impl Gateway {
                 if a["detail"] == "brief" {
                     // Brief keeps the actual state, current results, blockers, the recovery
                     // payload and the latest applicable handoff, and routes to full content.
-                    let activity =
-                        crate::activity::read_activity(&self.store, "issue", w.id()).await?;
+                    let activity = crate::activity::read_activity(
+                        &self.store,
+                        "issue",
+                        w.id(),
+                        w.meta.as_ref(),
+                    )
+                    .await?;
                     let documents = self.ancestry_documents(&w, &g, None, false).await?;
                     return Ok(json!({
                         "detail":"brief",
@@ -2176,8 +2182,13 @@ impl Gateway {
                     for target in std::iter::once(&w).chain(children) {
                         activity.insert(
                             target.id().to_owned(),
-                            crate::activity::read_activity(&self.store, "issue", target.id())
-                                .await?,
+                            crate::activity::read_activity(
+                                &self.store,
+                                "issue",
+                                target.id(),
+                                target.meta.as_ref(),
+                            )
+                            .await?,
                         );
                     }
                     let documents = self
