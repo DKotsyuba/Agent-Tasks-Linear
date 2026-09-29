@@ -512,9 +512,14 @@ fn markdown_text_key(source: &str) -> String {
     }
     // An explicit link's destination may or may not be wrapped in `<...>`; that wrapper is
     // purely presentational CommonMark syntax for the same destination, for any scheme
-    // (relative, mailto, http(s) or otherwise), so it is stripped here unconditionally. Ranges
-    // are recomputed each pass since an applied replacement shifts later byte offsets; code
-    // content is never rewritten here, so its own positions never need to survive a shift.
+    // (relative, mailto, http(s) or otherwise), so it is stripped here unconditionally by
+    // reconstructing the link with a bare destination. Collapsing further to a bare label
+    // (dropping the link syntax entirely) stays restricted to http(s), where label==destination
+    // is Linear's own native-title-for-a-bare-URL shape; doing that for any other scheme would
+    // erase a genuine, deliberately explicit relative/mailto link and make it indistinguishable
+    // from plain text that never linked anywhere. Ranges are recomputed each pass since an
+    // applied replacement shifts later byte offsets; code content is never rewritten here, so
+    // its own positions never need to survive a shift.
     let mut offset = 0;
     while let Some(middle) = text[offset..].find("](").map(|i| offset + i) {
         let Some(open) = text[..middle].rfind('[') else {
@@ -534,7 +539,8 @@ fn markdown_text_key(source: &str) -> String {
             .trim()
             .trim_start_matches('<')
             .trim_end_matches('>');
-        let replacement = if label == destination {
+        let is_http = destination.starts_with("https://") || destination.starts_with("http://");
+        let replacement = if is_http && label == destination {
             destination.to_owned()
         } else {
             format!("[{label}]({destination})")

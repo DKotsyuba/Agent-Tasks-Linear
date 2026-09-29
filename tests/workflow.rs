@@ -955,6 +955,19 @@ fn markdown_explicit_link_tolerates_angle_bracket_destination_wrapping() {
     let mail_expected = "Contact [support](mailto:team@example.test) for help.";
     let mail_native = "Contact [support](<mailto:team@example.test>) for help.";
     assert!(markdown_equivalent(mail_expected, mail_native));
+
+    // A relative link whose label equals its destination keeps its explicit link syntax: it
+    // must never collapse to bare text, which would erase a deliberate link and make it
+    // indistinguishable from prose that never linked anywhere. Wrapper tolerance still applies.
+    assert!(!markdown_equivalent("[foo](foo)", "foo"));
+    assert!(markdown_equivalent("[foo](foo)", "[foo](<foo>)"));
+
+    // The existing http(s) autolink collapse (label equals destination) is unchanged.
+    let http_url = "https://example.test/a";
+    assert!(markdown_equivalent(
+        &format!("[{http_url}]({http_url})"),
+        http_url
+    ));
 }
 
 /// A pending commit import accepts Linear's mailto autolink for a co-author footer while the
