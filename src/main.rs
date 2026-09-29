@@ -4,7 +4,7 @@ use agent_tasks_linear::{
     config::{self, Config},
     gateway::Gateway,
     linear::Linear,
-    model::Result,
+    model::{Fault, Result},
     render, server,
 };
 use clap::{Parser, Subcommand};
@@ -50,6 +50,42 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Install one verified single-binary bundle. Never restarts services.
+    SelfInstall {
+        /// Verified bundle directory holding the binary and its manifest.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// Absolute product home for immutable releases and the launcher.
+        #[arg(long)]
+        home: PathBuf,
+        /// Absolute directory receiving the managed launcher.
+        #[arg(long)]
+        bin_dir: PathBuf,
+        /// Explicitly adopt a known legacy plain executable at the launcher
+        /// path: identity-checked, preserved byte-exactly as a backup.
+        #[arg(long)]
+        adopt_existing: bool,
+    },
+    /// Select a retained compatible installation.
+    Releases {
+        #[command(subcommand)]
+        command: ReleaseCommand,
+    },
+}
+/// Release selection subcommands.
+#[derive(Subcommand)]
+enum ReleaseCommand {
+    /// Activate one retained version after integrity and state-profile checks.
+    Use {
+        /// Retained version, e.g. 0.5.0.
+        version: String,
+        /// Absolute product home.
+        #[arg(long)]
+        home: PathBuf,
+        /// Absolute directory holding the managed launcher.
+        #[arg(long)]
+        bin_dir: PathBuf,
+    },
 }
 /// Config subcommands.
 #[derive(Subcommand)]
@@ -89,7 +125,77 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Config {
             command: ConfigCommand::Check,
         } => config_check(&path),
+        Command::SelfInstall {
+            bundle,
+            home,
+            bin_dir,
+            adopt_existing,
+        } => self_install(&bundle, &home, &bin_dir, adopt_existing),
+        Command::Releases {
+            command:
+                ReleaseCommand::Use {
+                    version,
+                    home,
+                    bin_dir,
+                },
+        } => match family_delivery::use_version(&home, &bin_dir, &version) {
+            Ok(manifest) => {
+                print_manifest("activated", &manifest);
+                Ok(())
+            }
+            Err(e) => Err(Fault::new("INSTALL_FAILED", format!("{e}"))),
+        },
     }
+}
+/// Print one install/activation outcome as compact JSON; never a secret.
+#[allow(
+    clippy::print_stdout,
+    reason = "CLI branch; stdout carries the result, never MCP protocol"
+)]
+fn print_manifest(action: &str, manifest: &family_delivery::Manifest) {
+    match serde_json::to_string_pretty(&serde_json::json!({
+        "action": action,
+        "product": manifest.product,
+        "version": manifest.version,
+        "target": manifest.target,
+        "state_schema": manifest.state_schema,
+        "sha256": manifest.sha256,
+    })) {
+        Ok(text) => println!("{text}"),
+        Err(_) => eprintln!("install: cannot serialize result"),
+    }
+}
+/// Install a verified bundle; adoption is explicit, identity-checked and
+/// backed up, and nothing outside the product home's standalone tree and the
+/// managed launcher is ever written.
+#[allow(
+    clippy::print_stdout,
+    reason = "CLI branch; stdout carries the result, never MCP protocol"
+)]
+fn self_install(bundle: &Path, home: &Path, bin_dir: &Path, adopt_existing: bool) -> Result<()> {
+    let adopted = if adopt_existing {
+        match family_delivery::adopt_legacy_launcher(bundle, home, bin_dir) {
+            Ok((manifest, adoption)) => {
+                println!(
+                    "Adopted legacy {} executable; backup: {} (sha256 {})",
+                    adoption.version,
+                    adoption.backup.display(),
+                    adoption.sha256
+                );
+                Some(manifest)
+            }
+            Err(e) => return Err(Fault::new("ADOPTION_REFUSED", format!("{e}"))),
+        }
+    } else {
+        None
+    };
+    let manifest = match adopted {
+        Some(manifest) => manifest,
+        None => family_delivery::install(bundle, home, bin_dir)
+            .map_err(|e| Fault::new("INSTALL_FAILED", format!("{e}")))?,
+    };
+    print_manifest("installed", &manifest);
+    Ok(())
 }
 /// Read the Linear credential from its environment sources without printing it;
 /// returns whether an OAuth token (vs API key) was found and its value.

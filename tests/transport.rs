@@ -120,7 +120,8 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
     assert!(error.get("structuredContent").is_none());
     let path = std::env::temp_dir().join(format!("atl-transport-{}.toml", Uuid::new_v4()));
     config.write_new(&path).unwrap();
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-tasks-linear"));
+    // MCP_TEST_BINARY retargets acceptance at the exact packaged/CI payload.
+    let mut command = tokio::process::Command::new(support::product_binary());
     command.arg("--config").arg(&path).arg("stdio");
     let child = TokioChildProcess::new(command).unwrap();
     let bridge = tokio::time::timeout(Duration::from_secs(10), ().serve(child))

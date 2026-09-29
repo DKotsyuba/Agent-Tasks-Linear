@@ -4,9 +4,18 @@
 //! and real-binary MCP discovery. No interpreter or generator is involved.
 #![allow(clippy::print_stdout, reason = "Developer CLI, not MCP")]
 
+mod release;
+
 use clap::{Parser, Subcommand};
+use family_delivery::Manifest;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 struct Cli {
@@ -32,6 +41,16 @@ enum Task {
     },
     /// Focused test suites.
     Test { suite: String },
+    /// Build a new immutable single-binary bundle, or verify an existing one.
+    Package {
+        #[command(subcommand)]
+        command: Option<PackageCommand>,
+    },
+    /// Version preparation, authenticated publishing or release observation.
+    Release {
+        #[command(subcommand)]
+        command: release::Release,
+    },
 }
 
 #[derive(Subcommand)]
@@ -44,12 +63,22 @@ enum ContractCommand {
     Check,
 }
 
+#[derive(Subcommand)]
+enum PackageCommand {
+    /// Validate one bundle directory against its own manifest.
+    Verify { directory: PathBuf },
+}
+
 /// Parsed repository identity used by every gate.
 struct Project {
     /// Repository root (parent of this crate).
     root: PathBuf,
     /// Product package name from Cargo.
     name: String,
+    /// Workspace package version.
+    version: String,
+    /// Cargo target directory.
+    target_dir: PathBuf,
     /// Root Cargo manifest as raw TOML.
     manifest: toml::Value,
     /// family.toml profile metadata.
@@ -84,6 +113,75 @@ fn run(root: &Path, program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Capture bounded output and stop a hung direct helper; no descendant-tree guarantee.
+fn capture(root: &Path, program: &str, args: &[&str], seconds: u64) -> Result<Vec<u8>> {
+    let mut child = helper(root, program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdout = child.stdout.take().ok_or("helper stdout unavailable")?;
+    let too_large = Arc::new(AtomicBool::new(false));
+    let flag = too_large.clone();
+    let reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        stdout
+            .by_ref()
+            .take(4 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 4 * 1024 * 1024 {
+            flag.store(true, Ordering::Relaxed);
+        }
+        Ok(bytes)
+    });
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let status = loop {
+        if Instant::now() >= deadline || too_large.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("helper deadline or output budget exceeded".into());
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    if !status.success() {
+        return Err(format!("{program} failed; rerun it locally to inspect diagnostics").into());
+    }
+    while !reader.is_finished() {
+        if Instant::now() >= deadline {
+            return Err("helper output did not close".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let result = reader.join().map_err(|_| "helper output thread failed")??;
+    if too_large.load(Ordering::Relaxed) {
+        return Err("helper output too large".into());
+    }
+    Ok(result)
+}
+
+/// One trimmed helper output line set, bounded in time and size.
+fn text(root: &Path, program: &str, args: &[&str]) -> Result<String> {
+    Ok(String::from_utf8(capture(root, program, args, 120)?)?
+        .trim()
+        .to_owned())
+}
+
+/// Map the declared family state profile to the delivery state schema.
+/// `external` (this product) and `none` both carry 0 — meaning no LOCAL
+/// business state — while `local` stamps the store layout version. Anything
+/// else is refused rather than guessed.
+fn state_schema_for(family: &toml::Value) -> Result<u32> {
+    match family["profiles"]["state"].as_str() {
+        Some("external") | Some("none") => Ok(0),
+        Some("local") => Ok(family_delivery::CURRENT_STATE_SCHEMA),
+        other => Err(format!("unsupported state profile for packaging: {other:?}").into()),
+    }
+}
+
 impl Project {
     fn load() -> Result<Self> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -98,12 +196,102 @@ impl Project {
             .as_str()
             .ok_or("package name missing")?
             .to_owned();
+        let version = manifest["workspace"]["package"]["version"]
+            .as_str()
+            .ok_or("workspace version missing")?
+            .to_owned();
+        let metadata: serde_json::Value = serde_json::from_slice(&capture(
+            &root,
+            "cargo",
+            &["metadata", "--locked", "--no-deps", "--format-version", "1"],
+            120,
+        )?)?;
+        let target_dir = PathBuf::from(
+            metadata["target_directory"]
+                .as_str()
+                .ok_or("target_directory missing")?,
+        );
         Ok(Self {
             root,
             name,
+            version,
+            target_dir,
             manifest,
             family,
         })
+    }
+
+    /// Path of the product binary for one profile.
+    fn binary(&self, release_build: bool) -> PathBuf {
+        self.target_dir
+            .join(if release_build { "release" } else { "debug" })
+            .join(&self.name)
+    }
+
+    /// Build the product binary under the frozen gate.
+    fn build(&self, release_build: bool) -> Result<()> {
+        let mut args = vec![
+            "build",
+            "--frozen",
+            "--package",
+            &self.name,
+            "--bin",
+            &self.name,
+        ];
+        if release_build {
+            args.push("--release");
+        }
+        run(&self.root, "cargo", &args)
+    }
+
+    /// Build one immutable bundle for the current commit. Requires a clean
+    /// committed tree so the manifest's source identity is real.
+    fn package(&self) -> Result<PathBuf> {
+        self.standard()?;
+        if !text(&self.root, "git", &["status", "--porcelain"])?.is_empty() {
+            return Err("commit product changes before packaging".into());
+        }
+        let commit = text(&self.root, "git", &["rev-parse", "HEAD"])?;
+        let target = text(&self.root, "rustc", &["-vV"])?
+            .lines()
+            .find_map(|s| s.strip_prefix("host: "))
+            .ok_or("host target missing")?
+            .to_owned();
+        let state_schema = state_schema_for(&self.family)?;
+        self.build(true)?;
+        let output = self
+            .root
+            .join("dist")
+            .join(format!("{}-{}-{}", self.name, self.version, target));
+        if output.exists() {
+            return Err(format!(
+                "bundle directory already exists; remove {} before repackaging",
+                output.display()
+            )
+            .into());
+        }
+        std::fs::create_dir_all(output.parent().ok_or("package parent absent")?)?;
+        let manifest = Manifest {
+            schema_version: 1,
+            profile: "single-binary-v1".into(),
+            product: self.name.clone(),
+            version: self.version.clone(),
+            source_commit: commit,
+            target: target.clone(),
+            binary: format!("{}-{target}", self.name),
+            size: 1,
+            sha256: "0".repeat(64),
+            state_schema,
+            run_id: std::env::var("GITHUB_RUN_ID")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            run_attempt: std::env::var("GITHUB_RUN_ATTEMPT")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+        };
+        family_delivery::package(&self.binary(true), &output, manifest)?;
+        println!("{}", output.display());
+        Ok(output)
     }
 
     /// Structural family checks: identity, honest profile, pins and required
@@ -148,6 +336,10 @@ impl Project {
             "CHANGELOG.md",
             "deny.toml",
             "family.toml",
+            "install.sh",
+            "scripts/wait-release.sh",
+            ".github/workflows/ci.yml",
+            ".github/workflows/release.yml",
             "schemas/tools.json",
             "schemas/linear.graphql",
             "docs/architecture.md",
@@ -341,6 +533,17 @@ fn main_result() -> Result<()> {
             ),
             other => Err(format!("unknown test suite: {other}").into()),
         },
+        Task::Package { command: None } => project.package().map(|_| ()),
+        Task::Package {
+            command: Some(PackageCommand::Verify { directory }),
+        } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&family_delivery::verify(&directory)?)?
+            );
+            Ok(())
+        }
+        Task::Release { command } => release::execute(&project, command),
     }
 }
 

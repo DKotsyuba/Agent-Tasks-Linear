@@ -3,3 +3,4 @@
 *.local.toml
 .env
 .env.*
+/dist/

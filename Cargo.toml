@@ -1,5 +1,5 @@
 [workspace]
-members = ["xtask"]
+members = ["crates/family-delivery", "xtask"]
 default-members = ["."]
 resolver = "3"
 
@@ -38,6 +38,7 @@ description = "Rust MCP for an explicit agent workflow over native Linear Projec
 [dependencies]
 axum = "0.8"
 chrono.workspace = true
+family-delivery = { path = "crates/family-delivery" }
 clap.workspace = true
 jsonschema.workspace = true
 minijinja.workspace = true
@@ -57,6 +58,7 @@ uuid.workspace = true
 [dev-dependencies]
 graphql-parser = "0.4"
 rmcp = { workspace = true, features = ["transport-child-process"] }
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
