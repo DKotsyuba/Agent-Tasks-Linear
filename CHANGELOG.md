@@ -2,7 +2,29 @@
 
 ## Unreleased
 
-Nothing yet.
+## 0.6.0
+
+Product rename: Cargo package/binary, crate imports, `serverInfo`,
+`family.toml` identity (product/repository/env-prefix), the registration
+filename and the two committed role skills now say `agent-tasks`, matching
+the renamed `DKotsyuba/agent-tasks` GitHub repository. The 25-tool
+schema-first API, `ATL_CONFIG`, and the existing `agent-tasks-linear` 0.5
+installation are unchanged. `family.toml`'s qualification/qualified
+targets-hosts/`release.enabled` are reset to unverified: the 0.5.0 native
+evidence below qualified the old identity, not this one.
+
+### Changed
+
+- Renamed the Cargo package/binary, crate imports and `serverInfo`/health/log
+  identity literals from `agent-tasks-linear` to `agent-tasks`.
+- Renamed `family.toml`'s `product`/`repository`/`env_prefix`, the
+  registration descriptor file, `install.sh`'s `PRODUCT`/`REPO`/home
+  variable, and the two committed role skills' directories and frontmatter.
+- The protected config default now resolves `~/.config/agent-tasks/config.toml`
+  first, falling back read-only to the pre-rename
+  `~/.config/agent-tasks-linear/config.toml` only when a config already
+  exists there and not at the new default; explicit `--config`/`ATL_CONFIG`
+  are unaffected.
 
 ## 0.5.0
 
