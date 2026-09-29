@@ -654,7 +654,7 @@ async fn list_items_finds_projects_by_repository_identity() {
     std::fs::remove_dir_all(&repo).unwrap();
 }
 
-/// A brief Project view adds the parsed repository path/url, native teams and an overview route.
+/// A brief Project view preserves the observed version for guarded edits, repository, teams and overview route.
 #[tokio::test]
 async fn project_brief_context_adds_repository_teams_and_overview_route() {
     let repo = init_repo("brief repository");
@@ -666,6 +666,8 @@ async fn project_brief_context_adds_repository_teams_and_overview_route() {
         )
         .await;
     let project = created["project"]["id"].as_str().unwrap();
+    let observed_version = "2026-09-29T02:03:23.903Z";
+    f.db.lock().await.projects.get_mut(project).unwrap()["updatedAt"] = json!(observed_version);
     let brief = f
         .ok(
             "get_context",
@@ -673,6 +675,16 @@ async fn project_brief_context_adds_repository_teams_and_overview_route() {
         )
         .await;
     assert_eq!(brief["project"]["repository_path"], json!(repo));
+    assert_eq!(brief["project"]["updatedAt"], json!(observed_version));
+    let rendered = agent_tasks_linear::render::render_outcome(
+        "get_context",
+        &json!({"type":"project","id":project,"detail":"brief"}),
+        &agent_tasks_linear::model::Outcome::ok(brief.clone()),
+    );
+    assert!(
+        rendered.contains(&format!("Updated at: {observed_version}")),
+        "{rendered}"
+    );
     assert!(brief["project"]["repository_url"].is_null());
     assert_eq!(
         brief["project"]["teams"].as_array().unwrap()[0]["id"],

@@ -2234,7 +2234,7 @@ impl Gateway {
                     let passport_fields = read_fields(p["content"].as_str().unwrap_or(""))?;
                     return Ok(json!({
                         "detail":"brief",
-                        "project":{"id":p["id"],"name":p["name"],"url":p["url"],
+                        "project":{"id":p["id"],"name":p["name"],"url":p["url"],"updatedAt":p["updatedAt"],
                             "repository_path":passport_fields["repository_path"],
                             "repository_url":passport_fields["repository_url"],
                             "teams":p["teams"]["nodes"]},
