@@ -758,6 +758,11 @@ fn markdown_list_markers_preserve_content() {
     for (before, after) in [
         ("- `inline`\n- next", "* `inline`\n* next"),
         ("- ```text\n  - item\n  ```", "* ```text\n  - item\n  ```"),
+        ("+ item", "* item"),
+        (
+            "- Outer\n  + Inner\n    continuation",
+            "* Outer\n  * Inner\n    continuation",
+        ),
     ] {
         assert_eq!(markdown_key(before), markdown_key(after));
     }
@@ -778,6 +783,9 @@ fn markdown_list_markers_preserve_content() {
         ("text `first\n- item\nlast`", "text `first\n* item\nlast`"),
         ("- ```text\n  - item\n  ```", "- ```text\n  * item\n  ```"),
         ("- - -", "* - -"),
+        ("`a+b`", "`a-b`"),
+        ("\\+ item", "+ item"),
+        ("- item", "\\+ item"),
     ] {
         assert_ne!(markdown_key(before), markdown_key(after), "{before}");
     }
@@ -1087,6 +1095,33 @@ fn markdown_mixed_code_and_autolink_regions_compare_independently() {
         "```text\nfirst\n\nsecond\n```",
         "```text\nfirst\nsecond\n```"
     ));
+}
+
+/// A possessive apostrophe immediately after a bare domain or email is a valid closing boundary,
+/// matching the same quote character the leading-boundary check already accepts before a token;
+/// an unrelated change right after that apostrophe, or a genuinely different domain, still differs.
+#[test]
+fn markdown_possessive_apostrophe_ends_a_bare_domain_or_email() {
+    use agent_tasks_linear::records::markdown_equivalent;
+
+    let expected = "`impl Gateway {}` uses gateway.rs's helpers.";
+    let native = "`impl Gateway {}` uses [gateway.rs](<http://gateway.rs>)'s helpers.";
+    assert!(markdown_equivalent(expected, native));
+    // The word right after the possessive still differs meaningfully.
+    assert!(!markdown_equivalent(
+        expected,
+        "`impl Gateway {}` uses [gateway.rs](<http://gateway.rs>)'s notes."
+    ));
+    // A different domain behind the same possessive boundary still differs.
+    assert!(!markdown_equivalent(
+        expected,
+        "`impl Gateway {}` uses [different.rs](<http://different.rs>)'s helpers."
+    ));
+
+    let email = "maintainer@example.com";
+    let bare_email = format!("Contact {email}'s team for access.");
+    let native_email = bare_email.replace(email, &format!("[{email}](<mailto:{email}>)"));
+    assert!(markdown_equivalent(&bare_email, &native_email));
 }
 
 /// A pending commit import accepts Linear's mailto autolink for a co-author footer while the

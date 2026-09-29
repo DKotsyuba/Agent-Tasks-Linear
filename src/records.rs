@@ -323,7 +323,7 @@ pub fn markdown_key(value: &str) -> String {
     if !ambiguous {
         for (event, range) in events {
             if matches!(event, Event::Start(Tag::Item))
-                && matches!(source.as_bytes().get(range.start), Some(b'-' | b'*'))
+                && matches!(source.as_bytes().get(range.start), Some(b'-' | b'*' | b'+'))
             {
                 parts.push(markdown_text_key(&source[start..range.start]));
                 start = range.start + 1;
@@ -428,15 +428,17 @@ fn email_address(label: &str) -> bool {
 
 /// Report whether a requested bare URL or domain token ends at `rest`, the remainder of the
 /// requested text starting exactly after that token. A token ends at end of input, whitespace,
-/// or one of the closing prose punctuation characters `,;:!?)]}`; a period also ends it only
+/// or one of the closing prose punctuation characters `,;:!?)]}'`; a period also ends it only
 /// when no alphanumeric follows, so a URL that genuinely continues (for example `…/a.foo`)
-/// is never split at an interior-looking dot. Linear's autolinker closes generated links
-/// before exactly this punctuation, so requiring the boundary keeps destinations exact while
-/// tolerating where native serialization places the link end.
+/// is never split at an interior-looking dot. The apostrophe covers a possessive immediately
+/// after a bare domain or email (`gateway.rs's helpers`), matching the same quote character the
+/// leading-boundary check already accepts before a token. Linear's autolinker closes generated
+/// links before exactly this punctuation, so requiring the boundary keeps destinations exact
+/// while tolerating where native serialization places the link end.
 fn prose_boundary(rest: &str) -> bool {
     rest.chars().next().is_none_or(|c| {
         c.is_whitespace()
-            || matches!(c, ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}')
+            || matches!(c, ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'')
             || (c == '.'
                 && rest[1..]
                     .chars()
