@@ -255,6 +255,9 @@ fn context_projection(request: &Value, data: &Value) -> Value {
         let mut item = identity(brief_item);
         item["status"] = brief_item["status"].clone();
         item["kind"] = brief_item["kind"].clone();
+        item["repository_path"] = brief_item["repository_path"].clone();
+        item["repository_url"] = brief_item["repository_url"].clone();
+        item["teams"] = brief_item["teams"].clone();
         let pending_call = data["workflow"]["pending"]["request"]
             .as_object()
             .map(|pending| {
@@ -662,6 +665,44 @@ mod tests {
         assert!(text.contains("include_archived=true"));
         assert!(text.contains("Server version: 0.3.0"));
         assert!(text.contains("Tools: 22"));
+        assert!(!text.contains("Presentation failed"), "{text}");
+    }
+
+    /// A brief Project context renders its parsed repository path/url, native teams and the
+    /// overview route, not just generic identity fields — these are easy to drop silently
+    /// since the shared brief item only carries them through explicit projection keys.
+    #[test]
+    fn brief_project_context_renders_repository_teams_and_overview_route() {
+        let brief = json!({"detail":"brief",
+            "project":{"id":"project-1","name":"Passport","url":"https://linear.app/project-1",
+                "repository_path":"/srv/agent/checkouts/example-product",
+                "repository_url":"https://github.com/example/product",
+                "teams":[{"id":"team-1","name":"Platform"}]},
+            "documents":[],
+            "full_context":{"project_documents":"list_items type=document project_id=project-1",
+                "archive":"list_items type=document project_id=project-1 include_archived=true",
+                "overview":"get_overview project_id=project-1"},
+            "runtime":{"version":"0.3.0","tools":25}});
+        let text = render_outcome(
+            "get_context",
+            &json!({"type":"project","id":"project-1","detail":"brief"}),
+            &Outcome::ok(brief),
+        );
+        assert!(text.contains("Title: Passport"), "{text}");
+        assert!(
+            text.contains("Repository: /srv/agent/checkouts/example-product"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Repository URL: https://github.com/example/product"),
+            "{text}"
+        );
+        assert!(text.contains("Team ID: team-1"), "{text}");
+        assert!(text.contains("Team name: Platform"), "{text}");
+        assert!(
+            text.contains("Overview: get_overview project_id=project-1"),
+            "{text}"
+        );
         assert!(!text.contains("Presentation failed"), "{text}");
     }
 
