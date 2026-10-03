@@ -43,13 +43,13 @@ cargo deny --locked check
    waits, the owner downloads the artifact of that run and verifies those
    exact bytes on the real Mac host (for example `MCP_TEST_BINARY=<downloaded
    binary> cargo test --frozen -p agent-tasks --test contract --test
-   transport --test cli`, plus `doctor` and a disposable-home install), then
+   protocol --test transport --test cli`, plus `doctor` and a disposable-home install), then
    approves the environment. A locally rebuilt binary is never accepted as
    evidence for the published payload; this gate additionally qualifies the
    exact CI artifact on top of the pre-tag candidate evidence.
 7. **Publish**: after approval, `cargo xtask release publish` re-verifies
    hashes before executable permission, runs cargo-deny and the
-   contract/transport/CLI suites against the exact payload through
+   contract/protocol/transport/CLI suites against the exact payload through
    `MCP_TEST_BINARY`, refuses while `family.toml` declares
    `release.enabled = false`, `qualification != "verified"` or empty
    qualified targets/hosts, then creates a complete draft, downloads and

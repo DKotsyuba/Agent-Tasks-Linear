@@ -66,6 +66,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: target/debug/xtask release publish "$RUNNER_TEMP/payload"
       # Publishing additionally refuses release.enabled=false, unqualified
-      # targets/hosts and any payload whose contract/transport/CLI acceptance
+      # targets/hosts and any payload whose contract/protocol/transport/CLI acceptance
       # against these exact bytes fails. Qualification flags stay reviewed
       # declarations backed by separate native host evidence.
