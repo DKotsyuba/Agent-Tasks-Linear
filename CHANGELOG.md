@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Adopt rmcp 3.4.0. Both HTTP and stdio catalogues follow the caller's revision:
+  MCP 2026-07-28 returns complete results with a 60-second private cache lifetime;
+  explicit legacy sessions omit the modern fields. Unknown tools return protocol
+  errors while expected workflow/input rejections retain tool-result `isError`.
+- Exercise all five declared protocol revisions through raw HTTP and real-binary
+  stdio, including discovery, calls, bounded replies and EOF; preserve the 25-tool
+  authoritative schema and the resident writer/external Linear state profile.
+- Export the current family response standard, correct schema-first architecture
+  documentation, and record reviewed incremental template provenance without
+  replacing historical adoption baselines. Reset new-candidate qualification
+  and disable publication until exact-payload/native-host acceptance.
+- Replace the yanked `yoke-derive 0.8.3` lock entry with compatible patch `0.8.4`
+  while retaining the required cargo-deny gate.
+
 ## 0.6.0
 
 Product rename: Cargo package/binary, crate imports, `serverInfo`,

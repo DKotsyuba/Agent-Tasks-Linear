@@ -138,10 +138,12 @@ fn prepare(project: &Project, version: &str, apply: bool) -> Result<()> {
 }
 
 /// Run the exact-payload acceptance suites against one binary: contract
-/// (discovery/dispatch vs the committed schema), transport (real MCP calls
-/// over HTTP and stdio) and CLI (doctor/config/aliases).
+/// (discovery/dispatch vs the committed schema), protocol (bounded raw revision
+/// compatibility and EOF), transport (real HTTP/stdio calls), and CLI
+/// (doctor/config/aliases). The selected binary is tested without publication;
+/// a setup or failed suite aborts acceptance.
 fn payload_tests(project: &Project, binary: &str) -> Result<()> {
-    for suite in ["contract", "transport", "cli"] {
+    for suite in ["contract", "protocol", "transport", "cli"] {
         let args = [
             "test",
             "--frozen",

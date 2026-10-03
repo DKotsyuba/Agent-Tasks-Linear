@@ -2,6 +2,14 @@
 
 ## MCP result presentation
 
+The resident HTTP Handler and the stdio Bridge expose the same static catalogue.
+Each response follows the caller's own MCP revision, independently of the Bridge's
+upstream connection: `2026-07-28` returns `resultType = complete`, `ttlMs = 60000`
+and `cacheScope = private`; explicit legacy sessions omit all three fields.
+An unknown tool name returns a JSON-RPC `METHOD_NOT_FOUND` protocol error at
+the transport boundary. Expected workflow/input rejections remain tool results
+with `isError`; the internal Gateway retains its `UNKNOWN_TOOL` Outcome.
+
 All 25 public tool calls share one presentation boundary after the structured Gateway outcome. HTTP and the stdio bridge expose the same single plain-text result block, with no `structuredContent` mirror. `isError` marks blocked, unavailable and uncertain outcomes; it does not mark a confirmed mutation as failed if presentation breaks. Templates and shared macros own labels, headings, conditions and layout; Rust selects structured source values. Assets are embedded at build time, initialize once, use strict undefined values and disable HTML escaping, bound template recursion (16) and execution fuel, and render into a private bounded buffer. No user template files or raw-output mode are loaded. The documented reply budget is 2 MiB (`render::TEXT_BUDGET_BYTES`), deliberately larger than the family default because exact full Document and context reads are part of this product's contract: a reply that cannot fit is refused with the truthful status-preserving fallback line, never silently truncated.
 
 Mutation responses confirm the native ID or URL, status and replay state without echoing submitted descriptions and reports; a check-only status call is labelled as a preview. Reads retain actionable UUIDs and URLs, exact pagination and overview cursors, transition conditions, unresolved questions and current evidence. Issue context preserves native description and unknown human prose, then adds distinct checkout, parent, child, document and review details. A Module also retains its usable PR draft, notes and full source commit IDs. When both saved and current native result/check sections exactly match the derived report, the two duplicate known sections are omitted from the separate description; manual sections remain. A pending write includes the exact original tool and arguments needed for safe replay, without the internal before/next snapshots. Explicit document and comment reads preserve requested bodies in full; thread resolution comes from the root comment. Full and delta overviews retain the unpublished ProjectUpdate draft once. Deltas describe changed fields and direct the reader to full context when a change extends beyond a preview; no raw hashes are printed. A rendering defect produces a short status-preserving recovery line and advises inspection before another mutation.
@@ -140,13 +148,15 @@ public tool needs it, one arm in `dispatch()`. `src/gateway/documents.rs`
 holds the `save_document` handler; `src/gateway/artifacts.rs` holds
 `upload_file`/`list_files`/`get_file`, reusing the same seam.
 
-The generated tool surface (`schemas/tools.json`, `schemas/examples.json`,
-`src/render.rs` templates, `assets/mcp/*.txt.j2`) has exactly one owner and
-one generator (`scripts/catalog.mjs`, run with no network access and no other
-side effect). Provider changes land as Rust handler code inside their own
-child module and, where they touch shared dispatch, GraphQL operation text or
-test fixtures, as explicitly scoped edits named in the accepted contract —
-never as hand edits to the generated schema files themselves.
+The tool contract is schema-first: `schemas/tools.json` is edited directly,
+embedded by `src/catalog.rs`, and served by discovery. There is no catalogue
+generator. `cargo xtask contract check` compares the committed schema with
+the embedded catalogue, dispatch vocabulary and real-binary MCP discovery.
+Contract and protocol xtask aliases also run the raw HTTP/stdio revision,
+tool-call and EOF regressions; the full workspace gate includes the same suite.
+Provider changes land in their Rust child modules, with coordinated edits to
+the authoritative schema, GraphQL operations and fixtures when required.
+Presentation templates in `assets/mcp/*.j2` remain embedded application assets.
 
 ## Document and file provider contract
 

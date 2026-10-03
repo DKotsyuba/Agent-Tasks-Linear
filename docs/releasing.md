@@ -68,6 +68,16 @@ the owner from the real host, and only that record justifies flipping
 `qualified_targets`/`qualified_hosts`, `qualification` and `release.enabled`
 in a reviewed commit.
 
+### Current SDK/source candidate
+
+The rmcp 3.4.0 adoption changes protocol handling and executable bytes. The
+published 0.6.0 evidence below remains historical evidence for those specific
+artifacts; it does not qualify the changed candidate. Current `family.toml`
+therefore declares `qualification = "not_verified"`, empty qualified targets
+and hosts, and `release.enabled = false`. Local Rust gates and raw JSON-RPC
+fixture checks establish source/SDK compatibility only. Re-enable publication
+only after reviewed exact-payload and native-host evidence for the new candidate.
+
 ### 0.5.0 qualification scope
 
 The local candidate from `88e4348000540c0e9ec2b1e0cbb33474b205848a`

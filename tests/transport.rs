@@ -18,7 +18,8 @@ use support::Fixture;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-/// Compare success and error text over authenticated HTTP and stdio, including transport guards.
+/// Compare success/business-error text over HTTP and real-binary stdio.
+/// Unknown tools must preserve a protocol error across both transport boundaries.
 #[tokio::test]
 async fn authenticated_http_and_stdio_share_the_gateway() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -118,6 +119,15 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
             .contains("INVALID_INPUT")
     );
     assert!(error.get("structuredContent").is_none());
+    let unknown = CallToolRequestParams::new("unknown_tool");
+    assert!(matches!(
+        client.peer().call_tool(unknown.clone()).await,
+        Err(rmcp::service::ServiceError::McpError(error))
+            if error.code == rmcp::model::ErrorCode::METHOD_NOT_FOUND
+    ));
+    let internal = fixture.gateway.call("unknown_tool", json!({})).await;
+    assert_eq!(internal.status, "blocked");
+    assert_eq!(internal.data["code"], "UNKNOWN_TOOL");
     let path = std::env::temp_dir().join(format!("atl-transport-{}.toml", Uuid::new_v4()));
     config.write_new(&path).unwrap();
     // MCP_TEST_BINARY retargets acceptance at the exact packaged/CI payload.
@@ -141,6 +151,11 @@ async fn authenticated_http_and_stdio_share_the_gateway() {
     assert_eq!(stdio_error["content"], error["content"]);
     assert_eq!(stdio_error["isError"], true);
     assert!(stdio_error.get("structuredContent").is_none());
+    assert!(matches!(
+        bridge.peer().call_tool(unknown).await,
+        Err(rmcp::service::ServiceError::McpError(error))
+            if error.code == rmcp::model::ErrorCode::METHOD_NOT_FOUND
+    ));
     bridge.cancel().await.unwrap();
     client.cancel().await.unwrap();
     std::fs::remove_file(path).unwrap();

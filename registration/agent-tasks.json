@@ -3,6 +3,7 @@
   "product": "agent-tasks",
   "version_mirror": "cargo [workspace.package] version",
   "transport": "stdio",
+  "supported_protocol_revisions": ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"],
   "command": "~/.local/bin/agent-tasks",
   "args": ["mcp"],
   "env": {
