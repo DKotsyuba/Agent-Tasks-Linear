@@ -2,13 +2,16 @@
 
 ## Unreleased
 
+## 0.6.1
+
 - Adopt rmcp 3.4.0. Both HTTP and stdio catalogues follow the caller's revision:
   MCP 2026-07-28 returns complete results with a 60-second private cache lifetime;
   explicit legacy sessions omit the modern fields. Unknown tools return protocol
   errors while expected workflow/input rejections retain tool-result `isError`.
 - Exercise all five declared protocol revisions through raw HTTP and real-binary
-  stdio, including discovery, calls, bounded replies and EOF; preserve the 25-tool
-  authoritative schema and the resident writer/external Linear state profile.
+  stdio, including discovery, calls, bounded replies and EOF. Include these raw
+  checks in the contract/protocol aliases and exact-payload release acceptance;
+  preserve the 25-tool schema and resident writer/external Linear state profile.
 - Export the current family response standard, correct schema-first architecture
   documentation, and record reviewed incremental template provenance without
   replacing historical adoption baselines. Reset new-candidate qualification
