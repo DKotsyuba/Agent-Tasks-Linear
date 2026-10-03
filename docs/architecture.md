@@ -148,13 +148,15 @@ public tool needs it, one arm in `dispatch()`. `src/gateway/documents.rs`
 holds the `save_document` handler; `src/gateway/artifacts.rs` holds
 `upload_file`/`list_files`/`get_file`, reusing the same seam.
 
-The generated tool surface (`schemas/tools.json`, `schemas/examples.json`,
-`src/render.rs` templates, `assets/mcp/*.txt.j2`) has exactly one owner and
-one generator (`scripts/catalog.mjs`, run with no network access and no other
-side effect). Provider changes land as Rust handler code inside their own
-child module and, where they touch shared dispatch, GraphQL operation text or
-test fixtures, as explicitly scoped edits named in the accepted contract —
-never as hand edits to the generated schema files themselves.
+The tool contract is schema-first: `schemas/tools.json` is edited directly,
+embedded by `src/catalog.rs`, and served by discovery. There is no catalogue
+generator. `cargo xtask contract check` compares the committed schema with
+the embedded catalogue, dispatch vocabulary and real-binary MCP discovery.
+Contract and protocol xtask aliases also run the raw HTTP/stdio revision,
+tool-call and EOF regressions; the full workspace gate includes the same suite.
+Provider changes land in their Rust child modules, with coordinated edits to
+the authoritative schema, GraphQL operations and fixtures when required.
+Presentation templates in `assets/mcp/*.j2` remain embedded application assets.
 
 ## Document and file provider contract
 

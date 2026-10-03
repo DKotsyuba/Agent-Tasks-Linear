@@ -55,11 +55,55 @@ qualification.
   response standard and is unwrap/expect-free in production paths. New code
   must not add unwraps; a follow-up wave can migrate extraction to typed
   helpers and then flip the lints to deny.
+  Rule: **LANG-04**, pinned scaffold workspace lint baseline. Risk: existing
+  unchecked post-validation assumptions may panic; schema/workflow regressions
+  exercise them, and presentation remains free of production unwrap/expect.
+  Owner: repository maintainer **DKotsyuba**. Review by **2026-11-03**, and
+  before enabling a release; an expired exception cannot qualify a release.
 - **`deny.toml` license additions.** `MIT-0` (borrow-or-share → jsonschema)
   and `CDLA-Permissive-2.0` (webpki-root-certs → rustls → reqwest) are
   reviewed permissive licenses in this product's existing dependency tree, and
   workspace-internal crates are excluded from license evaluation because the
   product deliberately declares no open-source license.
+  Rules: **DEP-06** and **TPL-04**, product-specific supply-chain/license policy.
+  Rationale: these dependencies are already required by schema/HTTPS handling;
+  copied MIT helpers retain their notice, while proprietary workspace code is
+  not granted an open-source license. Risk: future dependency/license drift;
+  cargo-deny still checks every external dependency and disallows unknown
+  sources. Owner: repository maintainer **DKotsyuba**. Review by **2026-11-03**,
+  and before enabling a release.
+
+## Reviewed incremental adoption
+
+The current reviewed reference is template commit
+`5b5cd784d59139d2f3fb4acf9943af2ff235f347`. This increment adopts the exact
+`rmcp =3.4.0` SDK pin (with the required `process-wrap 10.0.1` lock update),
+the revision-dependent complete catalogue/60-second private cache policy,
+raw modern discovery and legacy compatibility checks, supported revision
+declarations, and the verbatim current `standard/MCP_RESPONSE_STANDARD.md`
+export. The response profile, compiler, workspace, delivery helper and CI
+baseline require no replacement.
+The existing xtask test selectors include the new raw protocol suite in both
+`contract check`/`test contract` and `test protocol`; the full workspace gate
+also executes it in default and all-features configurations.
+
+The application lock also replaces yanked `yoke-derive 0.8.3` with compatible
+non-yanked patch `0.8.4`; no other packages change in that supply-chain repair.
+The yanked-dependency gate remains enabled without an advisory suppression.
+
+The product retains its schema-first authority, explicitly permitted by the
+template's BOOT CONTRACT-01 and MCP-03: `schemas/tools.json` is unchanged and
+no Rust-catalogue conversion or generator is introduced. The resident HTTP
+writer, stdio Bridge and external Linear state stay product requirements.
+Unknown tool names now use SDK protocol errors at the transport boundary
+(MCP-08), preserving the Gateway's internal Outcome contract.
+
+Original `.family/origin.json`, `.family/manifest.json` and all baseline
+bytes retain their historical revision, identifiers and hashes. This reviewed
+increment is recorded here separately; historical import bytes must not be
+restamped as the current template. Native evidence for published 0.6.0 remains
+in `docs/releasing.md`; changed SDK/source qualification is `not_verified`
+and publication stays disabled pending new exact-payload/native-host acceptance.
 
 ## Not imported
 

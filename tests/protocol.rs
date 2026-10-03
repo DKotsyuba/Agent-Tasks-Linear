@@ -263,8 +263,20 @@ fn assert_protocol(replies: &[Value], revision: &str) -> TestResult {
 /// HTTP and the real bridge, including calls and clean/empty-input EOF.
 /// The bridge's upstream revision differs from several callers, detecting
 /// metadata inherited from the upstream rather than the actual local caller.
+/// Family and registration declarations must equal the exercised revisions.
 #[tokio::test]
 async fn raw_http_and_stdio_protocol_revisions() -> TestResult {
+    let family: toml::Value = toml::from_str(include_str!("../family.toml"))?;
+    let registration: Value =
+        serde_json::from_str(include_str!("../registration/agent-tasks.json"))?;
+    assert_eq!(
+        serde_json::to_value(&family["compatibility"]["supported_protocol_revisions"])?,
+        json!(REVISIONS)
+    );
+    assert_eq!(
+        registration["supported_protocol_revisions"],
+        json!(REVISIONS)
+    );
     let fixture = Fixture::new().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let config = Config {

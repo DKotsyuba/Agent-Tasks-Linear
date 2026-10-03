@@ -377,7 +377,8 @@ impl Project {
 
     /// Verify the authoritative schema file structurally, then run the Rust
     /// contract tests that compare it with the embedded catalogue, the
-    /// gateway dispatch vocabulary and real-binary MCP discovery.
+    /// gateway dispatch vocabulary and real-binary MCP discovery, including
+    /// raw HTTP/stdio revision metadata, calls and bounded EOF handling.
     fn contract(&self) -> Result<()> {
         let path = self.root.join("schemas/tools.json");
         let tools: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
@@ -432,6 +433,8 @@ impl Project {
                 &self.name,
                 "--test",
                 "contract",
+                "--test",
+                "protocol",
             ],
         )
     }
@@ -503,6 +506,8 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+/// Load product metadata and execute the selected CLI task. Helper/setup failures
+/// propagate to the CLI exit status; mutation is limited to explicit package/release commands.
 fn main_result() -> Result<()> {
     let project = Project::load()?;
     match Cli::parse().command {
@@ -511,18 +516,7 @@ fn main_result() -> Result<()> {
         Task::Standard { command: _ } => project.standard(),
         Task::Contract { command: _ } => project.contract(),
         Task::Test { suite } => match suite.as_str() {
-            "contract" => run(
-                &project.root,
-                "cargo",
-                &[
-                    "test",
-                    "--frozen",
-                    "--package",
-                    &project.name,
-                    "--test",
-                    "contract",
-                ],
-            ),
+            "contract" => project.contract(),
             "protocol" => run(
                 &project.root,
                 "cargo",
@@ -533,6 +527,8 @@ fn main_result() -> Result<()> {
                     &project.name,
                     "--test",
                     "transport",
+                    "--test",
+                    "protocol",
                 ],
             ),
             other => Err(format!("unknown test suite: {other}").into()),
