@@ -6,9 +6,9 @@ standard_version = "1.0.0-rc.2"
 response_profile = "rust-minijinja-v1"
 devkit_version = "0.2.0"
 baseline = "rust-macos-2026-09-candidate1"
-# Historical 0.6.0 host evidence does not qualify this SDK/source candidate.
-# Exact-payload and native-host acceptance are required; see docs/releasing.md.
-qualification = "not_verified"
+# Native 0.6.1 candidate acceptance is recorded in docs/releasing.md.
+# Exact CI payload acceptance remains a separate publication-environment gate.
+qualification = "verified"
 
 # This product's own profile: a resident loopback writer/stdio bridge whose only
 # durable business state lives in Linear (external). state_schema = 0 in a delivery
@@ -22,11 +22,11 @@ host_adapter = false
 [compatibility]
 supported_protocol_revisions = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"]
 candidate_targets = ["aarch64-apple-darwin"]
-qualified_targets = []
-qualified_hosts = []
+qualified_targets = ["aarch64-apple-darwin"]
+qualified_hosts = ["claude-code-2.1.287"]
 
 [release]
-enabled = false
+enabled = true
 workflow = "release.yml"
 delivery_profile = "single-binary-v1"
 trust_profile = "github-authenticated"

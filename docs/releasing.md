@@ -72,11 +72,34 @@ in a reviewed commit.
 
 The rmcp 3.4.0 adoption changes protocol handling and executable bytes. The
 published 0.6.0 evidence below remains historical evidence for those specific
-artifacts; it does not qualify the changed candidate. Current `family.toml`
-therefore declares `qualification = "not_verified"`, empty qualified targets
-and hosts, and `release.enabled = false`. Local Rust gates and raw JSON-RPC
-fixture checks establish source/SDK compatibility only. Re-enable publication
-only after reviewed exact-payload and native-host evidence for the new candidate.
+artifacts. The 0.6.1 native candidate evidence below now supports the declared
+arm64 macOS target and Claude Code 2.1.287 host. Exact CI-produced bytes still
+require separate acceptance before the release environment is approved; local
+Rust gates and raw JSON-RPC fixtures alone never establish host qualification.
+
+### 0.6.1 qualification scope
+
+The candidate from `5317285a1b2ed53ded0a61c669d8a8e9c6c11e84` (SHA-256
+`d285f6103f4313a04dc902d22c7e83f50424ed1168c3858e1c82511aa675fc30`,
+19,937,136 bytes) was exercised on macOS 27.0 build 26A428, arm64, through
+Claude Code 2.1.287 on 2026-10-03. Its source tree equals the reviewed merge
+`521a080000f7ccff5476556b8b7593152dd6e10f`; the exact preparation source
+passed [CI](https://github.com/DKotsyuba/agent-tasks/actions/runs/37153113308).
+
+Native MCP reads observed version 0.6.1. Document creation/readback, guarded
+section replacement with preserved sibling content, stale-write refusal,
+identical-request replay, scoped title/content search and UTF-8/binary file
+upload/download passed. Seven candidate tools were exposed; six distinct tools
+were invoked. The 25-tool catalogue was checked separately by the binary
+contract tests, not by executing every business operation. The 400-byte UTF-8
+and 4,096-byte binary round-trips were independently compared byte-for-byte;
+the running candidate's executable path, size and digest were verified.
+Local doctor and three disposable-home installation checks also passed.
+
+Qualification covers this native target/host sample only. It does not establish
+modern host negotiation, another host, exhaustive search semantics, signing,
+publication or production installation. The final tag's exact CI-produced
+payload must still pass step 6 before its publication is approved.
 
 ### 0.5.0 qualification scope
 
